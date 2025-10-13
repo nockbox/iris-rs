@@ -1,6 +1,9 @@
 pub mod cheetah;
 pub mod slip10;
 
+#[cfg(feature = "wasm")]
+pub mod wasm;
+
 pub use cheetah::{PrivateKey, PublicKey, Signature};
 pub use slip10::{derive_master_key, ExtendedKey};
 

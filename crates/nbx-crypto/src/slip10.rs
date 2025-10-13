@@ -1,6 +1,6 @@
 use hmac::{Hmac, Mac};
 use ibig::UBig;
-use nockchain_math::crypto::cheetah::{ch_add, ch_scal_big, A_GEN, G_ORDER};
+use nbx_nockchain_math::crypto::cheetah::{ch_add, ch_scal_big, A_GEN, G_ORDER};
 use sha2::Sha512;
 
 use crate::cheetah::{PrivateKey, PublicKey};
@@ -35,7 +35,7 @@ impl ExtendedKey {
             data.extend_from_slice(&index.to_be_bytes());
         } else {
             data.push(0x01);
-            data.extend_from_slice(&self.public_key.to_be_bytes());
+            data.extend_from_slice(&self.public_key.to_slip10_bytes());
             data.extend_from_slice(&index.to_be_bytes());
         }
         let mut result = hmac_sha512(&self.chain_code, &data);
@@ -121,7 +121,7 @@ mod tests {
         let mnemonic = Mnemonic::parse("clutch inmate mango seek attract credit illegal popular term loyal fiber output trumpet lucky garbage merge menu certain dynamic aim trip fantasy master unveil").unwrap();
         let key = derive_master_key(&mnemonic.to_seed(""));
         assert_eq!(
-            key.private_key.as_ref().unwrap().to_be_bytes(),
+            key.private_key.as_ref().unwrap().to_be_bytes().to_vec(),
             from_b58("3MoHxVXWAr9qny12Sw8ZZtrgEBFcZegQQVkwYyePb9LZ")
         );
         assert_eq!(
@@ -131,7 +131,7 @@ mod tests {
 
         let child_key = key.derive_child(0);
         assert_eq!(
-            child_key.private_key.unwrap().to_be_bytes(),
+            child_key.private_key.unwrap().to_be_bytes().to_vec(),
             from_b58("6AifHLAuT1MxnFsoCwjKNFaBze91DXFDV1rRLefkzPEK")
         );
         assert_eq!(
@@ -141,7 +141,11 @@ mod tests {
 
         let hardened_child_key = key.derive_child(1 << 31);
         assert_eq!(
-            hardened_child_key.private_key.unwrap().to_be_bytes(),
+            hardened_child_key
+                .private_key
+                .unwrap()
+                .to_be_bytes()
+                .to_vec(),
             from_b58("CpMAmcgN1V6Majtx2HC7ULLXD9psA3Gg3nMye3JpKpH")
         );
         assert_eq!(

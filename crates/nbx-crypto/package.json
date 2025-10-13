@@ -1,0 +1,21 @@
+{
+  "name": "nbx-crypto",
+  "version": "0.1.0",
+  "description": "Nockchain cryptography library for WebAssembly",
+  "main": "pkg/nbx_crypto.js",
+  "types": "pkg/nbx_crypto.d.ts",
+  "files": [
+    "pkg"
+  ],
+  "scripts": {
+    "build": "wasm-pack build --target web --out-dir pkg",
+    "build:nodejs": "wasm-pack build --target nodejs --out-dir pkg-node"
+  },
+  "keywords": [
+    "wasm",
+    "cryptography",
+    "nockchain",
+    "slip10"
+  ],
+  "license": "MIT"
+}

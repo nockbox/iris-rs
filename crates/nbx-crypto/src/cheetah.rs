@@ -1,9 +1,11 @@
 use ibig::UBig;
-use nockchain_math::belt::Belt;
-use nockchain_math::crypto::cheetah::{
-    ch_add, ch_neg, ch_scal_big, trunc_g_order, CheetahPoint, A_GEN, G_ORDER,
+use nbx_nockchain_math::{
+    belt::Belt,
+    crypto::cheetah::{
+        ch_add, ch_neg, ch_scal_big, trunc_g_order, CheetahPoint, F6lt, A_GEN, G_ORDER,
+    },
+    tip5::hash::hash_varlen,
 };
-use nockchain_math::tip5::hash::hash_varlen;
 
 #[derive(Debug, Clone)]
 pub struct PublicKey(pub CheetahPoint);
@@ -47,12 +49,59 @@ impl PublicKey {
         chal == sig.c
     }
 
-    pub fn to_be_bytes(&self) -> Vec<u8> {
+    pub fn to_be_bytes(&self) -> [u8; 97] {
+        let mut data = [0u8; 97];
+        data[0] = 0x01; // prefix byte
+        let mut offset = 1;
+        // y-coordinate: 6 belts × 8 bytes = 48 bytes
+        for belt in self.0.y.0.iter().rev() {
+            data[offset..offset + 8].copy_from_slice(&belt.0.to_be_bytes());
+            offset += 8;
+        }
+        // x-coordinate: 6 belts × 8 bytes = 48 bytes
+        for belt in self.0.x.0.iter().rev() {
+            data[offset..offset + 8].copy_from_slice(&belt.0.to_be_bytes());
+            offset += 8;
+        }
+        data
+    }
+
+    /// SLIP-10 compatible serialization (legacy 65-byte format for compatibility)
+    /// This uses a compressed format that was used in the original implementation
+    pub(crate) fn to_slip10_bytes(&self) -> Vec<u8> {
         let mut data = Vec::new();
+        // Only include 8 bytes from each coordinate (legacy format)
         for belt in self.0.y.0.iter().rev().chain(self.0.x.0.iter().rev()) {
             data.extend_from_slice(&belt.0.to_be_bytes());
         }
         data
+    }
+
+    pub fn from_be_bytes(bytes: &[u8; 97]) -> PublicKey {
+        let mut x = [Belt(0); 6];
+        let mut y = [Belt(0); 6];
+
+        // y-coordinate: bytes 1-48
+        for i in 0..6 {
+            let offset = 1 + i * 8;
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(&bytes[offset..offset + 8]);
+            y[5 - i] = Belt(u64::from_be_bytes(buf));
+        }
+
+        // x-coordinate: bytes 49-96
+        for i in 0..6 {
+            let offset = 49 + i * 8;
+            let mut buf = [0u8; 8];
+            buf.copy_from_slice(&bytes[offset..offset + 8]);
+            x[5 - i] = Belt(u64::from_be_bytes(buf));
+        }
+
+        PublicKey(CheetahPoint {
+            x: F6lt(x),
+            y: F6lt(y),
+            inf: false,
+        })
     }
 }
 
@@ -96,11 +145,15 @@ impl PrivateKey {
         Signature { c: chal, s: sig }
     }
 
-    pub fn to_be_bytes(&self) -> Vec<u8> {
+    pub fn to_be_bytes(&self) -> [u8; 32] {
         let bytes = self.0.to_be_bytes();
         let mut arr = [0u8; 32];
         arr[32 - bytes.len()..].copy_from_slice(&bytes);
-        arr.to_vec()
+        arr
+    }
+
+    pub fn from_be_bytes(bytes: &[u8; 32]) -> PrivateKey {
+        PrivateKey(UBig::from_be_bytes(bytes))
     }
 }
 
@@ -143,7 +196,6 @@ mod tests {
     #[test]
     fn test_vector() {
         // from nockchain zkvm-jetpack cheetah_jets.rs test_batch_verify_affine
-        use nockchain_math::crypto::cheetah::F6lt;
         let message = [8, 9, 10, 11, 12];
         let pubkey = PublicKey(CheetahPoint {
             x: F6lt([

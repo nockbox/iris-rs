@@ -1363,8 +1363,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "335ff9f135e4384c8150d6f27c6daed433577f86b4750418338c01a1a2528592"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi 0.11.1+wasi-snapshot-preview1",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2196,10 +2198,36 @@ dependencies = [
  "argon2",
  "bip39",
  "bs58",
+ "getrandom 0.2.16",
  "hmac",
  "ibig",
- "nockchain-math",
+ "js-sys",
+ "nbx-nockchain-math",
+ "serde",
+ "serde-wasm-bindgen",
  "sha2",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "nbx-nockchain-math"
+version = "0.1.0"
+dependencies = [
+ "arrayref",
+ "bs58",
+ "ibig",
+ "num-traits",
+ "once_cell",
+]
+
+[[package]]
+name = "nbx-nockchain-types"
+version = "0.1.0"
+dependencies = [
+ "nbx-crypto",
+ "nbx-nockchain-math",
+ "serde",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
@@ -3319,6 +3347,17 @@ dependencies = [
  "serde",
  "serde_core",
  "typeid",
+]
+
+[[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
 ]
 
 [[package]]

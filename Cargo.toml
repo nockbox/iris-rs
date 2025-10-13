@@ -3,6 +3,7 @@ members = [
   "crates/nbx-wallet",
   "crates/nbx-crypto",
   "crates/nbx-nockchain-math",
+  "crates/nbx-nockchain-types",
 ]
 
 resolver = "2"
@@ -20,7 +21,10 @@ path = "crates/nbx-crypto"
 [workspace.dependencies.nbx-nockchain-math]
 path = "crates/nbx-nockchain-math"
 
+[workspace.dependencies.nbx-nockchain-types]
+path = "crates/nbx-nockchain-types"
+
 [workspace.dependencies]
 nockvm = { git = "https://github.com/zorp-corp/nockchain.git" }
 nockchain-math = { git = "https://github.com/zorp-corp/nockchain.git" }
-ibig = "0.3"
+ibig = { git = "https://github.com/zorp-corp/nockchain.git" }

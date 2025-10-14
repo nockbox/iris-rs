@@ -104,8 +104,15 @@ pub fn derive_master_key(seed: &[u8]) -> ExtendedKey {
 
 #[cfg(test)]
 mod tests {
+    use crate::Signature;
+
     use super::*;
     use bip39::Mnemonic;
+
+    use nbx_nockchain_math::{
+        tip5::hash::{digest_to_bytes, hash_belt_list, hash_varlen},
+        Belt,
+    };
 
     fn from_b58(s: &str) -> Vec<u8> {
         bs58::decode(s).into_vec().unwrap()
@@ -151,6 +158,50 @@ mod tests {
         assert_eq!(
             hardened_child_key.chain_code[..],
             from_b58("8x7zh5LQA7tsFQQ3qsPfYGgFzQkoizGhLqLK7iKTGj3R")
+        );
+    }
+
+    fn bytes_to_belts(bytes: &[u8]) -> Vec<Belt> {
+        let mut belts = Vec::new();
+        for chunk in bytes.chunks(4) {
+            let mut arr = [0u8; 4];
+            arr[..chunk.len()].copy_from_slice(chunk);
+            belts.push(Belt(u32::from_le_bytes(arr) as u64));
+        }
+        belts
+    }
+
+    fn hash_signature(sig: &Signature) -> [u64; 5] {
+        let mut belts = Vec::with_capacity(1 + 16 + 16);
+        belts.push(Belt(16));
+        belts.extend(bytes_to_belts(&sig.c.to_le_bytes()));
+        belts.extend(bytes_to_belts(&sig.s.to_le_bytes()));
+        belts.push(Belt(0));
+        for _ in 0..7 {
+            belts.push(Belt(0));
+            belts.push(Belt(1));
+        }
+        belts.push(Belt(1));
+        for _ in 0..7 {
+            belts.push(Belt(0));
+            belts.push(Belt(1));
+        }
+        hash_varlen(&mut belts)
+    }
+
+    #[test]
+    fn test_nockchain_message_vector() {
+        // Test vector from: nockchain-wallet sign-message "hello"
+        let mnemonic = Mnemonic::parse("kangaroo gap pair wonder grid version winter burden garment resemble object trap survey custom mask fiber anger hospital conduct draft page hello embark core").unwrap();
+        assert_eq!(
+            digest_to_bytes(hash_signature(
+                &derive_master_key(&mnemonic.to_seed(""))
+                    .private_key
+                    .unwrap()
+                    .sign(&hash_belt_list(&bytes_to_belts(b"hello"))),
+            ))
+            .to_vec(),
+            from_b58("4zHoSpPvFTHRd3PhcvhRTEemVtuuwHT4zZUxbjVikjJ5RoeVz1DXNmq")
         );
     }
 }

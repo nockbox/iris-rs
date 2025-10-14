@@ -1667,6 +1667,18 @@ dependencies = [
 [[package]]
 name = "ibig"
 version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1fcc7f316b2c079dde77564a1360639c1a956a23fa96122732e416cb10717bb"
+dependencies = [
+ "cfg-if",
+ "num-traits",
+ "rand 0.8.5",
+ "static_assertions",
+]
+
+[[package]]
+name = "ibig"
+version = "0.3.6"
 source = "git+https://github.com/zorp-corp/nockchain.git#865a6f70b0bb8c44989839f19b288587c5c37b17"
 dependencies = [
  "cfg-if",
@@ -2200,7 +2212,7 @@ dependencies = [
  "bs58",
  "getrandom 0.2.16",
  "hmac",
- "ibig",
+ "ibig 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "js-sys",
  "nbx-nockchain-math",
  "serde",
@@ -2215,7 +2227,7 @@ version = "0.1.0"
 dependencies = [
  "arrayref",
  "bs58",
- "ibig",
+ "ibig 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "num-traits",
  "once_cell",
 ]
@@ -2234,7 +2246,7 @@ dependencies = [
 name = "nbx-wallet"
 version = "0.1.0"
 dependencies = [
- "ibig",
+ "ibig 0.3.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "nbx-crypto",
  "nockchain-math",
 ]
@@ -2267,7 +2279,7 @@ dependencies = [
  "futures",
  "getrandom 0.3.3",
  "gnort",
- "ibig",
+ "ibig 0.3.6 (git+https://github.com/zorp-corp/nockchain.git)",
  "instant-acme",
  "intmap",
  "nockvm",
@@ -2312,7 +2324,7 @@ dependencies = [
  "bytes",
  "either",
  "hex-literal",
- "ibig",
+ "ibig 0.3.6 (git+https://github.com/zorp-corp/nockchain.git)",
  "nockapp",
  "nockvm",
  "nockvm_macros",
@@ -2335,7 +2347,7 @@ dependencies = [
  "bitvec",
  "cc",
  "either",
- "ibig",
+ "ibig 0.3.6 (git+https://github.com/zorp-corp/nockchain.git)",
  "intmap",
  "json",
  "lazy_static",
@@ -2364,7 +2376,7 @@ dependencies = [
  "aes-siv",
  "curve25519-dalek",
  "ed25519-dalek",
- "ibig",
+ "ibig 0.3.6 (git+https://github.com/zorp-corp/nockchain.git)",
  "sha1",
  "sha2",
  "x25519-dalek",

@@ -27,4 +27,4 @@ path = "crates/nbx-nockchain-types"
 [workspace.dependencies]
 nockvm = { git = "https://github.com/zorp-corp/nockchain.git" }
 nockchain-math = { git = "https://github.com/zorp-corp/nockchain.git" }
-ibig = { git = "https://github.com/zorp-corp/nockchain.git" }
+ibig = "0.3"

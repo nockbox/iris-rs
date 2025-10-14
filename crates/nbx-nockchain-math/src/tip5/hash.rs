@@ -91,3 +91,33 @@ pub fn hash_varlen(input_vec: &mut Vec<Belt>) -> [u64; 5] {
 pub fn create_init_sponge_variable() -> [u64; STATE_SIZE] {
     [0u64; STATE_SIZE]
 }
+
+pub fn digest_to_bytes(digest: [u64; 5]) -> [u8; 40] {
+    use ibig::UBig;
+
+    let p = UBig::from(crate::belt::PRIME);
+    let p2 = &p * &p;
+    let p3 = &p * &p2;
+    let p4 = &p * &p3;
+
+    let [a, b, c, d, e] = digest.map(UBig::from);
+    let res = a + b * &p + c * p2 + d * p3 + e * p4;
+
+    let mut bytes = [0u8; 40];
+    let res_bytes = res.to_be_bytes();
+    bytes[40 - res_bytes.len()..].copy_from_slice(&res_bytes);
+
+    bytes
+}
+
+pub fn hash_belt_list(input: &[Belt]) -> [u64; 5] {
+    let mut combined = Vec::with_capacity(1 + input.len() + input.len() * 2);
+    combined.push(Belt(input.len() as u64 + 1));
+    combined.extend(input);
+    combined.push(Belt(0));
+    for _ in 0..input.len() {
+        combined.push(Belt(0));
+        combined.push(Belt(1));
+    }
+    hash_varlen(&mut combined)
+}

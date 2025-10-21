@@ -1,8 +1,8 @@
 [workspace]
 members = [
   "crates/nbx-wallet",
+  "crates/nbx-ztd",
   "crates/nbx-crypto",
-  "crates/nbx-nockchain-math",
   "crates/nbx-nockchain-types",
 ]
 
@@ -15,11 +15,12 @@ edition = "2021"
 [workspace.dependencies.nbx-wallet]
 path = "crates/nbx-wallet"
 
+[workspace.dependencies.nbx-ztd]
+path = "crates/nbx-ztd"
+
 [workspace.dependencies.nbx-crypto]
 path = "crates/nbx-crypto"
 
-[workspace.dependencies.nbx-nockchain-math]
-path = "crates/nbx-nockchain-math"
 
 [workspace.dependencies.nbx-nockchain-types]
 path = "crates/nbx-nockchain-types"

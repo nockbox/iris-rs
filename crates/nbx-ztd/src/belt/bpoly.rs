@@ -1,24 +1,8 @@
 extern crate alloc;
 use alloc::vec;
 
-use crate::belt::Belt;
-use crate::poly::Poly;
-
-#[inline(always)]
-pub fn bpadd_in_place(a: &mut [Belt], b: &[Belt]) {
-    assert!(a.len() >= b.len());
-
-    for (a_belt, b_belt) in a
-        .iter_mut()
-        .zip(b.iter().map(Some).chain(core::iter::repeat(None)))
-    {
-        if let Some(b_belt) = b_belt {
-            *a_belt = *b_belt + *a_belt;
-        } else {
-            break;
-        }
-    }
-}
+use super::poly::Poly;
+use super::Belt;
 
 #[inline(always)]
 pub fn bpsub(a: &[Belt], b: &[Belt], res: &mut [Belt]) {

@@ -1,16 +1,17 @@
-#![allow(clippy::len_without_is_empty)]
-
 use core::ops::{Add, Div, Mul, Neg, Sub};
 use num_traits::Pow;
 
+pub mod poly;
+pub mod bpoly;
+
+pub use poly::*;
+pub use bpoly::*;
+
 // Base field arithmetic functions.
 pub const PRIME: u64 = 18446744069414584321;
-pub const PRIME_PRIME: u64 = PRIME - 2;
 pub const PRIME_128: u128 = 18446744069414584321;
 const RP: u128 = 340282366841710300967557013911933812736;
 pub const R2: u128 = 18446744065119617025;
-pub const H: u64 = 20033703337;
-pub const ORDER: u64 = 2_u64.pow(32);
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]

@@ -1,6 +1,6 @@
 use hmac::{Hmac, Mac};
 use ibig::UBig;
-use nbx_nockchain_math::crypto::cheetah::{ch_add, ch_scal_big, A_GEN, G_ORDER};
+use nbx_ztd::crypto::cheetah::{ch_add, ch_scal_big, A_GEN, G_ORDER};
 use sha2::Sha512;
 
 use crate::cheetah::{PrivateKey, PublicKey};
@@ -109,10 +109,7 @@ mod tests {
     use super::*;
     use bip39::Mnemonic;
 
-    use nbx_nockchain_math::{
-        tip5::hash::{digest_to_bytes, from_b58, hash_belt_list, hash_varlen, Digest},
-        Belt,
-    };
+    use nbx_ztd::{from_b58, hash_belt_list, hash_noun, Belt, Digest};
 
     #[test]
     fn test_nockchain_wallet_vector() {
@@ -168,21 +165,22 @@ mod tests {
     }
 
     fn hash_signature(sig: &Signature) -> Digest {
-        let mut belts = Vec::with_capacity(1 + 16 + 16);
-        belts.push(Belt(16));
-        belts.extend(bytes_to_belts(&sig.c.to_le_bytes()));
-        belts.extend(bytes_to_belts(&sig.s.to_le_bytes()));
-        belts.push(Belt(0));
+        let mut leaves = Vec::new();
+        leaves.extend_from_slice(&bytes_to_belts(&sig.c.to_le_bytes()));
+        leaves.extend_from_slice(&bytes_to_belts(&sig.s.to_le_bytes()));
+
+        let mut dyck = Vec::new();
+        dyck.push(Belt(0));
         for _ in 0..7 {
-            belts.push(Belt(0));
-            belts.push(Belt(1));
+            dyck.push(Belt(0));
+            dyck.push(Belt(1));
         }
-        belts.push(Belt(1));
+        dyck.push(Belt(1));
         for _ in 0..7 {
-            belts.push(Belt(0));
-            belts.push(Belt(1));
+            dyck.push(Belt(0));
+            dyck.push(Belt(1));
         }
-        hash_varlen(&mut belts)
+        hash_noun(&leaves, &dyck)
     }
 
     #[test]
@@ -190,12 +188,13 @@ mod tests {
         // Test vector from: nockchain-wallet sign-message "hello"
         let mnemonic = Mnemonic::parse("kangaroo gap pair wonder grid version winter burden garment resemble object trap survey custom mask fiber anger hospital conduct draft page hello embark core").unwrap();
         assert_eq!(
-            digest_to_bytes(hash_signature(
+            hash_signature(
                 &derive_master_key(&mnemonic.to_seed(""))
                     .private_key
                     .unwrap()
                     .sign(&hash_belt_list(&bytes_to_belts(b"hello"))),
-            ))
+            )
+            .to_bytes()
             .to_vec(),
             from_b58("4zHoSpPvFTHRd3PhcvhRTEemVtuuwHT4zZUxbjVikjJ5RoeVz1DXNmq")
         );

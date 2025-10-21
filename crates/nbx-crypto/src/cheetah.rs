@@ -1,10 +1,10 @@
 use ibig::UBig;
-use nbx_nockchain_math::{
-    belt::Belt,
+use nbx_ztd::{
     crypto::cheetah::{
         ch_add, ch_neg, ch_scal_big, trunc_g_order, CheetahPoint, F6lt, A_GEN, G_ORDER,
     },
-    tip5::hash::{hash_varlen, Digest},
+    tip5::hash::hash_varlen,
+    Belt, Digest,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -40,8 +40,8 @@ impl PublicKey {
             transcript.extend_from_slice(&scalar.y.0);
             transcript.extend_from_slice(&self.0.x.0);
             transcript.extend_from_slice(&self.0.y.0);
-            transcript.extend(&m.0);
-            trunc_g_order(&hash_varlen(&mut transcript).0.map(|b| b.0))
+            transcript.extend_from_slice(&m.0);
+            trunc_g_order(&hash_varlen(&mut transcript))
         };
 
         chal == sig.c
@@ -65,10 +65,8 @@ impl PublicKey {
     }
 
     /// SLIP-10 compatible serialization (legacy 65-byte format for compatibility)
-    /// This uses a compressed format that was used in the original implementation
     pub(crate) fn to_slip10_bytes(&self) -> Vec<u8> {
         let mut data = Vec::new();
-        // Only include 8 bytes from each coordinate (legacy format)
         for belt in self.0.y.0.iter().rev().chain(self.0.x.0.iter().rev()) {
             data.extend_from_slice(&belt.0.to_be_bytes());
         }
@@ -123,8 +121,8 @@ impl PrivateKey {
             let mut transcript = Vec::new();
             transcript.extend_from_slice(&pubkey.x.0);
             transcript.extend_from_slice(&pubkey.y.0);
-            transcript.extend(&m.0);
-            trunc_g_order(&hash_varlen(&mut transcript).0.map(|b| b.0))
+            transcript.extend_from_slice(&m.0);
+            trunc_g_order(&hash_varlen(&mut transcript))
         };
         let chal = {
             // scalar = nonce * G
@@ -134,8 +132,8 @@ impl PrivateKey {
             transcript.extend_from_slice(&scalar.y.0);
             transcript.extend_from_slice(&pubkey.x.0);
             transcript.extend_from_slice(&pubkey.y.0);
-            transcript.extend(&m.0);
-            trunc_g_order(&hash_varlen(&mut transcript).0.map(|b| b.0))
+            transcript.extend_from_slice(&m.0);
+            trunc_g_order(&hash_varlen(&mut transcript))
         };
         let sig = (&nonce + &chal * &self.0) % &*G_ORDER;
         Signature { c: chal, s: sig }

@@ -1,23 +1,16 @@
-#![allow(clippy::len_without_is_empty)]
-
 extern crate alloc;
-use crate::belt::Belt;
+use crate::Belt;
 use alloc::vec::Vec;
 use core::slice::Iter;
 
 pub trait Element: Clone {
     fn is_zero(&self) -> bool;
-    fn zero() -> Self;
 }
 
 impl Element for Belt {
     #[inline(always)]
     fn is_zero(&self) -> bool {
         self.is_zero()
-    }
-    #[inline(always)]
-    fn zero() -> Self {
-        Belt::zero()
     }
 }
 

@@ -6,7 +6,7 @@ use ibig::UBig;
 use once_cell::sync::Lazy;
 
 use crate::belt::{bneg, Belt, PRIME};
-use crate::bpoly::{bpegcd, bpscal};
+use crate::belt::{bpegcd, bpscal};
 
 pub static G_ORDER: Lazy<UBig> = Lazy::new(|| {
     UBig::from_str_radix(

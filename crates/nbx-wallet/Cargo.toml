@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+nbx-ztd = { workspace = true }
 nbx-crypto = { workspace = true }
-nockchain-math = { workspace = true }
+nbx-nockchain-types = { path = "../nbx-nockchain-types" }
 ibig = { workspace = true }
+bs58 = "0.5.1"

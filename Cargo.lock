@@ -212,6 +212,7 @@ dependencies = [
  "ibig",
  "js-sys",
  "nbx-ztd",
+ "nbx-ztd-derive",
  "serde",
  "serde-wasm-bindgen",
  "sha2",
@@ -222,6 +223,7 @@ dependencies = [
 name = "nbx-nockchain-types"
 version = "0.1.0"
 dependencies = [
+ "bip39",
  "bs58",
  "nbx-crypto",
  "nbx-ztd",

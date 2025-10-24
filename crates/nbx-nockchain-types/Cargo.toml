@@ -1,0 +1,16 @@
+[package]
+name = "nbx-nockchain-types"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
+nbx-ztd = { workspace = true }
+nbx-ztd-derive = { path = "../nbx-ztd-derive" }
+bip39 = { version = "2.0", default-features = false, features = ["alloc", "std"] }
+nbx-crypto = { path = "../nbx-crypto" }
+serde = { version = "1.0", features = ["derive"], default-features = false }
+thiserror = "2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]

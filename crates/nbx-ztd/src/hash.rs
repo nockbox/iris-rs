@@ -1,7 +1,10 @@
 use alloc::{vec, vec::Vec};
 
-use crate::belt::{Belt, PRIME};
-use crate::tip5::hash::{hash_fixed, hash_varlen};
+use crate::{
+    belt::{Belt, PRIME},
+    crypto::cheetah::CheetahPoint,
+    tip5::hash::{hash_fixed, hash_varlen},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Digest(pub [Belt; 5]);
@@ -47,60 +50,13 @@ pub fn hash_noun(leaves: &[Belt], dyck: &[Belt]) -> Digest {
     Digest(hash_varlen(&mut combined).map(|u| Belt(u)))
 }
 
-pub fn hash_belt(input: Belt) -> Digest {
-    hash_noun(&vec![input], &vec![])
-}
-
-pub fn hash_belt_list(input: &[Belt]) -> Digest {
-    let mut leaves = Vec::with_capacity(input.len() + 1);
-    leaves.extend_from_slice(input);
-    leaves.push(Belt(0));
-
-    let mut dyck = Vec::new();
-    for _ in input {
-        dyck.push(Belt(0));
-        dyck.push(Belt(1));
-    }
-
-    hash_noun(&leaves, &dyck)
-}
-
-pub fn hash_hash_list(input: &[Digest]) -> Digest {
-    let mut leaves = Vec::new();
-    for h in input {
-        leaves.extend_from_slice(&h.0);
-    }
-    leaves.push(Belt(0));
-
-    let mut dyck = Vec::new();
-    for _ in input {
-        dyck.push(Belt(0));
-        for _ in 0..4 {
-            dyck.push(Belt(0));
-            dyck.push(Belt(1));
-        }
-        dyck.push(Belt(1));
-    }
-
-    hash_noun(&leaves, &dyck)
-}
-
 pub trait Hashable {
     fn hash(&self) -> Digest;
 }
 
 impl Hashable for Belt {
     fn hash(&self) -> Digest {
-        hash_belt(*self)
-    }
-}
-
-impl<A: Hashable, B: Hashable> Hashable for (A, B) {
-    fn hash(&self) -> Digest {
-        let mut belts = Vec::<Belt>::with_capacity(10);
-        belts.extend_from_slice(&self.0.hash().0);
-        belts.extend_from_slice(&self.1.hash().0);
-        Digest(hash_fixed(&mut belts).map(|u| Belt(u)))
+        hash_noun(&vec![*self], &vec![])
     }
 }
 
@@ -124,7 +80,7 @@ impl Hashable for i32 {
 
 impl Hashable for bool {
     fn hash(&self) -> Digest {
-        (if *self { 1 } else { 0 }).hash()
+        (if *self { 0 } else { 1 }).hash()
     }
 }
 
@@ -149,23 +105,113 @@ impl<T: Hashable> Hashable for Option<T> {
     }
 }
 
-impl<T: Hashable> Hashable for &[T] {
+impl<A: Hashable, B: Hashable> Hashable for (A, B) {
     fn hash(&self) -> Digest {
-        fn build_tree<T: Hashable>(items: &[T], i: usize) -> Digest {
-            if i >= items.len() {
-                return 0.hash();
-            }
-            let left_tree = build_tree(items, i * 2 + 1);
-            let right_tree = build_tree(items, i * 2 + 2);
-            ((&items[i], left_tree), right_tree).hash()
-        }
-        build_tree(self, 0)
+        let mut belts = Vec::<Belt>::with_capacity(10);
+        belts.extend_from_slice(&self.0.hash().0);
+        belts.extend_from_slice(&self.1.hash().0);
+        Digest(hash_fixed(&mut belts).map(|u| Belt(u)))
     }
 }
 
-impl<T: Hashable> Hashable for Vec<T> {
-    fn hash(&self) -> Digest {
-        hash_hash_list(&mut self.iter().map(|e| e.hash()).collect::<Vec<_>>())
+pub trait NounHashable {
+    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>);
+
+    fn noun_hash(&self) -> Digest {
+        let mut leaves = Vec::new();
+        let mut dyck = Vec::new();
+        self.write_noun_parts(&mut leaves, &mut dyck);
+        hash_noun(&leaves, &dyck)
+    }
+}
+
+impl NounHashable for Belt {
+    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, _dyck: &mut Vec<Belt>) {
+        leaves.push(*self);
+    }
+}
+
+impl NounHashable for u64 {
+    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+        Belt(*self).write_noun_parts(leaves, dyck)
+    }
+}
+
+impl NounHashable for usize {
+    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+        (*self as u64).write_noun_parts(leaves, dyck)
+    }
+}
+
+impl NounHashable for i32 {
+    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+        (*self as u64).write_noun_parts(leaves, dyck)
+    }
+}
+
+impl NounHashable for bool {
+    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+        (if *self { 0 } else { 1 }).write_noun_parts(leaves, dyck)
+    }
+}
+
+impl NounHashable for Digest {
+    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+        self.0.as_slice().write_noun_parts(leaves, dyck)
+    }
+}
+
+impl NounHashable for CheetahPoint {
+    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+        (self.x.0.as_slice(), (self.y.0.as_slice(), self.inf)).write_noun_parts(leaves, dyck);
+    }
+}
+
+impl<T: NounHashable> NounHashable for &T {
+    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+        (**self).write_noun_parts(leaves, dyck)
+    }
+}
+
+impl<T: NounHashable> NounHashable for Option<T> {
+    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+        match self {
+            None => 0.write_noun_parts(leaves, dyck),
+            Some(v) => (&0, v).write_noun_parts(leaves, dyck),
+        }
+    }
+}
+
+impl<A: NounHashable, B: NounHashable> NounHashable for (A, B) {
+    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+        dyck.push(Belt(0));
+        self.0.write_noun_parts(leaves, dyck);
+        dyck.push(Belt(1));
+        self.1.write_noun_parts(leaves, dyck);
+    }
+}
+
+impl<T: NounHashable> NounHashable for &[T] {
+    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+        for i in 0..self.len() - 1 {
+            dyck.push(Belt(0));
+            self[i].write_noun_parts(leaves, dyck);
+            dyck.push(Belt(1));
+        }
+        if let Some(item) = self.last() {
+            item.write_noun_parts(leaves, dyck);
+        }
+    }
+}
+
+impl<T: NounHashable> NounHashable for Vec<T> {
+    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+        for item in self.iter() {
+            dyck.push(Belt(0));
+            item.write_noun_parts(leaves, dyck);
+            dyck.push(Belt(1));
+        }
+        leaves.push(Belt(0)); // ~
     }
 }
 
@@ -182,10 +228,6 @@ mod tests {
         assert_eq!(
             to_b58(&(42, 69).hash().to_bytes()),
             "4D62tFybemZW3YX4w16jFwT5pNUaGgYz3zyx32wMsuwtrZuYUnNCeGQ".as_bytes(),
-        );
-        assert_eq!(
-            to_b58(&vec![42, 69, 88].hash().to_bytes()),
-            "uANkACbninAKJgsKMr2jKaP2Qskqfvpbk2agiB45VDq8sxXf7NW9eT".as_bytes(),
         );
     }
 }

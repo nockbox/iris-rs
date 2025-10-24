@@ -4,10 +4,12 @@ use nbx_ztd::{
         ch_add, ch_neg, ch_scal_big, trunc_g_order, CheetahPoint, F6lt, A_GEN, G_ORDER,
     },
     tip5::hash::hash_varlen,
-    Belt, Digest, Hashable,
+    Belt, Digest, Hashable, NounHashable,
 };
+use nbx_ztd_derive::NounHashable;
+extern crate alloc;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, NounHashable)]
 pub struct PublicKey(pub CheetahPoint);
 
 impl PublicKey {
@@ -64,16 +66,7 @@ impl PublicKey {
         data
     }
 
-    /// SLIP-10 compatible serialization (legacy 65-byte format for compatibility)
-    pub(crate) fn to_slip10_bytes(&self) -> Vec<u8> {
-        let mut data = Vec::new();
-        for belt in self.0.y.0.iter().rev().chain(self.0.x.0.iter().rev()) {
-            data.extend_from_slice(&belt.0.to_be_bytes());
-        }
-        data
-    }
-
-    pub fn from_be_bytes(bytes: &[u8; 97]) -> PublicKey {
+    pub fn from_be_bytes(bytes: &[u8]) -> PublicKey {
         let mut x = [Belt(0); 6];
         let mut y = [Belt(0); 6];
 
@@ -99,14 +92,20 @@ impl PublicKey {
             inf: false,
         })
     }
+
+    /// SLIP-10 compatible serialization (legacy 65-byte format for compatibility)
+    pub(crate) fn to_slip10_bytes(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        for belt in self.0.y.0.iter().rev().chain(self.0.x.0.iter().rev()) {
+            data.extend_from_slice(&belt.0.to_be_bytes());
+        }
+        data
+    }
 }
 
 impl Hashable for PublicKey {
     fn hash(&self) -> Digest {
-        let mut belts = Vec::new();
-        belts.extend_from_slice(&self.0.y.0);
-        belts.extend_from_slice(&self.0.x.0);
-        Digest(hash_varlen(&mut belts).map(|u| Belt(u)))
+        self.noun_hash()
     }
 }
 
@@ -114,6 +113,16 @@ impl Hashable for PublicKey {
 pub struct Signature {
     pub c: UBig, // challenge
     pub s: UBig, // signature scalar
+}
+
+impl NounHashable for Signature {
+    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+        (
+            Belt::from_bytes(&self.c.to_le_bytes()).as_slice(),
+            Belt::from_bytes(&self.s.to_le_bytes()).as_slice(),
+        )
+            .write_noun_parts(leaves, dyck)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -148,15 +157,11 @@ impl PrivateKey {
         Signature { c: chal, s: sig }
     }
 
-    pub fn to_be_bytes(&self) -> [u8; 32] {
+    pub(crate) fn to_be_bytes(&self) -> [u8; 32] {
         let bytes = self.0.to_be_bytes();
         let mut arr = [0u8; 32];
         arr[32 - bytes.len()..].copy_from_slice(&bytes);
         arr
-    }
-
-    pub fn from_be_bytes(bytes: &[u8; 32]) -> PrivateKey {
-        PrivateKey(UBig::from_be_bytes(bytes))
     }
 }
 

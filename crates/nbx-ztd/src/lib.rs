@@ -7,11 +7,7 @@ pub mod tip5;
 
 mod belt;
 mod hash;
+mod zset;
 pub use belt::Belt;
 pub use hash::*;
-
-pub struct ZMap {}
-
-impl ZMap {
-    // TODO: impl put/get with tip5 hashing
-}
+pub use zset::*;

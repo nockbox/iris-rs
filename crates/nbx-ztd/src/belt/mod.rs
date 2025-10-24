@@ -1,11 +1,12 @@
+use alloc::vec::Vec;
 use core::ops::{Add, Div, Mul, Neg, Sub};
 use num_traits::Pow;
 
-pub mod poly;
 pub mod bpoly;
+pub mod poly;
 
-pub use poly::*;
 pub use bpoly::*;
+pub use poly::*;
 
 // Base field arithmetic functions.
 pub const PRIME: u64 = 18446744069414584321;
@@ -13,9 +14,21 @@ pub const PRIME_128: u128 = 18446744069414584321;
 const RP: u128 = 340282366841710300967557013911933812736;
 pub const R2: u128 = 18446744065119617025;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash, Default)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Default)]
 #[repr(transparent)]
 pub struct Belt(pub u64);
+
+impl Belt {
+    pub fn from_bytes(bytes: &[u8]) -> Vec<Belt> {
+        let mut belts = Vec::new();
+        for chunk in bytes.chunks(4) {
+            let mut arr = [0u8; 4];
+            arr[..chunk.len()].copy_from_slice(chunk);
+            belts.push(Belt(u32::from_le_bytes(arr) as u64));
+        }
+        belts
+    }
+}
 
 pub fn based_check(a: u64) -> bool {
     a < PRIME

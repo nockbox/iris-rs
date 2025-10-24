@@ -104,12 +104,9 @@ pub fn derive_master_key(seed: &[u8]) -> ExtendedKey {
 
 #[cfg(test)]
 mod tests {
-    use crate::Signature;
-
     use super::*;
     use bip39::Mnemonic;
-
-    use nbx_ztd::{from_b58, hash_belt_list, hash_noun, Belt, Digest};
+    use nbx_ztd::{from_b58, Belt, NounHashable};
 
     #[test]
     fn test_nockchain_wallet_vector() {
@@ -154,48 +151,18 @@ mod tests {
         );
     }
 
-    fn bytes_to_belts(bytes: &[u8]) -> Vec<Belt> {
-        let mut belts = Vec::new();
-        for chunk in bytes.chunks(4) {
-            let mut arr = [0u8; 4];
-            arr[..chunk.len()].copy_from_slice(chunk);
-            belts.push(Belt(u32::from_le_bytes(arr) as u64));
-        }
-        belts
-    }
-
-    fn hash_signature(sig: &Signature) -> Digest {
-        let mut leaves = Vec::new();
-        leaves.extend_from_slice(&bytes_to_belts(&sig.c.to_le_bytes()));
-        leaves.extend_from_slice(&bytes_to_belts(&sig.s.to_le_bytes()));
-
-        let mut dyck = Vec::new();
-        dyck.push(Belt(0));
-        for _ in 0..7 {
-            dyck.push(Belt(0));
-            dyck.push(Belt(1));
-        }
-        dyck.push(Belt(1));
-        for _ in 0..7 {
-            dyck.push(Belt(0));
-            dyck.push(Belt(1));
-        }
-        hash_noun(&leaves, &dyck)
-    }
-
     #[test]
     fn test_nockchain_message_vector() {
         // Test vector from: nockchain-wallet sign-message "hello"
         let mnemonic = Mnemonic::parse("kangaroo gap pair wonder grid version winter burden garment resemble object trap survey custom mask fiber anger hospital conduct draft page hello embark core").unwrap();
         assert_eq!(
-            hash_signature(
-                &derive_master_key(&mnemonic.to_seed(""))
-                    .private_key
-                    .unwrap()
-                    .sign(&hash_belt_list(&bytes_to_belts(b"hello"))),
-            )
-            .to_bytes()
-            .to_vec(),
+            derive_master_key(&mnemonic.to_seed(""))
+                .private_key
+                .unwrap()
+                .sign(&Belt::from_bytes(b"hello").noun_hash())
+                .noun_hash()
+                .to_bytes()
+                .to_vec(),
             from_b58("4zHoSpPvFTHRd3PhcvhRTEemVtuuwHT4zZUxbjVikjJ5RoeVz1DXNmq")
         );
     }

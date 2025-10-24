@@ -55,7 +55,7 @@ impl From<bs58::decode::Error> for CheetahError {
     }
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CheetahPoint {
     pub x: F6lt,
     pub y: F6lt,
@@ -118,7 +118,7 @@ impl CheetahPoint {
     }
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct F6lt(pub [Belt; 6]);
 
 #[inline(always)]

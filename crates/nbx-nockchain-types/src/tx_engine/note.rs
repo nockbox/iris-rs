@@ -1,49 +1,50 @@
-use alloc::vec::Vec;
-use nbx_crypto::PublicKey;
+use alloc::{string::String, vec::Vec};
 use nbx_ztd::{Belt, Digest, Hashable as HashableTrait, ZSet};
 use nbx_ztd_derive::{Hashable, NounHashable};
 
-#[derive(Debug, Clone, NounHashable)]
-pub struct Lock {
-    pub keys_required: u64,
-    pub pubkeys: Vec<PublicKey>,
+#[derive(Debug, Clone, Hashable)]
+pub struct Pkh {
+    pub m: u64,
+    pub hashes: ZSet<Digest>,
 }
 
-impl Lock {
-    pub fn new(keys_required: u64, pubkeys: Vec<PublicKey>) -> Self {
+impl Pkh {
+    pub fn new(m: u64, hashes: Vec<Digest>) -> Self {
         Self {
-            keys_required,
-            pubkeys,
+            m,
+            hashes: ZSet::from_iter(hashes),
         }
     }
 }
 
-impl HashableTrait for Lock {
-    fn hash(&self) -> Digest {
-        let pubkey_hashes = self.pubkeys.iter().map(PublicKey::hash);
-        (self.keys_required, pubkey_hashes.collect::<ZSet<_>>()).hash()
-    }
-}
+#[derive(Debug, Clone, Hashable)]
+pub struct NoteData(pub ZMap<(String, HashableTrait)>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hashable)]
 pub struct Note {
-    pub head: NoteHead,
-    pub tail: NoteTail,
-}
-
-#[derive(Debug, Clone)]
-pub struct NoteHead {
     pub version: Version,
     pub origin_page: BlockHeight,
-    pub timelock: Timelock,
+    pub name: Name,
+    pub note_data: NoteData,
+    pub assets: Nicks,
 }
 
-#[derive(Debug, Clone)]
-pub struct NoteTail {
-    pub name: Name,
-    pub lock: Lock,
-    pub source: Source,
-    pub assets: Nicks,
+impl Note {
+    pub fn new(
+        version: Version,
+        origin_page: BlockHeight,
+        name: Name,
+        note_data: NoteData,
+        assets: Nicks,
+    ) -> Self {
+        Self {
+            version,
+            origin_page,
+            name,
+            note_data,
+            assets,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hashable, NounHashable)]
@@ -69,6 +70,17 @@ pub enum Version {
     V2,
 }
 
+impl HashableTrait for Version {
+    fn hash(&self) -> Digest {
+        match self {
+            Version::V0 => 0,
+            Version::V1 => 1,
+            Version::V2 => 2,
+        }
+        .hash()
+    }
+}
+
 impl From<Version> for u32 {
     fn from(version: Version) -> Self {
         match version {
@@ -90,7 +102,7 @@ impl From<u32> for Version {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hashable)]
 pub struct Name {
     pub first: Digest,
     pub last: Digest,
@@ -102,9 +114,7 @@ pub struct Source {
     pub is_coinbase: bool,
 }
 
-#[derive(Debug, Clone, Hashable)]
-pub struct Timelock(pub Option<TimelockIntent>);
-
+/// Timelock range (for both absolute and relative constraints)
 #[derive(Debug, Clone, Hashable, NounHashable)]
 pub struct TimelockRange {
     pub min: Option<BlockHeight>,
@@ -122,21 +132,6 @@ impl TimelockRange {
         Self {
             min: None,
             max: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Hashable, NounHashable)]
-pub struct TimelockIntent {
-    pub absolute: TimelockRange,
-    pub relative: TimelockRange,
-}
-
-impl TimelockIntent {
-    pub fn none() -> Self {
-        Self {
-            absolute: TimelockRange::none(),
-            relative: TimelockRange::none(),
         }
     }
 }

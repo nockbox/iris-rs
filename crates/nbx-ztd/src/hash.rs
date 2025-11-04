@@ -114,6 +114,29 @@ impl<A: Hashable, B: Hashable> Hashable for (A, B) {
     }
 }
 
+impl<T: Hashable> Hashable for &[T] {
+    fn hash(&self) -> Digest {
+        let (first, rest) = self.split_first().unwrap();
+        if rest.is_empty() {
+            first.hash()
+        } else {
+            (first.hash(), rest.hash()).hash()
+        }
+    }
+}
+
+impl<T: Hashable> Hashable for Vec<T> {
+    fn hash(&self) -> Digest {
+        fn hash_slice<T: Hashable>(arr: &[T]) -> Digest {
+            match arr.split_first() {
+                None => 0.hash(),
+                Some((first, rest)) => (first.hash(), hash_slice(rest)).hash(),
+            }
+        }
+        hash_slice(self.as_slice())
+    }
+}
+
 pub trait NounHashable {
     fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>);
 

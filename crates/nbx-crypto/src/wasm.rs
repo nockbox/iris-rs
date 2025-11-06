@@ -1,3 +1,4 @@
+use ibig::UBig;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -46,9 +47,7 @@ impl WasmExtendedKey {
             if pk_bytes.len() != 32 {
                 return Err("Private key must be 32 bytes".to_string());
             }
-            let mut bytes = [0u8; 32];
-            bytes.copy_from_slice(pk_bytes);
-            Some(PrivateKey::from_be_bytes(&bytes))
+            Some(PrivateKey(UBig::from_be_bytes(pk_bytes)))
         } else {
             None
         };

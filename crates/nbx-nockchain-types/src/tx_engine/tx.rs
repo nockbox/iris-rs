@@ -86,7 +86,7 @@ impl HashableTrait for Spend {
 }
 
 #[derive(Debug, Clone)]
-pub struct PkhSignature(Vec<(PublicKey, Signature)>);
+pub struct PkhSignature(pub Vec<(PublicKey, Signature)>);
 
 impl HashableTrait for PkhSignature {
     fn hash(&self) -> Digest {
@@ -151,8 +151,8 @@ impl HashableTrait for LockMerkleProof {
 
 #[derive(Debug, Clone, Hashable, NounHashable)]
 pub struct MerkleProof {
-    root: Digest,
-    path: Vec<Digest>,
+    pub root: Digest,
+    pub path: Vec<Digest>,
 }
 
 #[derive(Debug, Clone, Hashable, NounHashable)]
@@ -213,7 +213,7 @@ impl LockTim {
 }
 
 #[derive(Debug, Clone, NounHashable, Hashable)]
-pub struct Hax(Vec<Digest>);
+pub struct Hax(pub Vec<Digest>);
 
 pub type TxId = Digest;
 

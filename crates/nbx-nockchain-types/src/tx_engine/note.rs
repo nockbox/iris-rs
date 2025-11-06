@@ -5,8 +5,8 @@ use nbx_ztd_derive::{Hashable, NounHashable};
 
 #[derive(Debug, Clone)]
 pub struct Pkh {
-    m: u64,
-    hashes: Vec<Digest>,
+    pub m: u64,
+    pub hashes: Vec<Digest>,
 }
 
 impl Pkh {
@@ -133,8 +133,8 @@ impl From<u32> for Version {
 
 #[derive(Clone, Debug, Hashable, NounHashable)]
 pub struct Name {
-    first: Digest,
-    last: Digest,
+    pub first: Digest,
+    pub last: Digest,
     _sig: u64, // end-of-list marker
 }
 

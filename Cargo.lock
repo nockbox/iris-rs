@@ -225,11 +225,16 @@ version = "0.1.0"
 dependencies = [
  "bip39",
  "bs58",
+ "getrandom",
+ "ibig",
+ "js-sys",
  "nbx-crypto",
  "nbx-ztd",
  "nbx-ztd-derive",
  "serde",
+ "serde-wasm-bindgen",
  "thiserror",
+ "wasm-bindgen",
 ]
 
 [[package]]

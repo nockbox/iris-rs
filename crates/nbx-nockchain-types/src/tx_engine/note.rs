@@ -78,26 +78,12 @@ impl Note {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hashable, NounHashable)]
-pub struct Nicks(pub usize);
-
-impl From<usize> for Nicks {
-    fn from(nicks: usize) -> Self {
-        Nicks(nicks)
-    }
-}
+pub type Nicks = usize;
 
 #[derive(Debug, Clone)]
 pub struct Balance(pub Vec<(Name, Note)>);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hashable, NounHashable)]
-pub struct BlockHeight(pub Belt);
-
-impl From<u64> for BlockHeight {
-    fn from(height: u64) -> Self {
-        BlockHeight(Belt(height))
-    }
-}
+pub type BlockHeight = usize;
 
 #[derive(Debug, Clone)]
 pub struct BalanceUpdate {
@@ -177,8 +163,8 @@ pub struct TimelockRange {
 
 impl TimelockRange {
     pub fn new(min: Option<BlockHeight>, max: Option<BlockHeight>) -> Self {
-        let min = min.filter(|height| (height.0).0 != 0);
-        let max = max.filter(|height| (height.0).0 != 0);
+        let min = min.filter(|&height| height != 0);
+        let max = max.filter(|&height| height != 0);
         Self { min, max }
     }
 

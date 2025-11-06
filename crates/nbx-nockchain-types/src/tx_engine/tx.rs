@@ -204,7 +204,7 @@ impl LockTim {
     pub fn coinbase() -> Self {
         Self {
             rel: TimelockRange {
-                min: Some(100.into()),
+                min: Some(100),
                 max: None,
             },
             abs: TimelockRange::none(),
@@ -261,7 +261,7 @@ mod tests {
     fn test_hash_vectors() {
         let seed1 = Seed::new_single_pkh(
             "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX".into(),
-            4290881913.into(),
+            4290881913,
             "6qF9RtWRUWfCX8NS8QU2u7A3BufVrsMwwWWZ8KSzZ5gVn4syqmeVa4".into(),
         );
 
@@ -282,7 +282,7 @@ mod tests {
         );
 
         let mut seed2 = seed1.clone();
-        seed2.gift = Nicks(1234567);
+        seed2.gift = 1234567;
         check_hash(
             "seed2 sighash",
             &seed2.sig_hash(),
@@ -292,16 +292,10 @@ mod tests {
         let mut spend = Spend {
             witness: Witness::new(SpendCondition(vec![
                 LockPrimitive::Pkh(seed1.note_data.0.clone()),
-                LockPrimitive::Tim(LockTim {
-                    rel: TimelockRange {
-                        min: Some(100.into()),
-                        max: None,
-                    },
-                    abs: TimelockRange::none(),
-                }),
+                LockPrimitive::Tim(LockTim::coinbase()),
             ])),
             seeds: Seeds(vec![seed1.clone(), seed2.clone()]),
-            fee: Nicks(2850816),
+            fee: 2850816,
         };
 
         check_hash(

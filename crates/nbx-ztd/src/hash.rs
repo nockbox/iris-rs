@@ -7,9 +7,8 @@ use ibig::ops::DivRem;
 
 use crate::{
     belt::{Belt, PRIME},
-    crypto::cheetah::CheetahPoint,
     tip5::hash::{hash_fixed, hash_varlen},
-    Noun, NounEncode,
+    Noun,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,133 +170,30 @@ impl<T: Hashable> Hashable for Vec<T> {
 
 impl Hashable for &str {
     fn hash(&self) -> Digest {
-        self.to_noun().hash()
+        self.bytes()
+            .enumerate()
+            .fold(0u64, |acc, (i, byte)| acc | ((byte as u64) << (i * 8)))
+            .hash()
     }
 }
 
 impl Hashable for Noun {
     fn hash(&self) -> Digest {
-        match self {
-            Noun::Atom(b) => Belt(b.try_into().expect("atom too large")).hash(),
-            Noun::Cell(left, right) => (left.hash(), right.hash()).hash(),
+        fn visit(noun: &Noun, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+            match noun {
+                Noun::Atom(b) => leaves.push(Belt(b.try_into().expect("atom too large"))),
+                Noun::Cell(left, right) => {
+                    dyck.push(Belt(0));
+                    visit(left, leaves, dyck);
+                    dyck.push(Belt(1));
+                    visit(right, leaves, dyck);
+                }
+            }
         }
-    }
-}
 
-pub trait NounHashable {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>);
-
-    fn noun_hash(&self) -> Digest {
         let mut leaves = Vec::new();
         let mut dyck = Vec::new();
-        self.write_noun_parts(&mut leaves, &mut dyck);
+        visit(self, &mut leaves, &mut dyck);
         hash_noun(&leaves, &dyck)
-    }
-}
-
-impl NounHashable for Belt {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, _dyck: &mut Vec<Belt>) {
-        leaves.push(*self);
-    }
-}
-
-impl NounHashable for u64 {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        Belt(*self).write_noun_parts(leaves, dyck)
-    }
-}
-
-impl NounHashable for usize {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        (*self as u64).write_noun_parts(leaves, dyck)
-    }
-}
-
-impl NounHashable for i32 {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        (*self as u64).write_noun_parts(leaves, dyck)
-    }
-}
-
-impl NounHashable for bool {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        (if *self { 0 } else { 1 }).write_noun_parts(leaves, dyck)
-    }
-}
-
-impl NounHashable for Digest {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        self.0.as_slice().write_noun_parts(leaves, dyck)
-    }
-}
-
-impl NounHashable for CheetahPoint {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        (self.x.0.as_slice(), (self.y.0.as_slice(), self.inf)).write_noun_parts(leaves, dyck);
-    }
-}
-
-impl<T: NounHashable> NounHashable for &T {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        (**self).write_noun_parts(leaves, dyck)
-    }
-}
-
-impl<T: NounHashable> NounHashable for Option<T> {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        match self {
-            None => 0.write_noun_parts(leaves, dyck),
-            Some(v) => (&0, v).write_noun_parts(leaves, dyck),
-        }
-    }
-}
-
-impl<A: NounHashable, B: NounHashable> NounHashable for (A, B) {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        dyck.push(Belt(0));
-        self.0.write_noun_parts(leaves, dyck);
-        dyck.push(Belt(1));
-        self.1.write_noun_parts(leaves, dyck);
-    }
-}
-
-impl<T: NounHashable> NounHashable for &[T] {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        for i in 0..self.len() - 1 {
-            dyck.push(Belt(0));
-            self[i].write_noun_parts(leaves, dyck);
-            dyck.push(Belt(1));
-        }
-        if let Some(item) = self.last() {
-            item.write_noun_parts(leaves, dyck);
-        }
-    }
-}
-
-impl<T: NounHashable> NounHashable for Vec<T> {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        for item in self.iter() {
-            dyck.push(Belt(0));
-            item.write_noun_parts(leaves, dyck);
-            dyck.push(Belt(1));
-        }
-        leaves.push(Belt(0)); // ~
-    }
-}
-
-impl NounHashable for &str {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        self.to_noun().write_noun_parts(leaves, dyck);
-    }
-}
-
-impl NounHashable for Noun {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        match self {
-            Noun::Atom(b) => {
-                Belt(b.try_into().expect("atom too large")).write_noun_parts(leaves, dyck)
-            }
-            Noun::Cell(left, right) => (left.hash(), right.hash()).write_noun_parts(leaves, dyck),
-        }
     }
 }

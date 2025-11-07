@@ -106,7 +106,7 @@ pub fn derive_master_key(seed: &[u8]) -> ExtendedKey {
 mod tests {
     use super::*;
     use bip39::Mnemonic;
-    use nbx_ztd::{Belt, NounHashable};
+    use nbx_ztd::{Belt, Hashable, NounEncode};
 
     fn from_b58(s: &str) -> Vec<u8> {
         bs58::decode(s).into_vec().unwrap()
@@ -159,14 +159,12 @@ mod tests {
     fn test_nockchain_message_vector() {
         // Test vector from: nockchain-wallet sign-message "hello"
         let mnemonic = Mnemonic::parse("kangaroo gap pair wonder grid version winter burden garment resemble object trap survey custom mask fiber anger hospital conduct draft page hello embark core").unwrap();
+        let sig = &derive_master_key(&mnemonic.to_seed(""))
+            .private_key
+            .unwrap()
+            .sign(&Belt::from_bytes(b"hello").to_noun().hash());
         assert_eq!(
-            derive_master_key(&mnemonic.to_seed(""))
-                .private_key
-                .unwrap()
-                .sign(&Belt::from_bytes(b"hello").noun_hash())
-                .noun_hash()
-                .to_bytes()
-                .to_vec(),
+            sig.to_noun().hash().to_bytes().to_vec(),
             from_b58("AJMwSLmz1k9YnDa1iQTVbpz4Jr4hZojxeCHiqLY7TnjYLxXjZtmbskw")
         );
     }

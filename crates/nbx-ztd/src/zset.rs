@@ -1,7 +1,6 @@
-use crate::{Belt, Digest, Hashable, Noun, NounEncode, NounHashable};
+use crate::{Digest, Hashable, Noun, NounEncode};
 use alloc::boxed::Box;
 use alloc::fmt::Debug;
-use alloc::vec::Vec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZSet<T> {
@@ -21,7 +20,7 @@ impl<T> ZSet<T> {
     }
 }
 
-impl<T: NounHashable> ZSet<T> {
+impl<T: NounEncode> ZSet<T> {
     pub fn insert(&mut self, value: T) -> bool {
         let (new_root, inserted) = Self::put(self.root.take(), value);
         self.root = Some(new_root);
@@ -73,11 +72,11 @@ impl<T: NounHashable> ZSet<T> {
     }
 
     fn tip_eq(a: &T, b: &T) -> bool {
-        a.noun_hash() == b.noun_hash()
+        a.to_noun().hash() == b.to_noun().hash()
     }
 
     fn gor_tip(a: &T, b: &T) -> bool {
-        a.noun_hash().to_bytes() < b.noun_hash().to_bytes()
+        a.to_noun().hash().to_bytes() < b.to_noun().hash().to_bytes()
     }
 
     fn mor_tip(a: &T, b: &T) -> bool {
@@ -85,11 +84,11 @@ impl<T: NounHashable> ZSet<T> {
     }
 
     fn double_tip(a: &T) -> Digest {
-        (a.noun_hash(), a.noun_hash()).hash()
+        (a.to_noun().hash(), a.to_noun().hash()).hash()
     }
 }
 
-impl<T: NounHashable> core::iter::FromIterator<T> for ZSet<T> {
+impl<T: NounEncode> core::iter::FromIterator<T> for ZSet<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         let mut set = ZSet::new();
         for item in iter {
@@ -99,9 +98,9 @@ impl<T: NounHashable> core::iter::FromIterator<T> for ZSet<T> {
     }
 }
 
-impl<T: NounHashable + Hashable> Hashable for ZSet<T> {
+impl<T: NounEncode + Hashable> Hashable for ZSet<T> {
     fn hash(&self) -> Digest {
-        fn hash_node<T: NounHashable + Hashable>(node: &Option<Box<Node<T>>>) -> Digest {
+        fn hash_node<T: NounEncode + Hashable>(node: &Option<Box<Node<T>>>) -> Digest {
             match node {
                 None => 0.hash(),
                 Some(n) => {
@@ -112,26 +111,6 @@ impl<T: NounHashable + Hashable> Hashable for ZSet<T> {
             }
         }
         hash_node(&self.root)
-    }
-}
-
-impl<T: NounHashable + Hashable> NounHashable for ZSet<T> {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        fn write_node<T: NounHashable + Hashable>(
-            node: &Option<Box<Node<T>>>,
-            leaves: &mut Vec<Belt>,
-            dyck: &mut Vec<Belt>,
-        ) {
-            match node {
-                None => 0.write_noun_parts(leaves, dyck),
-                Some(n) => {
-                    n.value.write_noun_parts(leaves, dyck);
-                    write_node(&n.left, leaves, dyck);
-                    write_node(&n.right, leaves, dyck);
-                }
-            }
-        }
-        write_node(&self.root, leaves, dyck)
     }
 }
 

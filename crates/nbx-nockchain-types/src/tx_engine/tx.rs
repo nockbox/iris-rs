@@ -1,13 +1,13 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use nbx_crypto::{PublicKey, Signature};
-use nbx_ztd::{Belt, Digest, Hashable as HashableTrait, NounHashable, ZSet};
-use nbx_ztd_derive::{Hashable, NounHashable};
+use nbx_ztd::{Digest, Hashable as HashableTrait, Noun, NounEncode, ZSet};
+use nbx_ztd_derive::{Hashable, NounEncode};
 
 use super::note::{Name, NoteData, Source, TimelockRange, Version};
 use crate::{Nicks, Pkh};
 
-#[derive(Debug, Clone, Hashable, NounHashable)]
+#[derive(Debug, Clone, Hashable, NounEncode)]
 pub struct Seed {
     pub lock_root: Digest,
     pub note_data: NoteData,
@@ -48,13 +48,13 @@ impl HashableTrait for Seeds {
     }
 }
 
-impl NounHashable for Seeds {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        ZSet::from_iter(self.0.iter()).write_noun_parts(leaves, dyck);
+impl NounEncode for Seeds {
+    fn to_noun(&self) -> Noun {
+        ZSet::from_iter(self.0.iter()).to_noun()
     }
 }
 
-#[derive(Debug, Clone, NounHashable)]
+#[derive(Debug, Clone, NounEncode)]
 pub struct Spend {
     pub witness: Witness,
     pub seeds: Seeds,
@@ -94,13 +94,13 @@ impl HashableTrait for PkhSignature {
     }
 }
 
-impl NounHashable for PkhSignature {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        ZSet::from_iter(self.0.iter()).write_noun_parts(leaves, dyck);
+impl NounEncode for PkhSignature {
+    fn to_noun(&self) -> Noun {
+        ZSet::from_iter(self.0.iter()).to_noun()
     }
 }
 
-#[derive(Debug, Clone, NounHashable)]
+#[derive(Debug, Clone, NounEncode)]
 pub struct Witness {
     pub lock_merkle_proof: LockMerkleProof,
     pub pkh_signature: PkhSignature,
@@ -133,7 +133,7 @@ impl HashableTrait for Witness {
     }
 }
 
-#[derive(Debug, Clone, NounHashable)]
+#[derive(Debug, Clone, NounEncode)]
 pub struct LockMerkleProof {
     pub spend_condition: SpendCondition,
     pub axis: u64,
@@ -149,13 +149,13 @@ impl HashableTrait for LockMerkleProof {
     }
 }
 
-#[derive(Debug, Clone, Hashable, NounHashable)]
+#[derive(Debug, Clone, Hashable, NounEncode)]
 pub struct MerkleProof {
     pub root: Digest,
     pub path: Vec<Digest>,
 }
 
-#[derive(Debug, Clone, Hashable, NounHashable)]
+#[derive(Debug, Clone, Hashable, NounEncode)]
 pub struct SpendCondition(pub Vec<LockPrimitive>);
 
 impl SpendCondition {
@@ -172,13 +172,13 @@ pub enum LockPrimitive {
     Brn,
 }
 
-impl NounHashable for LockPrimitive {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+impl NounEncode for LockPrimitive {
+    fn to_noun(&self) -> nbx_ztd::Noun {
         match self {
-            LockPrimitive::Pkh(pkh) => ("pkh", pkh).write_noun_parts(leaves, dyck),
-            LockPrimitive::Tim(tim) => ("tim", tim).write_noun_parts(leaves, dyck),
-            LockPrimitive::Hax(hax) => ("hax", hax).write_noun_parts(leaves, dyck),
-            LockPrimitive::Brn => ("brn", 0).write_noun_parts(leaves, dyck),
+            LockPrimitive::Pkh(pkh) => ("pkh", pkh).to_noun(),
+            LockPrimitive::Tim(tim) => ("tim", tim).to_noun(),
+            LockPrimitive::Hax(hax) => ("hax", hax).to_noun(),
+            LockPrimitive::Brn => ("brn", 0).to_noun(),
         }
     }
 }
@@ -194,7 +194,7 @@ impl HashableTrait for LockPrimitive {
     }
 }
 
-#[derive(Debug, Clone, NounHashable, Hashable)]
+#[derive(Debug, Clone, NounEncode, Hashable)]
 pub struct LockTim {
     pub rel: TimelockRange,
     pub abs: TimelockRange,
@@ -212,7 +212,7 @@ impl LockTim {
     }
 }
 
-#[derive(Debug, Clone, NounHashable, Hashable)]
+#[derive(Debug, Clone, NounEncode, Hashable)]
 pub struct Hax(pub Vec<Digest>);
 
 pub type TxId = Digest;
@@ -251,7 +251,7 @@ mod tests {
     use alloc::vec;
     use bip39::Mnemonic;
     use nbx_crypto::derive_master_key;
-    use nbx_ztd::{Hashable, NounHashable};
+    use nbx_ztd::Hashable;
 
     fn check_hash(name: &str, h: &impl Hashable, exp: &str) {
         assert!(h.hash() == exp.into(), "hash mismatch for {}", name);
@@ -312,7 +312,7 @@ mod tests {
         let signature = private_key.sign(&spend.sig_hash());
         check_hash(
             "(hash of) signature",
-            &signature.noun_hash(),
+            &signature.to_noun(),
             "DKGrE8s8hhacsnGMzLWqRKfTtXx4QG6tDvC3k1Xu6FA7xAaetGPK6Aj",
         );
         spend.add_signature(private_key.public_key(), signature);

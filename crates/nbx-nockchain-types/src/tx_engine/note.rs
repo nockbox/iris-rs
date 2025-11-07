@@ -1,9 +1,9 @@
 use alloc::vec;
 use alloc::vec::Vec;
-use nbx_ztd::{Belt, Digest, Hashable, Noun, NounEncode, NounHashable, ZSet};
-use nbx_ztd_derive::{Hashable, NounEncode, NounHashable};
+use nbx_ztd::{Digest, Hashable, Noun, NounEncode, ZSet};
+use nbx_ztd_derive::{Hashable, NounEncode};
 
-#[derive(Debug, Clone, NounEncode)]
+#[derive(Debug, Clone)]
 pub struct Pkh {
     pub m: u64,
     pub hashes: Vec<Digest>,
@@ -28,9 +28,9 @@ impl Hashable for Pkh {
     }
 }
 
-impl NounHashable for Pkh {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        (self.m, ZSet::from_iter(self.hashes.iter())).write_noun_parts(leaves, dyck)
+impl NounEncode for Pkh {
+    fn to_noun(&self) -> Noun {
+        (self.m, ZSet::from_iter(self.hashes.iter())).to_noun()
     }
 }
 
@@ -48,13 +48,6 @@ impl Hashable for NoteData {
     fn hash(&self) -> Digest {
         let z = ZSet::from_iter(self.0.hashes.iter().map(|d| &d.0[..]));
         (("lock", (0, (("pkh", (self.0.m, z)), 0))), (0, 0)).hash()
-    }
-}
-
-impl NounHashable for NoteData {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
-        let z = ZSet::from_iter(self.0.hashes.iter().map(|d| &d.0[..]));
-        (("lock", (0, (("pkh", (self.0.m, z)), 0))), (0, 0)).write_noun_parts(leaves, dyck);
     }
 }
 
@@ -138,7 +131,7 @@ impl From<u32> for Version {
     }
 }
 
-#[derive(Clone, Debug, Hashable, NounHashable)]
+#[derive(Clone, Debug, Hashable, NounEncode)]
 pub struct Name {
     pub first: Digest,
     pub last: Digest,
@@ -155,14 +148,14 @@ impl Name {
     }
 }
 
-#[derive(Debug, Clone, Hashable, NounHashable)]
+#[derive(Debug, Clone, Hashable, NounEncode)]
 pub struct Source {
     pub hash: Digest,
     pub is_coinbase: bool,
 }
 
 /// Timelock range (for both absolute and relative constraints)
-#[derive(Debug, Clone, Hashable, NounHashable)]
+#[derive(Debug, Clone, Hashable, NounEncode)]
 pub struct TimelockRange {
     pub min: Option<BlockHeight>,
     pub max: Option<BlockHeight>,

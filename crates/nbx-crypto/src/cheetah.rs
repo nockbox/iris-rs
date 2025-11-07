@@ -4,12 +4,12 @@ use nbx_ztd::{
         ch_add, ch_neg, ch_scal_big, trunc_g_order, CheetahPoint, F6lt, A_GEN, G_ORDER,
     },
     tip5::hash::hash_varlen,
-    Belt, Digest, Hashable, NounHashable,
+    Belt, Digest, Hashable, Noun, NounEncode,
 };
-use nbx_ztd_derive::NounHashable;
+use nbx_ztd_derive::NounEncode;
 extern crate alloc;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, NounHashable)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, NounEncode)]
 pub struct PublicKey(pub CheetahPoint);
 
 impl PublicKey {
@@ -105,7 +105,7 @@ impl PublicKey {
 
 impl Hashable for PublicKey {
     fn hash(&self) -> Digest {
-        self.noun_hash()
+        self.to_noun().hash()
     }
 }
 
@@ -115,19 +115,19 @@ pub struct Signature {
     pub s: UBig, // signature scalar
 }
 
-impl NounHashable for Signature {
-    fn write_noun_parts(&self, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
+impl NounEncode for Signature {
+    fn to_noun(&self) -> Noun {
         (
             Belt::from_bytes(&self.c.to_le_bytes()).as_slice(),
             Belt::from_bytes(&self.s.to_le_bytes()).as_slice(),
         )
-            .write_noun_parts(leaves, dyck)
+            .to_noun()
     }
 }
 
 impl Hashable for Signature {
     fn hash(&self) -> Digest {
-        self.noun_hash()
+        self.to_noun().hash()
     }
 }
 

@@ -3,7 +3,7 @@ use bitvec::prelude::{BitSlice, BitVec, Lsb0};
 use ibig::UBig;
 use num_traits::Zero;
 
-use crate::{belt::Belt, Digest};
+use crate::{belt::Belt, crypto::cheetah::CheetahPoint, Digest};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Noun {
@@ -44,6 +44,12 @@ impl NounEncode for Belt {
 impl NounEncode for Digest {
     fn to_noun(&self) -> Noun {
         self.0.as_slice().to_noun()
+    }
+}
+
+impl NounEncode for CheetahPoint {
+    fn to_noun(&self) -> Noun {
+        (self.x.0.as_slice(), (self.y.0.as_slice(), self.inf)).to_noun()
     }
 }
 

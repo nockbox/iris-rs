@@ -98,7 +98,19 @@ http://localhost:8000/crates/nbx-wasm/examples/grpc-web-demo.html
 ### JavaScript
 
 ```javascript
-import init, { GrpcClient } from './pkg/nbx_wasm.js';
+import init, {
+  GrpcClient,
+  deriveMasterKeyFromMnemonic,
+  WasmTxBuilder,
+  WasmNote,
+  WasmVersion,
+  WasmName,
+  WasmDigest,
+  WasmSpendCondition,
+  WasmPkh,
+  WasmLockPrimitive,
+  WasmLockTim
+} from './pkg/nbx_wasm.js';
 
 // Initialize the WASM module
 await init();
@@ -118,13 +130,47 @@ const balanceByName = await client.get_balance_by_first_name(
 );
 console.log('Balance by name:', balanceByName);
 
-// Send a transaction (raw_tx must be a properly formatted RawTransaction object)
-await client.send_transaction(rawTxObject);
+// ============================================================================
+// Building and signing transactions
+// ============================================================================
+
+// Derive keys from mnemonic
+const mnemonic = "dice domain inspire horse time...";
+const masterKey = deriveMasterKeyFromMnemonic(mnemonic, "");
+
+// Create notes from balance query
+const notes = balance.notes.map(entry => new WasmNote(
+  WasmVersion.V1(),
+  entry.note.noteVersion.v1.originPage.value,
+  new WasmName(entry.name.first, entry.name.last),
+  new WasmDigest(entry.note.noteVersion.v1.noteData.hash),
+  entry.note.noteVersion.v1.assets.value
+));
+
+// Create spend condition
+const pubkeyHash = new WasmDigest("your_pubkey_hash_here");
+const spendCondition = new WasmSpendCondition([
+  WasmLockPrimitive.newPkh(WasmPkh.single(pubkeyHash)),
+  WasmLockPrimitive.newTim(WasmLockTim.coinbase())
+]);
+
+// Build transaction
+const builder = WasmTxBuilder.newSimple(
+  notes,
+  spendCondition,
+  new WasmDigest("recipient_address"),
+  1234567, // gift
+  2850816, // fee
+  new WasmDigest("refund_address")
+);
+
+// Sign and submit
+const signedTx = builder.sign(masterKey.private_key);
+const txProtobuf = signedTx.toProtobuf();
+await client.send_transaction(txProtobuf);
 
 // Check if a transaction was accepted
-const accepted = await client.transaction_accepted(
-  '2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH'
-);
+const accepted = await client.transaction_accepted(signedTx.id.value);
 console.log('Transaction accepted:', accepted);
 ```
 

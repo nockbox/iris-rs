@@ -102,3 +102,29 @@ pub fn derive_master_key_from_mnemonic(
     let seed = mnemonic.to_seed(passphrase.as_deref().unwrap_or(""));
     Ok(derive_master_key(&seed))
 }
+
+/// Hash a public key to get its digest (for use in PKH)
+#[wasm_bindgen(js_name = hashPublicKey)]
+pub fn hash_public_key(public_key_bytes: &[u8]) -> Result<String, JsValue> {
+    use nbx_ztd::Hashable;
+
+    if public_key_bytes.len() != 97 {
+        return Err(JsValue::from_str("Public key must be 97 bytes"));
+    }
+
+    let mut pub_bytes = [0u8; 97];
+    pub_bytes.copy_from_slice(public_key_bytes);
+    let public_key = PublicKey::from_be_bytes(&pub_bytes);
+
+    let digest = public_key.hash();
+    Ok(digest.to_string())
+}
+
+/// Hash a u64 value (commonly used for note_data_hash with 0)
+#[wasm_bindgen(js_name = hashU64)]
+pub fn hash_u64(value: f64) -> String {
+    use nbx_ztd::Hashable;
+    let value = value as u64;
+    let digest = value.hash();
+    digest.to_string()
+}

@@ -78,12 +78,12 @@ impl Note {
     }
 }
 
-pub type Nicks = usize;
+pub type Nicks = u64;
 
 #[derive(Debug, Clone)]
 pub struct Balance(pub Vec<(Name, Note)>);
 
-pub type BlockHeight = usize;
+pub type BlockHeight = u64;
 
 #[derive(Debug, Clone)]
 pub struct BalanceUpdate {

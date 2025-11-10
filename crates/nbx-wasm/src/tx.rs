@@ -131,25 +131,25 @@ impl WasmName {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WasmTimelockRange {
     #[wasm_bindgen(skip)]
-    pub min: Option<usize>,
+    pub min: Option<u64>,
     #[wasm_bindgen(skip)]
-    pub max: Option<usize>,
+    pub max: Option<u64>,
 }
 
 #[wasm_bindgen]
 impl WasmTimelockRange {
     #[wasm_bindgen(constructor)]
-    pub fn new(min: Option<usize>, max: Option<usize>) -> Self {
+    pub fn new(min: Option<u64>, max: Option<u64>) -> Self {
         Self { min, max }
     }
 
     #[wasm_bindgen(getter)]
-    pub fn min(&self) -> Option<usize> {
+    pub fn min(&self) -> Option<u64> {
         self.min
     }
 
     #[wasm_bindgen(getter)]
-    pub fn max(&self) -> Option<usize> {
+    pub fn max(&self) -> Option<u64> {
         self.max
     }
 
@@ -168,7 +168,7 @@ pub struct WasmNote {
     #[wasm_bindgen(skip)]
     pub version: WasmVersion,
     #[wasm_bindgen(skip)]
-    pub origin_page: usize,
+    pub origin_page: u64,
     #[wasm_bindgen(skip)]
     pub name: WasmName,
     #[wasm_bindgen(skip)]
@@ -182,7 +182,7 @@ impl WasmNote {
     #[wasm_bindgen(constructor)]
     pub fn new(
         version: WasmVersion,
-        origin_page: usize,
+        origin_page: u64,
         name: WasmName,
         note_data_hash: WasmDigest,
         assets: Nicks,
@@ -202,7 +202,7 @@ impl WasmNote {
     }
 
     #[wasm_bindgen(getter, js_name = originPage)]
-    pub fn origin_page(&self) -> usize {
+    pub fn origin_page(&self) -> u64 {
         self.origin_page
     }
 
@@ -535,28 +535,35 @@ impl WasmTxBuilder {
 
 #[wasm_bindgen]
 pub struct WasmRawTx {
+    // Store the full RawTx internally so we can convert to protobuf
     #[wasm_bindgen(skip)]
-    pub version: WasmVersion,
-    #[wasm_bindgen(skip)]
-    pub id: WasmDigest,
+    pub(crate) internal: RawTx,
 }
 
 #[wasm_bindgen]
 impl WasmRawTx {
     #[wasm_bindgen(getter)]
     pub fn version(&self) -> WasmVersion {
-        self.version.clone()
+        WasmVersion::from_internal(&self.internal.version)
     }
 
     #[wasm_bindgen(getter)]
     pub fn id(&self) -> WasmDigest {
-        self.id.clone()
+        WasmDigest::from_internal(&self.internal.id)
     }
 
     fn from_internal(tx: &RawTx) -> Self {
         Self {
-            version: WasmVersion::from_internal(&tx.version),
-            id: WasmDigest::from_internal(&tx.id),
+            internal: tx.clone(),
         }
+    }
+
+    /// Convert to protobuf RawTransaction for sending via gRPC
+    #[wasm_bindgen(js_name = toProtobuf)]
+    pub fn to_protobuf(&self) -> Result<JsValue, JsValue> {
+        use nbx_grpc_proto::pb::common::v2::RawTransaction as PbRawTransaction;
+        let pb_tx = PbRawTransaction::from(self.internal.clone());
+        serde_wasm_bindgen::to_value(&pb_tx)
+            .map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))
     }
 }

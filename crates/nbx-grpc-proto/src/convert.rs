@@ -88,13 +88,13 @@ impl TryFrom<PbName> for Name {
 
 impl From<Nicks> for PbNicks {
     fn from(n: Nicks) -> Self {
-        PbNicks { value: n as u64 }
+        PbNicks { value: n }
     }
 }
 
 impl From<PbNicks> for Nicks {
     fn from(n: PbNicks) -> Self {
-        n.value as usize
+        n.value
     }
 }
 
@@ -112,13 +112,13 @@ impl From<PbNoteVersion> for Version {
 
 impl From<BlockHeight> for PbBlockHeight {
     fn from(h: BlockHeight) -> Self {
-        PbBlockHeight { value: h as u64 }
+        PbBlockHeight { value: h }
     }
 }
 
 impl From<PbBlockHeight> for BlockHeight {
     fn from(h: PbBlockHeight) -> Self {
-        h.value as usize
+        h.value
     }
 }
 
@@ -162,10 +162,10 @@ impl From<TimelockRange> for PbTimeLockRangeRelative {
         PbTimeLockRangeRelative {
             min: range
                 .min
-                .map(|v| crate::pb::common::v1::BlockHeightDelta { value: v as u64 }),
+                .map(|v| crate::pb::common::v1::BlockHeightDelta { value: v }),
             max: range
                 .max
-                .map(|v| crate::pb::common::v1::BlockHeightDelta { value: v as u64 }),
+                .map(|v| crate::pb::common::v1::BlockHeightDelta { value: v }),
         }
     }
 }
@@ -173,8 +173,8 @@ impl From<TimelockRange> for PbTimeLockRangeRelative {
 impl From<PbTimeLockRangeRelative> for TimelockRange {
     fn from(range: PbTimeLockRangeRelative) -> Self {
         TimelockRange::new(
-            range.min.map(|v| v.value as usize),
-            range.max.map(|v| v.value as usize),
+            range.min.map(|v| v.value),
+            range.max.map(|v| v.value),
         )
     }
 }

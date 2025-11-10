@@ -64,11 +64,5 @@ static_resources:
         - endpoint:
             address:
               socket_address:
-                address: https://nockchain-api.zorp.io # Change this to your public URL
-                port_value: 443   # Use 443 for HTTPS, or the appropriate port
-    # Uncomment these lines if using HTTPS
-    transport_socket:
-      name: envoy.transport_sockets.tls
-      typed_config:
-        "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
-        sni: nockchain-api.zorp.io
+                address: 127.0.0.1
+                port_value: 6666

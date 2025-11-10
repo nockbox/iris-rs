@@ -1,3 +1,6 @@
+// Client module is only available for native targets (not WASM)
+#![cfg(not(target_arch = "wasm32"))]
+
 use nbx_nockchain_types::RawTx;
 use tonic::transport::Channel;
 

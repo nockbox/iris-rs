@@ -20,9 +20,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let include_dirs = ["proto"].map(PathBuf::from);
 
-    tonic_build::configure()
+    let mut config = tonic_build::configure()
         .file_descriptor_set_path(out_dir.join("nockchain_descriptor.bin"))
-        .compile_protos(&proto_files, &include_dirs)?;
+        // Add serde derives for all types for WASM interop
+        .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
+        // Serialize u64 fields as strings to avoid JavaScript MAX_SAFE_INTEGER issues
+        .field_attribute("Belt.value", "#[serde(with = \"crate::serde_u64_as_string\")]")
+        .field_attribute("BlockHeight.value", "#[serde(with = \"crate::serde_u64_as_string\")]")
+        .field_attribute("BlockHeightDelta.value", "#[serde(with = \"crate::serde_u64_as_string\")]")
+        .field_attribute("Nicks.value", "#[serde(with = \"crate::serde_u64_as_string\")]")
+        .field_attribute("NoteVersion.value", "#[serde(with = \"crate::serde_u32_as_string\")]")
+        // Serialize Hash fields as base58 strings for readability
+        .field_attribute("Name.first", "#[serde(with = \"crate::serde_hash_as_base58\")]")
+        .field_attribute("Name.last", "#[serde(with = \"crate::serde_hash_as_base58\")]")
+        .field_attribute("Balance.block_id", "#[serde(with = \"crate::serde_hash_as_base58\")]")
+        .field_attribute("RawTransaction.id", "#[serde(with = \"crate::serde_hash_as_base58\")]")
+        .field_attribute("Seed.lock_root", "#[serde(with = \"crate::serde_hash_as_base58\")]")
+        .field_attribute("Seed.parent_hash", "#[serde(with = \"crate::serde_hash_as_base58\")]");
+
+    // For WASM, we need to disable the transport-based convenience methods
+    // since tonic::transport doesn't work in WASM
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("wasm32") {
+        config = config.build_transport(false);
+    }
+
+    config.compile_protos(&proto_files, &include_dirs)?;
 
     Ok(())
 }

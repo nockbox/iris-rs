@@ -8,8 +8,17 @@ nbx-nockchain-types = { path = "../nbx-nockchain-types" }
 nbx-ztd = { workspace = true }
 prost = "0.13"
 prost-types = "0.13"
-tonic = { version = "0.12", features = ["codegen", "prost", "transport"] }
+tonic = { version = "0.12", default-features = false, features = ["codegen", "prost"] }
 thiserror = "2.0"
+bip39 = "2.2.0"
+serde = { version = "1.0", features = ["derive"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tonic = { version = "0.12", features = ["transport"] }
+
+[dev-dependencies]
+nbx-crypto = { path = "../nbx-crypto" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [build-dependencies]
 glob = "0.3"

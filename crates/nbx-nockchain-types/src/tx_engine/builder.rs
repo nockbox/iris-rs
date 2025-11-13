@@ -104,6 +104,7 @@ mod tests {
     use alloc::{string::ToString, vec};
     use bip39::Mnemonic;
     use nbx_crypto::derive_master_key;
+    use nbx_ztd::ZMap;
 
     #[test]
     fn test_vector() {
@@ -119,7 +120,7 @@ mod tests {
                 "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".into(),
                 "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".into(),
             ),
-            note_data_hash: 0.hash(),
+            note_data: ZMap::new(),
             assets: 4294967296,
         };
 

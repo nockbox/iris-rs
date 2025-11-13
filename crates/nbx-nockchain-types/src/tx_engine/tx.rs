@@ -17,10 +17,11 @@ pub struct Seed {
 
 impl Seed {
     pub fn new_single_pkh(pkh: Digest, gift: Nicks, parent_hash: Digest) -> Self {
-        let lock_root = SpendCondition::new_pkh(Pkh::single(pkh)).hash();
-        let note_data = NoteData(Pkh::single(pkh));
+        let lock_root = SpendCondition::new_pkh(Pkh::single(pkh));
+        let mut note_data = NoteData::new();
+        note_data.push_lock(&[lock_root.clone()]);
         Self {
-            lock_root,
+            lock_root: lock_root.hash(),
             note_data,
             gift,
             parent_hash,
@@ -276,9 +277,11 @@ mod tests {
         let mut seed2 = seed1.clone();
         seed2.gift = 1234567;
 
+        let sp = seed1.note_data.lock().unwrap();
+
         let mut spend = Spend {
             witness: Witness::new(SpendCondition(vec![
-                LockPrimitive::Pkh(seed1.note_data.0.clone()),
+                sp[0].0[0].clone(),
                 LockPrimitive::Tim(LockTim::coinbase()),
             ])),
             seeds: Seeds(vec![seed1.clone(), seed2.clone()]),

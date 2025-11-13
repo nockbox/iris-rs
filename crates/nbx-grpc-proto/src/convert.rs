@@ -1,5 +1,5 @@
 use nbx_nockchain_types::*;
-use nbx_ztd::{Belt, Digest, Hashable as ZHashable};
+use nbx_ztd::{cue, Belt, Digest, Hashable as ZHashable, HashableString, ZMap};
 
 use crate::common::{ConversionError, Required};
 use crate::pb::common::v1::{
@@ -430,7 +430,7 @@ impl From<Note> for PbNote {
                 version: Some(PbNoteVersion::from(note.version)),
                 origin_page: Some(PbBlockHeight::from(note.origin_page)),
                 name: Some(PbName::from(note.name)),
-                note_data: Some(PbNoteData::from(NoteData(Pkh::single(note.note_data_hash)))),
+                note_data: Some(PbNoteData::from(NoteData(note.note_data))),
                 assets: Some(PbNicks::from(note.assets)),
             })),
         }
@@ -486,13 +486,23 @@ impl TryFrom<PbNote> for Note {
     fn try_from(pb_note: PbNote) -> Result<Self, Self::Error> {
         match pb_note.note_version.required("Note", "note_version")? {
             crate::pb::common::v2::note::NoteVersion::V1(v1) => {
+                let note_data = v1.note_data.required("NoteV1", "note_data")?;
+                let mut cued_note_data = vec![];
+                for e in note_data.entries {
+                    let name = HashableString::try_from(e.key)
+                        .map_err(|_| ConversionError::Invalid("note-data key too long"))?;
+                    cued_note_data.push((
+                        name,
+                        cue(&e.blob)
+                            .ok_or(ConversionError::Invalid("Unable to unjam note-data"))?,
+                    ));
+                }
+                let note_data = ZMap::from_iter(cued_note_data);
                 Ok(Note {
                     version: v1.version.required("NoteV1", "version")?.into(),
                     origin_page: v1.origin_page.required("NoteV1", "origin_page")?.into(),
                     name: v1.name.required("NoteV1", "name")?.try_into()?,
-                    // Note: We can't fully recover the note_data from the protobuf,
-                    // so we use a zero hash as a placeholder
-                    note_data_hash: 0u64.hash(),
+                    note_data,
                     assets: v1.assets.required("NoteV1", "assets")?.into(),
                 })
             }

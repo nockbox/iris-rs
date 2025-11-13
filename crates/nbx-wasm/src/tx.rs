@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -7,9 +9,9 @@ use nbx_nockchain_types::{
     builder::TxBuilder,
     note::{Name, Note, Pkh, TimelockRange, Version},
     tx::{LockPrimitive, LockTim, RawTx, Seed, SpendCondition},
-    Nicks,
+    Nicks, NoteData,
 };
-use nbx_ztd::{Digest, Hashable as HashableTrait};
+use nbx_ztd::{Digest, Hashable as HashableTrait, HashableString, Noun, ZMap};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -172,7 +174,7 @@ pub struct WasmNote {
     #[wasm_bindgen(skip)]
     pub name: WasmName,
     #[wasm_bindgen(skip)]
-    pub note_data_hash: WasmDigest,
+    pub note_data: WasmNoteData,
     #[wasm_bindgen(skip)]
     pub assets: Nicks,
 }
@@ -184,14 +186,14 @@ impl WasmNote {
         version: WasmVersion,
         origin_page: u64,
         name: WasmName,
-        note_data_hash: WasmDigest,
+        note_data: WasmNoteData,
         assets: Nicks,
     ) -> Self {
         Self {
             version,
             origin_page,
             name,
-            note_data_hash,
+            note_data,
             assets,
         }
     }
@@ -213,7 +215,7 @@ impl WasmNote {
 
     #[wasm_bindgen(getter, js_name = noteDataHash)]
     pub fn note_data_hash(&self) -> WasmDigest {
-        self.note_data_hash.clone()
+        WasmDigest::from_internal(&self.note_data.to_internal().0.hash())
     }
 
     #[wasm_bindgen(getter)]
@@ -231,8 +233,38 @@ impl WasmNote {
             self.version.to_internal(),
             self.origin_page,
             self.name.to_internal(),
-            self.note_data_hash.to_internal(),
+            self.note_data.to_internal().0,
             self.assets,
+        )
+    }
+}
+
+// ============================================================================
+// Wasm Types - Note Data Types
+// ============================================================================
+
+#[wasm_bindgen]
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WasmNoteData {
+    #[wasm_bindgen(skip)]
+    pub note_data: BTreeMap<HashableString, Noun>,
+}
+
+#[wasm_bindgen]
+impl WasmNoteData {
+    #[wasm_bindgen(constructor)]
+    pub fn new(note_data: JsValue) -> Result<Self, JsValue> {
+        Ok(Self {
+            note_data: serde_wasm_bindgen::from_value(note_data)?,
+        })
+    }
+
+    fn to_internal(&self) -> NoteData {
+        NoteData(
+            self.note_data
+                .iter()
+                .map(|(a, b)| (a.clone(), b.clone()))
+                .collect::<ZMap<_, _>>(),
         )
     }
 }

@@ -1,7 +1,9 @@
 use alloc::vec;
 use alloc::vec::Vec;
-use nbx_ztd::{jam, Digest, Hashable, Noun, NounEncode, ZSet};
+use nbx_ztd::{hs, jam, Digest, Hashable, HashableString, Noun, NounDecode, NounEncode, ZMap, ZSet};
 use nbx_ztd_derive::{Hashable, NounEncode};
+
+use super::SpendCondition;
 
 #[derive(Debug, Clone)]
 pub struct Pkh {
@@ -34,27 +36,48 @@ impl NounEncode for Pkh {
     }
 }
 
+impl NounDecode for Pkh {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let (m, hashes) = NounDecode::from_noun(noun)?;
+        Some(Self {
+            m,
+            hashes,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
-pub struct NoteData(pub Pkh); // TODO: make more generic
+pub struct NoteData(pub ZMap<HashableString, Noun>);
 
 impl NoteData {
+    pub fn new() -> Self {
+        Self(ZMap::new())
+    }
+
     pub fn blob(&self) -> Vec<u8> {
-        let z = ZSet::from_iter(self.0.hashes.iter());
-        jam((0, (("pkh", (self.0.m, z)), 0)).to_noun())
+        jam(self.0.to_noun())
+    }
+
+    pub fn lock(&self) -> Option<Vec<SpendCondition>> {
+        let pkh_noun = self.0.get(hs("lock"))?;
+        // TODO: finish implementing this
+        None
+    }
+
+    pub fn push_lock(&mut self, lock: &[SpendCondition]) {
+        self.0.insert(hs("lock").into(), lock.to_noun());
     }
 }
 
 impl NounEncode for NoteData {
     fn to_noun(&self) -> Noun {
-        let z = ZSet::from_iter(self.0.hashes.iter());
-        (("lock", (0, (("pkh", (self.0.m, z)), 0))), (0, 0)).to_noun()
+        self.0.to_noun()
     }
 }
 
 impl Hashable for NoteData {
     fn hash(&self) -> Digest {
-        let z = ZSet::from_iter(self.0.hashes.iter().map(|d| &d.0[..]));
-        (("lock", (0, (("pkh", (self.0.m, z)), 0))), (0, 0)).hash()
+        self.0.hash()
     }
 }
 
@@ -63,7 +86,7 @@ pub struct Note {
     pub version: Version,
     pub origin_page: BlockHeight,
     pub name: Name,
-    pub note_data_hash: Digest,
+    pub note_data: ZMap<HashableString, Noun>,
     pub assets: Nicks,
 }
 
@@ -72,14 +95,14 @@ impl Note {
         version: Version,
         origin_page: BlockHeight,
         name: Name,
-        note_data_hash: Digest,
+        note_data: ZMap<HashableString, Noun>,
         assets: Nicks,
     ) -> Self {
         Self {
             version,
             origin_page,
             name,
-            note_data_hash,
+            note_data,
             assets,
         }
     }

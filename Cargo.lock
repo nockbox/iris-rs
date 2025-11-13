@@ -767,6 +767,7 @@ dependencies = [
  "ibig",
  "num-traits",
  "once_cell",
+ "serde",
 ]
 
 [[package]]

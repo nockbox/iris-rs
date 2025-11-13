@@ -2,6 +2,7 @@ use alloc::collections::btree_map::BTreeMap;
 use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 use bitvec::prelude::{BitSlice, BitVec, Lsb0};
 use core::fmt;
+use core::mem::MaybeUninit;
 use ibig::UBig;
 use num_traits::Zero;
 use serde::de::{Error as DeError, SeqAccess, Visitor};
@@ -185,13 +186,19 @@ impl NounDecode for Belt {
 
 impl NounEncode for Digest {
     fn to_noun(&self) -> Noun {
-        self.0.as_slice().to_noun()
+        self.0.to_noun()
+    }
+}
+
+impl NounDecode for Digest {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        Some(Digest(<[Belt; 5]>::from_noun(noun)?))
     }
 }
 
 impl NounEncode for CheetahPoint {
     fn to_noun(&self) -> Noun {
-        (self.x.0.as_slice(), (self.y.0.as_slice(), self.inf)).to_noun()
+        (self.x.0, (self.y.0, self.inf)).to_noun()
     }
 }
 
@@ -251,15 +258,10 @@ impl<T: NounEncode> NounEncode for Option<T> {
 impl<T: NounDecode> NounDecode for Option<T> {
     fn from_noun(noun: &Noun) -> Option<Self> {
         match noun {
-            Noun::Cell(x, v) if &**x == &atom(0) => {
-                Some(Some(T::from_noun(v)?))
-            }
-            Noun::Atom(x) if x.is_zero() => {
-                Some(None)
-            }
-            _ => None
+            Noun::Cell(x, v) if &**x == &atom(0) => Some(Some(T::from_noun(v)?)),
+            Noun::Atom(x) if x.is_zero() => Some(None),
+            _ => None,
         }
-
     }
 }
 
@@ -278,6 +280,38 @@ impl<A: NounDecode, B: NounDecode> NounDecode for (A, B) {
     }
 }
 
+impl<T: NounEncode, const N: usize> NounEncode for [T; N] {
+    fn to_noun(&self) -> Noun {
+        match self.split_last() {
+            None => unreachable!(),
+            Some((last, rest)) => {
+                let mut acc = last.to_noun();
+                for item in rest.iter().rev() {
+                    acc = cons(item.to_noun(), acc);
+                }
+                acc
+            }
+        }
+    }
+}
+
+impl<T: NounDecode, const N: usize> NounDecode for [T; N] {
+    fn from_noun(mut noun: &Noun) -> Option<Self> {
+        let mut ret = [(); N].map(|_| MaybeUninit::<T>::uninit());
+        for i in 0..N {
+            let Noun::Cell(a, b) = noun else {
+                return None;
+            };
+            ret[i] = MaybeUninit::<T>::new(T::from_noun(a)?);
+            noun = b;
+        }
+
+        // SAFETY: already initialized everything
+        Some(ret.map(|v| unsafe { v.assume_init() }))
+    }
+}
+
+// TODO: always append ~ at the end
 impl<T: NounEncode> NounEncode for &[T] {
     fn to_noun(&self) -> Noun {
         match self.split_last() {
@@ -300,6 +334,27 @@ impl<T: NounEncode> NounEncode for Vec<T> {
             acc = cons(item.to_noun(), acc);
         }
         acc
+    }
+}
+
+impl<T: NounDecode> NounDecode for Vec<T> {
+    fn from_noun(mut noun: &Noun) -> Option<Self> {
+        let mut ret = vec![];
+        loop {
+            match noun {
+                Noun::Cell(a, b) => {
+                    ret.push(T::from_noun(a)?);
+                    noun = b;
+                }
+                Noun::Atom(v) => {
+                    if v.is_zero() {
+                        return Some(ret);
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        }
     }
 }
 

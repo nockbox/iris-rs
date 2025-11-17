@@ -39,7 +39,7 @@ fn cons(left: Noun, right: Noun) -> Noun {
     Noun::Cell(Box::new(left), Box::new(right))
 }
 
-impl<T: NounEncode> NounEncode for &T {
+impl<T: NounEncode + ?Sized> NounEncode for &T {
     fn to_noun(&self) -> Noun {
         (**self).to_noun()
     }

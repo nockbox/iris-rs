@@ -1,7 +1,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use nbx_crypto::{PublicKey, Signature};
-use nbx_ztd::{Digest, Hashable as HashableTrait, Noun, NounEncode, ZSet};
+use nbx_ztd::{Digest, Hashable as HashableTrait, Noun, NounEncode, ZMap, ZSet};
 use nbx_ztd_derive::{Hashable, NounEncode};
 
 use super::note::{Name, NoteData, Source, TimelockRange, Version};
@@ -77,6 +77,12 @@ impl Spend {
     pub fn add_signature(&mut self, key: PublicKey, signature: Signature) {
         self.witness.pkh_signature.0.push((key, signature));
     }
+
+    pub fn add_preimage(&mut self, preimage: Noun) -> Digest {
+        let digest = preimage.hash();
+        self.witness.hax_map.insert(digest, preimage);
+        digest
+    }
 }
 
 impl HashableTrait for Spend {
@@ -104,6 +110,7 @@ impl NounEncode for PkhSignature {
 pub struct Witness {
     pub lock_merkle_proof: LockMerkleProof,
     pub pkh_signature: PkhSignature,
+    pub hax_map: ZMap<Digest, Noun>,
 }
 
 impl Witness {
@@ -116,6 +123,7 @@ impl Witness {
                 proof: MerkleProof { root, path: vec![] },
             },
             pkh_signature: PkhSignature(vec![]),
+            hax_map: ZMap::new(),
         }
     }
 }
@@ -125,7 +133,7 @@ impl HashableTrait for Witness {
         [
             self.lock_merkle_proof.hash(),
             self.pkh_signature.hash(),
-            0.hash(), // hax
+            self.hax_map.hash(),
             0.hash(), // tim
         ]
         .as_slice()

@@ -1,17 +1,54 @@
+use alloc::collections::btree_map::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use nbx_crypto::PrivateKey;
-use nbx_ztd::{Digest, Hashable as HashableTrait};
+use nbx_ztd::{Digest, Hashable as HashableTrait, Noun};
 
+use super::{LockPrimitive, Name, NoteData};
 use super::note::Note;
 use super::tx::{Seed, Seeds, Spend, SpendCondition, Spends, Witness};
 use crate::{Nicks, RawTx};
 
+struct SpendBuilder {
+    note: Note,
+    unlocks: Vec<(LockPrimitive, bool)>,
+    witness: Witness,
+    fee_portion: Nicks,
+}
+
+impl SpendBuilder {
+    pub fn new(note: Note, spend_condition: SpendCondition) -> Self {
+        Self {
+            note,
+            witness: Witness::new(spend_condition.clone()),
+            unlocks: spend_condition.0.into_iter().map(|v| (v, false)).collect(),
+            fee_portion: 0,
+        }
+    }
+
+    pub fn fee_portion(&mut self, fee_portion: Note) {
+        self.fee_portion = fee_portion;
+    }
+}
+
 pub struct TxBuilder {
-    spends: Spends,
+    spends: BTreeMap<Name, SpendBuilder>,
+    fee: Nicks,
 }
 
 impl TxBuilder {
+    pub fn new() -> Self {
+        Self {
+            spends: BTreeMap::new(),
+            fee: 0,
+        }
+    }
+
+    pub fn spend(&mut self, spend: SpendBuilder) -> bool {
+        let name = spend.note.name;
+        self.spends.insert(name, spend)
+    }
+
     pub fn new_simple(
         notes: Vec<Note>,
         spend_condition: SpendCondition,
@@ -63,10 +100,45 @@ impl TxBuilder {
 
         Ok(Self {
             spends: Spends(spends_vec),
+            fee,
         })
     }
 
+    pub fn add_preimage(&mut self, note: &Note, preimage: Noun) -> Digest {
+        let digest = preimage.hash();
+
+        for spend in self.spends.values_mut() {
+            for (c, u) in spend.unlocks.iter_mut() {
+                if *c == LockPrimitive::Hax(digest) {
+                    *u = true;
+                    spend.witness.hax_map.insert(digest, preimage.clone());
+                    break;
+                }
+            }
+        }
+
+        digest
+    }
+
     pub fn sign(mut self, signing_key: &PrivateKey) -> Result<RawTx, BuildError> {
+        let pkh = signing_key.public_key().hash();
+
+        for spend in self.spends.values_mut() {
+            for (c, u) in spend.unlocks.iter_mut() {
+                match *c {
+                    LockPrimitive::Pkh(pkh) if pkh.hashes.contains(&pkh) => {
+                        *u = true;
+                        spend.add_signature()
+                    }
+                }
+                if *c == LockPrimitive::Pkh(pkh) {
+                    *u = true;
+                    spend.witness.hax_map.insert(digest, preimage.clone());
+                    break;
+                }
+            }
+        }
+
         let mut spends = self.spends;
         self.spends = Spends(vec![]);
         for (_, spend) in spends.0.as_mut_slice() {

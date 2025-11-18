@@ -1,8 +1,13 @@
+use crate::belt::based_check;
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, format, string::String, vec, vec::Vec};
 use bitvec::prelude::{BitSlice, BitVec, Lsb0};
 use core::fmt;
+use core::mem::MaybeUninit;
 use ibig::UBig;
 use num_traits::Zero;
+use serde::de::{Error as DeError, SeqAccess, Visitor};
+use serde::{ser::SerializeTuple, Serialize, Serializer};
+use serde::{Deserialize, Deserializer};
 
 use crate::{belt::Belt, crypto::cheetah::CheetahPoint, Digest};
 
@@ -21,14 +26,78 @@ impl Noun {
     }
 }
 
+impl Serialize for Noun {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Atom(v) => serializer.serialize_str(&alloc::format!("{v:x}")),
+            Self::Cell(a, b) => {
+                let mut tup = serializer.serialize_tuple(2)?;
+                tup.serialize_element(&*a)?;
+                tup.serialize_element(&*b)?;
+                tup.end()
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Noun {
+    fn deserialize<D>(de: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct V;
+
+        impl<'de> Visitor<'de> for V {
+            type Value = Noun;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+                f.write_str("atom or cell")
+            }
+
+            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+            where
+                E: DeError,
+            {
+                let n = UBig::from_str_radix(s, 16).map_err(E::custom)?;
+                Ok(Noun::Atom(n))
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let a = seq
+                    .next_element::<Noun>()?
+                    .ok_or_else(|| DeError::custom("cell missing car"))?;
+                let b = seq
+                    .next_element::<Noun>()?
+                    .ok_or_else(|| DeError::custom("cell missing cdr"))?;
+                Ok(Noun::Cell(Box::new(a), Box::new(b)))
+            }
+        }
+
+        de.deserialize_any(V)
+    }
+}
+
 impl fmt::Display for Noun {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.to_string())
     }
 }
 
+pub trait NounCode: NounEncode + NounDecode {}
+impl<T: NounEncode + NounDecode> NounCode for T {}
+
 pub trait NounEncode {
     fn to_noun(&self) -> Noun;
+}
+
+pub trait NounDecode: Sized {
+    fn from_noun(noun: &Noun) -> Option<Self>;
 }
 
 fn atom(value: u64) -> Noun {
@@ -51,21 +120,47 @@ impl NounEncode for Noun {
     }
 }
 
+impl NounDecode for Noun {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        Some(noun.clone())
+    }
+}
+
 impl NounEncode for Belt {
     fn to_noun(&self) -> Noun {
         atom(self.0)
     }
 }
 
+impl NounDecode for Belt {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let Noun::Atom(a) = noun else {
+            return None;
+        };
+        let v = u64::try_from(a).ok()?;
+        if based_check(v) {
+            Some(Belt(v))
+        } else {
+            None
+        }
+    }
+}
+
 impl NounEncode for Digest {
     fn to_noun(&self) -> Noun {
-        self.0.as_slice().to_noun()
+        self.0.to_noun()
+    }
+}
+
+impl NounDecode for Digest {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        Some(Digest(<[Belt; 5]>::from_noun(noun)?))
     }
 }
 
 impl NounEncode for CheetahPoint {
     fn to_noun(&self) -> Noun {
-        (self.x.0.as_slice(), (self.y.0.as_slice(), self.inf)).to_noun()
+        (self.x.0, self.y.0, self.inf).to_noun()
     }
 }
 
@@ -75,6 +170,15 @@ macro_rules! impl_nounable_for_int {
             impl NounEncode for $ty {
                 fn to_noun(&self) -> Noun {
                     atom(*self as u64)
+                }
+            }
+
+            impl NounDecode for $ty {
+                fn from_noun(noun: &Noun) -> Option<$ty> {
+                    let Noun::Atom(a) = noun else {
+                        return None;
+                    };
+                    <$ty>::try_from(a).ok()
                 }
             }
         )*
@@ -89,6 +193,21 @@ impl NounEncode for bool {
     }
 }
 
+impl NounDecode for bool {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let Noun::Atom(a) = noun else {
+            return None;
+        };
+        if a == &UBig::from(0u64) {
+            Some(true)
+        } else if a == &UBig::from(1u64) {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
 impl<T: NounEncode> NounEncode for Option<T> {
     fn to_noun(&self) -> Noun {
         match self {
@@ -98,24 +217,88 @@ impl<T: NounEncode> NounEncode for Option<T> {
     }
 }
 
-impl<A: NounEncode, B: NounEncode> NounEncode for (A, B) {
-    fn to_noun(&self) -> Noun {
-        cons(self.0.to_noun(), self.1.to_noun())
+impl<T: NounDecode> NounDecode for Option<T> {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        match noun {
+            Noun::Cell(x, v) if &**x == &atom(0) => Some(Some(T::from_noun(v)?)),
+            Noun::Atom(x) if x.is_zero() => Some(None),
+            _ => None,
+        }
     }
 }
 
-impl<A: NounEncode, B: NounEncode, C: NounEncode> NounEncode for (A, B, C) {
+macro_rules! impl_nounable_for_tuple {
+    ($T0:ident => $i0:ident) => {};
+    ($T:ident => $t:ident $( $U:ident => $u:ident )+) => {
+        impl<$T: NounEncode, $($U: NounEncode),*> NounEncode for ($T, $($U),*) {
+            fn to_noun(&self) -> Noun {
+                let ($t, $($u),*) = self;
+                cons($t.to_noun(), ($($u),*).to_noun())
+            }
+        }
+
+        impl<$T: NounDecode, $($U: NounDecode),*> NounDecode for ($T, $($U),*) {
+            fn from_noun(noun: &Noun) -> Option<($T, $($U),*)> {
+                let Noun::Cell(a, b) = noun else {
+                    return None;
+                };
+                let a = <$T>::from_noun(a)?;
+                #[allow(unused_parens)]
+                let ($($u),*) = <($($U),*)>::from_noun(b)?;
+                Some((a, $($u),*))
+            }
+        }
+
+        impl_nounable_for_tuple!($($U => $u)*);
+    };
+}
+
+impl_nounable_for_tuple!(
+    A => a
+    B => b
+    C => c
+    D => d
+    E => e
+    F => f
+    G => g
+    H => h
+    I => i
+    J => j
+    K => k
+);
+
+impl<T: NounEncode, const N: usize> NounEncode for [T; N] {
     fn to_noun(&self) -> Noun {
-        (&self.0, (&self.1, &self.2)).to_noun()
+        match self.split_last() {
+            None => unreachable!(),
+            Some((last, rest)) => {
+                let mut acc = last.to_noun();
+                for item in rest.iter().rev() {
+                    acc = cons(item.to_noun(), acc);
+                }
+                acc
+            }
+        }
     }
 }
 
-impl<A: NounEncode, B: NounEncode, C: NounEncode, D: NounEncode> NounEncode for (A, B, C, D) {
-    fn to_noun(&self) -> Noun {
-        (&self.0, (&self.1, (&self.2, &self.3))).to_noun()
+impl<T: NounDecode, const N: usize> NounDecode for [T; N] {
+    fn from_noun(mut noun: &Noun) -> Option<Self> {
+        let mut ret = [(); N].map(|_| MaybeUninit::<T>::uninit());
+        for i in 0..N {
+            let Noun::Cell(a, b) = noun else {
+                return None;
+            };
+            ret[i] = MaybeUninit::<T>::new(T::from_noun(a)?);
+            noun = b;
+        }
+
+        // SAFETY: already initialized everything
+        Some(ret.map(|v| unsafe { v.assume_init() }))
     }
 }
 
+// TODO: always append ~ at the end
 impl<T: NounEncode> NounEncode for &[T] {
     fn to_noun(&self) -> Noun {
         match self.split_last() {
@@ -141,6 +324,27 @@ impl<T: NounEncode> NounEncode for Vec<T> {
     }
 }
 
+impl<T: NounDecode> NounDecode for Vec<T> {
+    fn from_noun(mut noun: &Noun) -> Option<Self> {
+        let mut ret = vec![];
+        loop {
+            match noun {
+                Noun::Cell(a, b) => {
+                    ret.push(T::from_noun(a)?);
+                    noun = b;
+                }
+                Noun::Atom(v) => {
+                    if v.is_zero() {
+                        return Some(ret);
+                    } else {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl NounEncode for &str {
     fn to_noun(&self) -> Noun {
         atom(
@@ -154,6 +358,15 @@ impl NounEncode for &str {
 impl NounEncode for String {
     fn to_noun(&self) -> Noun {
         self.as_str().to_noun()
+    }
+}
+
+impl NounDecode for String {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let Noun::Atom(a) = noun else {
+            return None;
+        };
+        String::from_utf8(a.to_le_bytes()).ok()
     }
 }
 

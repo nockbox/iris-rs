@@ -674,7 +674,7 @@ impl WasmSeed {
 
 #[wasm_bindgen]
 pub struct WasmTxBuilder {
-    builder: Option<TxBuilder>,
+    builder: TxBuilder,
 }
 
 #[wasm_bindgen]
@@ -719,33 +719,47 @@ impl WasmTxBuilder {
         } else {
             builder.subtract_fee_from_refund(include_lock_data)
         }
-        .and_then(|v| v.subtract_fee_from_refund(include_lock_data))
+        .map(|v| v.remove_unused_notes())
         .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
 
-        Ok(Self {
-            builder: Some(builder),
-        })
+        Ok(Self { builder })
     }
 
     /// Sign the transaction with a private key
     #[wasm_bindgen]
-    pub fn sign(&mut self, signing_key_bytes: &[u8]) -> Result<WasmRawTx, JsValue> {
+    pub fn sign(&mut self, signing_key_bytes: &[u8]) -> Result<(), JsValue> {
         if signing_key_bytes.len() != 32 {
             return Err(JsValue::from_str("Private key must be 32 bytes"));
         }
         let signing_key = PrivateKey(UBig::from_be_bytes(signing_key_bytes));
 
-        let mut builder = self
-            .builder
-            .take()
-            .ok_or_else(|| JsValue::from_str("Builder already consumed"))?;
+        self.builder.sign(&signing_key);
 
-        let tx = builder
-            .sign(&signing_key)
+        Ok(())
+    }
+
+    #[wasm_bindgen]
+    pub fn validate(&mut self) -> Result<(), JsValue> {
+        self.builder
             .validate()
-            .map_err(|v| JsValue::from_str(&v.to_string()))?
-            .build();
+            .map_err(|v| JsValue::from_str(&v.to_string()))?;
 
+        Ok(())
+    }
+
+    #[wasm_bindgen]
+    pub fn cur_fee(&self) -> Nicks {
+        self.builder.cur_fee()
+    }
+
+    #[wasm_bindgen]
+    pub fn calc_fee(&self) -> Nicks {
+        self.builder.calc_fee()
+    }
+
+    #[wasm_bindgen]
+    pub fn build(&self) -> Result<WasmRawTx, JsValue> {
+        let tx = self.builder.build();
         Ok(WasmRawTx::from_internal(&tx))
     }
 }

@@ -273,8 +273,14 @@ impl TxBuilder {
         refund_pkh: Digest,
         include_lock_data: bool,
     ) -> Result<Self, BuildError> {
-        let mut builder =
-            Self::new_simple_base(notes, recipient, gift, fee_per_word, refund_pkh, include_lock_data)?;
+        let mut builder = Self::new_simple_base(
+            notes,
+            recipient,
+            gift,
+            fee_per_word,
+            refund_pkh,
+            include_lock_data,
+        )?;
         builder
             .subtract_fee_from_refund(include_lock_data)?
             .remove_unused_notes();
@@ -330,7 +336,8 @@ impl TxBuilder {
     }
 
     pub fn calc_fee(&self) -> Nicks {
-        let mut fee = Spend::fee_for_many(self.spends.values().map(|v| &v.spend), self.fee_per_word);
+        let mut fee =
+            Spend::fee_for_many(self.spends.values().map(|v| &v.spend), self.fee_per_word);
 
         for s in self.spends.values() {
             for mu in s.missing_unlocks() {
@@ -370,6 +377,7 @@ impl TxBuilder {
     ) -> Result<&mut Self, BuildError> {
         let cur_fee = self.cur_fee();
 
+        // TODO: if cur_fee > fee, reset fee to 0
         if cur_fee >= fee {
             return Ok(self);
         }
@@ -384,9 +392,12 @@ impl TxBuilder {
             if anra != bnra {
                 // By default, put the greatest non-refund transfers first
                 bnra.cmp(&anra)
-            } else {
+            } else if b.spend.fee != a.spend.fee {
                 // If equal, prioritize highest fee
                 b.spend.fee.cmp(&a.spend.fee)
+            } else {
+                // Otherwise, sort by name
+                b.note.name.cmp(&a.note.name)
             }
         });
 
@@ -507,6 +518,22 @@ mod tests {
             "87UEseTQfzPb1GDdqEpbBRvAWXxfnzHauMpFyxYhWuc1R4zJQFNKh8D",
             "{tx:?}"
         );
+
+        let mut tx = TxBuilder::new_simple_base(
+            vec![(note.clone(), spend_condition.clone())],
+            recipient,
+            gift,
+            1 << 17,
+            refund_pkh,
+            true,
+        )
+        .unwrap();
+
+        tx.set_fee_and_balance_refund(fee, true)
+            .unwrap()
+            .sign(&private_key);
+
+        assert!(tx.validate().is_err());
 
         let fee_per_word = 40000;
         let mut builder = TxBuilder::new_simple(

@@ -2,8 +2,37 @@ use ibig::UBig;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-use nbx_crypto::cheetah::{PrivateKey, PublicKey};
+use nbx_crypto::cheetah::{PrivateKey, PublicKey, Signature};
 use nbx_crypto::slip10::{derive_master_key as derive_master_key_internal, ExtendedKey};
+
+#[wasm_bindgen]
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WasmSignature {
+    #[wasm_bindgen(skip)]
+    pub c: Vec<u8>,
+    #[wasm_bindgen(skip)]
+    pub s: Vec<u8>,
+}
+
+#[wasm_bindgen]
+impl WasmSignature {
+    #[wasm_bindgen(getter)]
+    pub fn c(&self) -> Vec<u8> {
+        self.c.clone()
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn s(&self) -> Vec<u8> {
+        self.s.clone()
+    }
+
+    fn from_internal(sig: &Signature) -> Self {
+        Self {
+            c: sig.c.to_be_bytes(),
+            s: sig.s.to_be_bytes(),
+        }
+    }
+}
 
 #[wasm_bindgen]
 #[derive(Serialize, Deserialize)]
@@ -127,4 +156,16 @@ pub fn hash_u64(value: f64) -> String {
     let value = value as u64;
     let digest = value.hash();
     digest.to_string()
+}
+
+/// Sign a message string with a private key
+#[wasm_bindgen(js_name = signMessage)]
+pub fn sign_message(private_key_bytes: &[u8], message: &str) -> Result<WasmSignature, JsValue> {
+    use nbx_ztd::{Belt, Hashable, NounEncode};
+    if private_key_bytes.len() != 32 {
+        return Err(JsValue::from_str("Private key must be 32 bytes"));
+    }
+    let private_key = PrivateKey(UBig::from_be_bytes(private_key_bytes));
+    let digest = Belt::from_bytes(message.as_bytes()).to_noun().hash();
+    Ok(WasmSignature::from_internal(&private_key.sign(&digest)))
 }

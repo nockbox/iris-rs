@@ -1,7 +1,8 @@
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use nbx_crypto::{PublicKey, Signature};
-use nbx_ztd::{Digest, Hashable as HashableTrait, Noun, NounEncode, ZMap, ZSet};
+use nbx_ztd::{Digest, Hashable as HashableTrait, Noun, NounDecode, NounEncode, ZMap, ZSet};
 use nbx_ztd_derive::{Hashable, NounDecode, NounEncode};
 
 use super::note::{Name, NoteData, Source, TimelockRange, Version};
@@ -106,6 +107,14 @@ impl NounEncode for Seeds {
     }
 }
 
+impl NounDecode for Seeds {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        Some(Seeds(
+            ZSet::from_noun(noun)?.into_iter().collect::<Vec<_>>(),
+        ))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Spend {
     pub witness: Witness,
@@ -116,6 +125,22 @@ pub struct Spend {
 impl NounEncode for Spend {
     fn to_noun(&self) -> Noun {
         (Version::V1, &self.witness, &self.seeds, &self.fee).to_noun()
+    }
+}
+
+impl NounDecode for Spend {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let (v, witness, seeds, fee): (Version, _, _, _) = NounDecode::from_noun(noun)?;
+
+        if v != Version::V1 {
+            return None;
+        }
+
+        Some(Self {
+            witness,
+            seeds,
+            fee,
+        })
     }
 }
 
@@ -138,22 +163,13 @@ impl Spend {
         fee.max(Self::MIN_FEE)
     }
 
-    pub fn unclamped_fee(
-        &self,
-        per_word: Nicks
-    ) -> Nicks {
+    pub fn unclamped_fee(&self, per_word: Nicks) -> Nicks {
         let (a, b) = self.calc_words();
         (a + b) * per_word
     }
 
     pub fn calc_words(&self) -> (u64, u64) {
-
-        let seed_words: u64 = self
-            .seeds
-            .0
-            .iter()
-            .map(|seed| seed.note_data_words())
-            .sum();
+        let seed_words: u64 = self.seeds.0.iter().map(|seed| seed.note_data_words()).sum();
         let witness_words = noun_words(&self.witness.to_noun());
 
         (seed_words, witness_words)
@@ -206,7 +222,13 @@ impl NounEncode for PkhSignature {
     }
 }
 
-#[derive(Debug, Clone, Hashable, NounEncode)]
+impl NounDecode for PkhSignature {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        Some(Self(ZSet::from_noun(noun)?.into_iter().collect::<Vec<_>>()))
+    }
+}
+
+#[derive(Debug, Clone, Hashable, NounEncode, NounDecode)]
 pub struct Witness {
     pub lock_merkle_proof: LockMerkleProof,
     pub pkh_signature: PkhSignature,
@@ -230,7 +252,7 @@ impl Witness {
     }
 }
 
-#[derive(Debug, Clone, NounEncode)]
+#[derive(Debug, Clone, NounEncode, NounDecode)]
 pub struct LockMerkleProof {
     pub spend_condition: SpendCondition,
     pub axis: u64,
@@ -240,19 +262,20 @@ pub struct LockMerkleProof {
 impl HashableTrait for LockMerkleProof {
     fn hash(&self) -> Digest {
         // NOTE: lmao
-        let axis_mold_hash: Digest =
-            "6mhCSwJQDvbkbiPAUNjetJtVoo1VLtEhmEYoU4hmdGd6ep1F6ayaV4A".into();
+        let axis_mold_hash: Digest = "6mhCSwJQDvbkbiPAUNjetJtVoo1VLtEhmEYoU4hmdGd6ep1F6ayaV4A"
+            .try_into()
+            .unwrap();
         (&self.spend_condition.hash(), axis_mold_hash, &self.proof).hash()
     }
 }
 
-#[derive(Debug, Clone, Hashable, NounEncode)]
+#[derive(Debug, Clone, Hashable, NounEncode, NounDecode)]
 pub struct MerkleProof {
     pub root: Digest,
     pub path: Vec<Digest>,
 }
 
-#[derive(Debug, Clone, Hashable, NounEncode)]
+#[derive(Debug, Clone, Hashable, NounEncode, NounDecode)]
 pub struct SpendCondition(pub Vec<LockPrimitive>);
 
 impl SpendCondition {
@@ -318,6 +341,19 @@ impl NounEncode for LockPrimitive {
     }
 }
 
+impl NounDecode for LockPrimitive {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let (p, n): (String, Noun) = NounDecode::from_noun(noun)?;
+        Some(match &*p {
+            "pkh" => LockPrimitive::Pkh(NounDecode::from_noun(&n)?),
+            "tim" => LockPrimitive::Tim(NounDecode::from_noun(&n)?),
+            "hax" => LockPrimitive::Hax(NounDecode::from_noun(&n)?),
+            "brn" => LockPrimitive::Brn,
+            _ => return None,
+        })
+    }
+}
+
 impl HashableTrait for LockPrimitive {
     fn hash(&self) -> Digest {
         match self {
@@ -329,7 +365,7 @@ impl HashableTrait for LockPrimitive {
     }
 }
 
-#[derive(Debug, Clone, NounEncode, Hashable)]
+#[derive(Debug, Clone, NounEncode, Hashable, NounDecode)]
 pub struct LockTim {
     pub rel: TimelockRange,
     pub abs: TimelockRange,
@@ -347,7 +383,7 @@ impl LockTim {
     }
 }
 
-#[derive(Debug, Clone, NounEncode, Hashable)]
+#[derive(Debug, Clone, NounEncode, Hashable, NounDecode)]
 pub struct Hax(pub Vec<Digest>);
 
 pub type TxId = Digest;
@@ -364,6 +400,13 @@ impl Spends {
 impl NounEncode for Spends {
     fn to_noun(&self) -> Noun {
         ZMap::from_iter(self.0.iter().cloned()).to_noun()
+    }
+}
+
+impl NounDecode for Spends {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let v: ZMap<Name, Spend> = NounDecode::from_noun(noun)?;
+        Some(Self(v.into_iter().collect::<Vec<_>>()))
     }
 }
 
@@ -401,16 +444,24 @@ mod tests {
     use nbx_ztd::Hashable;
 
     fn check_hash(name: &str, h: &impl Hashable, exp: &str) {
-        assert!(h.hash() == exp.into(), "hash mismatch for {}", name);
+        assert!(
+            h.hash() == exp.try_into().unwrap(),
+            "hash mismatch for {}",
+            name
+        );
     }
 
     #[test]
     fn test_hash_vectors() {
-        let pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX".into();
+        let pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
+            .try_into()
+            .unwrap();
         let seed1 = Seed::new_single_pkh(
             pkh,
             4290881913,
-            "6qF9RtWRUWfCX8NS8QU2u7A3BufVrsMwwWWZ8KSzZ5gVn4syqmeVa4".into(),
+            "6qF9RtWRUWfCX8NS8QU2u7A3BufVrsMwwWWZ8KSzZ5gVn4syqmeVa4"
+                .try_into()
+                .unwrap(),
             true,
         );
 
@@ -463,8 +514,12 @@ mod tests {
         );
 
         let name = Name::new(
-            "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".into(),
-            "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".into(),
+            "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                .try_into()
+                .unwrap(),
+            "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+                .try_into()
+                .unwrap(),
         );
         check_hash(
             "name",

@@ -4,12 +4,12 @@ use nbx_ztd::{
         ch_add, ch_neg, ch_scal_big, trunc_g_order, CheetahPoint, F6lt, A_GEN, G_ORDER,
     },
     tip5::hash::hash_varlen,
-    Belt, Digest, Hashable, Noun, NounEncode,
+    Belt, Digest, Hashable, Noun, NounDecode, NounEncode,
 };
-use nbx_ztd_derive::NounEncode;
+use nbx_ztd_derive::{NounDecode, NounEncode};
 extern crate alloc;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, NounEncode)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, NounEncode, NounDecode)]
 pub struct PublicKey(pub CheetahPoint);
 
 impl PublicKey {
@@ -122,6 +122,20 @@ impl NounEncode for Signature {
             Belt::from_bytes(&self.s.to_le_bytes()).as_slice(),
         )
             .to_noun()
+    }
+}
+
+impl NounDecode for Signature {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let (c, s): (Vec<Belt>, Vec<Belt>) = NounDecode::from_noun(noun)?;
+
+        let c = Belt::to_bytes(&c);
+        let s = Belt::to_bytes(&s);
+
+        Some(Signature {
+            c: UBig::from_le_bytes(&c),
+            s: UBig::from_le_bytes(&s),
+        })
     }
 }
 

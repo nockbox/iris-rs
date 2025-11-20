@@ -1,4 +1,5 @@
 use crate::belt::based_check;
+use crate::crypto::cheetah::F6lt;
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, format, string::String, vec, vec::Vec};
 use bitvec::prelude::{BitSlice, BitVec, Lsb0};
 use core::fmt;
@@ -10,6 +11,21 @@ use serde::{ser::SerializeTuple, Serialize, Serializer};
 use serde::{Deserialize, Deserializer};
 
 use crate::{belt::Belt, crypto::cheetah::CheetahPoint, Digest};
+
+pub fn noun_serialize<T: NounEncode, S>(v: &T, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    v.to_noun().serialize(serializer)
+}
+
+pub fn noun_deserialize<'de, T: NounDecode, D>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let r = Noun::deserialize(deserializer)?;
+    Ok(T::from_noun(&r).ok_or_else(|| DeError::custom("unable to parse noun"))?)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Noun {
@@ -208,6 +224,13 @@ impl NounDecode for Digest {
 impl NounEncode for CheetahPoint {
     fn to_noun(&self) -> Noun {
         (self.x.0, self.y.0, self.inf).to_noun()
+    }
+}
+
+impl NounDecode for CheetahPoint {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let (x, y, inf) = NounDecode::from_noun(noun)?;
+        Some(Self { x: F6lt(x), y: F6lt(y), inf })
     }
 }
 

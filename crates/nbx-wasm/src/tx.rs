@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -8,11 +8,11 @@ use nbx_crypto::PrivateKey;
 use nbx_nockchain_types::{
     builder::TxBuilder,
     note::{Name, Note, NoteData, NoteDataEntry, Pkh, TimelockRange, Version},
-    tx::{LockPrimitive, LockTim, RawTx, Seed, SpendCondition},
+    tx::{LockPrimitive, RawTx, Seed, SpendCondition},
     Nicks,
 };
-use nbx_nockchain_types::{MissingUnlocks, Source, SpendBuilder};
-use nbx_ztd::{cue, jam, Digest, Hashable as HashableTrait, NounEncode};
+use nbx_nockchain_types::{Hax, LockTim, MissingUnlocks, Source, SpendBuilder, Spends};
+use nbx_ztd::{cue, jam, Digest, Hashable as HashableTrait, NounDecode, NounEncode};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -22,6 +22,7 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct WasmDigest {
     #[wasm_bindgen(skip)]
     pub value: String,
@@ -39,8 +40,8 @@ impl WasmDigest {
         self.value.clone()
     }
 
-    fn to_internal(&self) -> Digest {
-        self.value.as_str().into()
+    fn to_internal(&self) -> Result<Digest, &'static str> {
+        self.value.as_str().try_into()
     }
 
     fn from_internal(digest: &Digest) -> Self {
@@ -93,39 +94,41 @@ impl WasmVersion {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WasmName {
     #[wasm_bindgen(skip)]
-    pub first: String,
+    pub first: Digest,
     #[wasm_bindgen(skip)]
-    pub last: String,
+    pub last: Digest,
 }
 
 #[wasm_bindgen]
 impl WasmName {
     #[wasm_bindgen(constructor)]
-    pub fn new(first: String, last: String) -> Self {
-        Self { first, last }
+    pub fn new(first: String, last: String) -> Result<Self, JsValue> {
+        let first = Digest::try_from(&*first)?;
+        let last = Digest::try_from(&*last)?;
+        Ok(Self { first, last })
     }
 
     #[wasm_bindgen(getter)]
     pub fn first(&self) -> String {
-        self.first.clone()
+        self.first.to_string()
     }
 
     #[wasm_bindgen(getter)]
     pub fn last(&self) -> String {
-        self.last.clone()
+        self.last.to_string()
     }
 
     fn to_internal(&self) -> Name {
-        Name::new(self.first.as_str().into(), self.last.as_str().into())
+        Name::new(self.first, self.last)
     }
 
     #[allow(dead_code)]
-    fn from_internal(_name: &Name) -> Self {
+    fn from_internal(name: &Name) -> Self {
         // We need to access Name fields via hash since they are private
         // For now, we'll only support construction, not reading back
         Self {
-            first: "".to_string(),
-            last: "".to_string(),
+            first: name.first,
+            last: name.last,
         }
     }
 }
@@ -159,6 +162,13 @@ impl WasmTimelockRange {
     fn to_internal(&self) -> TimelockRange {
         TimelockRange::new(self.min, self.max)
     }
+
+    fn from_internal(internal: TimelockRange) -> WasmTimelockRange {
+        WasmTimelockRange {
+            min: internal.min,
+            max: internal.max,
+        }
+    }
 }
 
 #[wasm_bindgen]
@@ -182,11 +192,11 @@ impl WasmSource {
         self.is_coinbase
     }
 
-    fn to_internal(&self) -> Source {
-        Source {
-            hash: self.hash.to_internal(),
+    fn to_internal(&self) -> Result<Source, String> {
+        Ok(Source {
+            hash: self.hash.to_internal()?,
             is_coinbase: self.is_coinbase,
-        }
+        })
     }
 
     fn from_internal(internal: &Source) -> Self {
@@ -265,9 +275,9 @@ impl WasmNoteData {
     }
 
     #[wasm_bindgen(js_name = fromPkh)]
-    pub fn from_pkh(pkh: WasmPkh) -> Self {
-        let note_data = NoteData::from_pkh(pkh.to_internal());
-        Self::from_internal(&note_data)
+    pub fn from_pkh(pkh: WasmPkh) -> Result<Self, JsValue> {
+        let note_data = NoteData::from_pkh(pkh.to_internal()?);
+        Ok(Self::from_internal(&note_data))
     }
 
     #[wasm_bindgen(getter)]
@@ -430,7 +440,7 @@ impl WasmNote {
             .value
             .parse()
             .map_err(|e| JsValue::from_str(&format!("Invalid origin_page: {}", e)))?;
-        let name = WasmName::new(v1.name.first, v1.name.last);
+        let name = WasmName::new(v1.name.first, v1.name.last)?;
         let note_data_entries: Vec<WasmNoteDataEntry> = v1
             .note_data
             .entries
@@ -455,6 +465,16 @@ impl WasmNote {
             self.note_data.to_internal()?,
             self.assets,
         ))
+    }
+
+    fn from_internal(internal: Note) -> Self {
+        Self {
+            version: WasmVersion::from_internal(&internal.version),
+            origin_page: internal.origin_page,
+            name: WasmName::from_internal(&internal.name),
+            note_data: WasmNoteData::from_internal(&internal.note_data),
+            assets: internal.assets,
+        }
     }
 }
 
@@ -496,9 +516,17 @@ impl WasmPkh {
         self.hashes.clone()
     }
 
-    fn to_internal(&self) -> Pkh {
-        let hashes: Vec<Digest> = self.hashes.iter().map(|s| s.as_str().into()).collect();
-        Pkh::new(self.m, hashes)
+    fn to_internal(&self) -> Result<Pkh, String> {
+        let hashes: Result<Vec<Digest>, _> =
+            self.hashes.iter().map(|s| s.as_str().try_into()).collect();
+        Ok(Pkh::new(self.m, hashes?))
+    }
+
+    fn from_internal(internal: Pkh) -> Self {
+        Self::new(
+            internal.m,
+            internal.hashes.into_iter().map(|v| v.to_string()).collect(),
+        )
     }
 }
 
@@ -549,6 +577,45 @@ impl WasmLockTim {
             abs: self.abs.to_internal(),
         }
     }
+
+    fn from_internal(internal: LockTim) -> WasmLockTim {
+        WasmLockTim {
+            rel: WasmTimelockRange::from_internal(internal.rel),
+            abs: WasmTimelockRange::from_internal(internal.abs),
+        }
+    }
+}
+
+#[wasm_bindgen]
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WasmHax {
+    #[wasm_bindgen(skip)]
+    pub digests: Vec<WasmDigest>,
+}
+
+#[wasm_bindgen]
+impl WasmHax {
+    #[wasm_bindgen(constructor)]
+    pub fn new(digests: Vec<WasmDigest>) -> Self {
+        Self { digests }
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn get_digests(&self) -> Vec<WasmDigest> {
+        self.digests.clone()
+    }
+
+    fn to_internal(&self) -> Result<Hax, String> {
+        Ok(Hax(self
+            .digests
+            .iter()
+            .map(WasmDigest::to_internal)
+            .collect::<Result<Vec<_>, _>>()?))
+    }
+
+    fn from_internal(internal: Hax) -> Self {
+        Self::new(internal.0.iter().map(WasmDigest::from_internal).collect())
+    }
 }
 
 #[wasm_bindgen]
@@ -559,6 +626,8 @@ pub struct WasmLockPrimitive {
     pub pkh_data: Option<WasmPkh>,
     #[wasm_bindgen(skip)]
     pub tim_data: Option<WasmLockTim>,
+    #[wasm_bindgen(skip)]
+    pub hax_data: Option<WasmHax>,
 }
 
 #[wasm_bindgen]
@@ -569,6 +638,7 @@ impl WasmLockPrimitive {
             variant: "pkh".to_string(),
             pkh_data: Some(pkh),
             tim_data: None,
+            hax_data: None,
         }
     }
 
@@ -578,6 +648,17 @@ impl WasmLockPrimitive {
             variant: "tim".to_string(),
             pkh_data: None,
             tim_data: Some(tim),
+            hax_data: None,
+        }
+    }
+
+    #[wasm_bindgen(js_name = newHax)]
+    pub fn new_hax(hax: WasmHax) -> Self {
+        Self {
+            variant: "hax".to_string(),
+            pkh_data: None,
+            tim_data: None,
+            hax_data: Some(hax),
         }
     }
 
@@ -587,6 +668,7 @@ impl WasmLockPrimitive {
             variant: "brn".to_string(),
             pkh_data: None,
             tim_data: None,
+            hax_data: None,
         }
     }
 
@@ -594,7 +676,7 @@ impl WasmLockPrimitive {
         match self.variant.as_str() {
             "pkh" => {
                 if let Some(ref pkh) = self.pkh_data {
-                    Ok(LockPrimitive::Pkh(pkh.to_internal()))
+                    Ok(LockPrimitive::Pkh(pkh.to_internal()?))
                 } else {
                     Err("Missing pkh data".to_string())
                 }
@@ -606,8 +688,24 @@ impl WasmLockPrimitive {
                     Err("Missing tim data".to_string())
                 }
             }
+            "hax" => {
+                if let Some(ref hax) = self.hax_data {
+                    Ok(LockPrimitive::Hax(hax.to_internal()?))
+                } else {
+                    Err("Missing hax data".to_string())
+                }
+            }
             "brn" => Ok(LockPrimitive::Brn),
             _ => Err("Invalid lock primitive variant".to_string()),
+        }
+    }
+
+    fn from_internal(internal: LockPrimitive) -> Self {
+        match internal {
+            LockPrimitive::Pkh(p) => Self::new_pkh(WasmPkh::from_internal(p)),
+            LockPrimitive::Tim(t) => Self::new_tim(WasmLockTim::from_internal(t)),
+            LockPrimitive::Hax(h) => Self::new_hax(WasmHax::from_internal(h)),
+            LockPrimitive::Brn => Self::new_brn(),
         }
     }
 }
@@ -657,6 +755,16 @@ impl WasmSpendCondition {
         }
         Ok(SpendCondition(primitives))
     }
+
+    fn from_internal(internal: SpendCondition) -> Self {
+        Self::new(
+            internal
+                .0
+                .into_iter()
+                .map(|v| WasmLockPrimitive::from_internal(v))
+                .collect(),
+        )
+    }
 }
 
 #[wasm_bindgen]
@@ -698,14 +806,14 @@ impl WasmSeed {
         gift: Nicks,
         parent_hash: WasmDigest,
         include_lock_data: bool,
-    ) -> Self {
+    ) -> Result<Self, JsValue> {
         let seed = Seed::new_single_pkh(
-            pkh.to_internal(),
+            pkh.to_internal()?,
             gift,
-            parent_hash.to_internal(),
+            parent_hash.to_internal()?,
             include_lock_data,
         );
-        seed.into()
+        Ok(seed.into())
     }
 
     #[wasm_bindgen(getter, js_name = outputSource)]
@@ -760,11 +868,15 @@ impl WasmSeed {
 
     fn to_internal(&self) -> Result<Seed, String> {
         Ok(Seed {
-            output_source: self.output_source.as_ref().map(WasmSource::to_internal),
-            lock_root: self.lock_root.to_internal(),
+            output_source: self
+                .output_source
+                .as_ref()
+                .map(WasmSource::to_internal)
+                .transpose()?,
+            lock_root: self.lock_root.to_internal()?,
             gift: self.gift,
             note_data: self.note_data.to_internal()?,
-            parent_hash: self.parent_hash.to_internal(),
+            parent_hash: self.parent_hash.to_internal()?,
         })
     }
 }
@@ -798,6 +910,35 @@ impl WasmTxBuilder {
         Self {
             builder: TxBuilder::new(fee_per_word),
         }
+    }
+
+    /// Reconstruct a builder from raw transaction and its input notes.
+    ///
+    /// To get the builder back, you must pass the notes and their corresponding spend conditions.
+    /// If serializing the builder, call `WasmTxBuilder::all_notes`.
+    #[wasm_bindgen(js_name = fromTx)]
+    pub fn from_tx(
+        tx: WasmRawTx,
+        notes: Vec<WasmNote>,
+        spend_conditions: Vec<WasmSpendCondition>,
+    ) -> Result<Self, JsValue> {
+        if notes.len() != spend_conditions.len() {
+            return Err(JsValue::from_str(
+                "notes and spend_conditions must have the same length",
+            ));
+        }
+
+        let internal_notes: Result<BTreeMap<Name, (Note, SpendCondition)>, String> = notes
+            .iter()
+            .zip(spend_conditions.iter())
+            .map(|(n, sc)| Ok((n.to_internal()?, sc.to_internal()?)))
+            .map(|v| v.map(|(a, b)| (a.name.clone(), (a, b))))
+            .collect();
+        let internal_notes = internal_notes.map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+
+        let builder = TxBuilder::from_tx(tx.internal, internal_notes).map_err(|e| e.to_string())?;
+
+        Ok(Self { builder })
     }
 
     /// Perform a simple-spend on this builder.
@@ -860,9 +1001,9 @@ impl WasmTxBuilder {
         self.builder
             .simple_spend_base(
                 internal_notes,
-                recipient.to_internal(),
+                recipient.to_internal()?,
                 gift,
-                refund_pkh.to_internal(),
+                refund_pkh.to_internal()?,
                 include_lock_data,
             )
             .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
@@ -966,10 +1107,60 @@ impl WasmTxBuilder {
         self.builder.calc_fee()
     }
 
+    #[wasm_bindgen(js_name = allNotes)]
+    pub fn all_notes(&self) -> WasmTxNotes {
+        let mut ret = WasmTxNotes {
+            notes: vec![],
+            spend_conditions: vec![],
+        };
+        self.builder
+            .all_notes()
+            .into_values()
+            .for_each(|(note, spend_condition)| {
+                ret.notes.push(WasmNote::from_internal(note));
+                ret.spend_conditions
+                    .push(WasmSpendCondition::from_internal(spend_condition));
+            });
+        ret
+    }
+
     #[wasm_bindgen]
     pub fn build(&self) -> Result<WasmRawTx, JsValue> {
         let tx = self.builder.build();
         Ok(WasmRawTx::from_internal(&tx))
+    }
+
+    #[wasm_bindgen(js_name = toJs)]
+    pub fn to_js(&self) -> Result<JsValue, JsValue> {
+        serde_wasm_bindgen::to_value(&self.builder).map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = fromJs)]
+    pub fn from_js(value: JsValue) -> Result<WasmTxBuilder, JsValue> {
+        serde_wasm_bindgen::from_value(value)
+            .map(|builder| WasmTxBuilder { builder })
+            .map_err(|e| e.into())
+    }
+}
+
+#[wasm_bindgen]
+pub struct WasmTxNotes {
+    #[wasm_bindgen(skip)]
+    pub notes: Vec<WasmNote>,
+    #[wasm_bindgen(skip)]
+    pub spend_conditions: Vec<WasmSpendCondition>,
+}
+
+#[wasm_bindgen]
+impl WasmTxNotes {
+    #[wasm_bindgen(getter)]
+    pub fn get_notes(&self) -> Vec<WasmNote> {
+        self.notes.clone()
+    }
+
+    #[wasm_bindgen(getter, js_name = spendConditions)]
+    pub fn get_spend_conditions(&self) -> Vec<WasmSpendCondition> {
+        self.spend_conditions.clone()
     }
 }
 
@@ -984,6 +1175,7 @@ pub struct WasmSpendBuilder {
 
 #[wasm_bindgen]
 impl WasmSpendBuilder {
+    /// Create a new `SpendBuilder` with a given note and spend condition
     #[wasm_bindgen(constructor)]
     pub fn new(
         note: WasmNote,
@@ -999,48 +1191,71 @@ impl WasmSpendBuilder {
         })
     }
 
+    /// Set the fee of this spend
     pub fn fee(&mut self, fee: Nicks) {
         self.builder.fee(fee);
     }
 
+    /// Compute refund from any spare assets, given `refund_lock` was passed
     #[wasm_bindgen(js_name = computeRefund)]
     pub fn compute_refund(&mut self, include_lock_data: bool) {
         self.builder.compute_refund(include_lock_data);
     }
 
+    /// Get current refund
     #[wasm_bindgen(js_name = curRefund)]
     pub fn cur_refund(&self) -> Option<WasmSeed> {
         self.builder.cur_refund().map(|v| WasmSeed::from(v.clone()))
     }
 
+    /// Checks whether note.assets = seeds + fee
+    ///
+    /// This function needs to return true for `TxBuilder::validate` to pass
     #[wasm_bindgen(js_name = isBalanced)]
     pub fn is_balanced(&self) -> bool {
         self.builder.is_balanced()
     }
 
+    /// Add seed to this spend
+    ///
+    /// Seed is an output with a recipient (as defined by the spend condition).
+    ///
+    /// Nockchain transaction engine will take all seeds with matching lock from all spends in the
+    /// transaction, and merge them into one output note.
     pub fn seed(&mut self, seed: WasmSeed) -> Result<(), JsValue> {
         self.builder.seed(seed.to_internal()?);
         Ok(())
     }
 
+    /// Manually invalidate signatures
+    ///
+    /// Each spend's fee+seeds are bound to one or more signatures. If they get changed, the
+    /// signature becomes invalid. This builder automatically invalidates signatures upon relevant
+    /// modifications, but this functionality is provided nonetheless.
     #[wasm_bindgen(js_name = invalidateSigs)]
     pub fn invalidate_sigs(&mut self) {
         self.builder.invalidate_sigs();
     }
 
+    /// Get the list of missing "unlocks"
+    ///
+    /// An unlock is a spend condition to be satisfied. For instance, for a `Pkh` spend condition,
+    /// if the transaction is unsigned, this function will return a Pkh type missing unlock, with
+    /// the list of valid PKH's and number of signatures needed. This will not return PKHs that are
+    /// already attatched to the spend (relevant for multisigs). For `Hax` spend condition, this
+    /// will return any missing preimages. This function will return a list of not-yet-validated
+    /// spend conditions.
     #[wasm_bindgen(js_name = missingUnlocks)]
-    pub fn missing_unlocks(&self) -> Result<JsValue, JsValue> {
-        serde_wasm_bindgen::to_value(
-            &self
-                .builder
-                .missing_unlocks()
-                .into_iter()
-                .map(|v| WasmMissingUnlocks::from_internal(&v))
-                .collect::<Vec<_>>(),
-        )
-        .map_err(|e| e.into())
+    pub fn missing_unlocks(&self) -> Result<Vec<JsValue>, JsValue> {
+        self.builder
+            .missing_unlocks()
+            .into_iter()
+            .map(|v| serde_wasm_bindgen::to_value(&WasmMissingUnlocks::from_internal(&v)))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.into())
     }
 
+    /// Attatch a preimage to this spend
     #[wasm_bindgen(js_name = addPreimage)]
     pub fn add_preimage(&mut self, preimage_jam: &[u8]) -> Result<Option<WasmDigest>, JsValue> {
         let preimage = cue(&preimage_jam).ok_or("Unable to cue preimage jam")?;
@@ -1050,6 +1265,7 @@ impl WasmSpendBuilder {
             .map(|v| WasmDigest::from_internal(&v)))
     }
 
+    /// Sign the transaction with a given private key
     pub fn sign(&mut self, signing_key_bytes: &[u8]) -> Result<bool, JsValue> {
         if signing_key_bytes.len() != 32 {
             return Err(JsValue::from_str("Private key must be 32 bytes"));
@@ -1152,5 +1368,18 @@ impl WasmRawTx {
     pub fn to_jam(&self) -> js_sys::Uint8Array {
         let n = (&self.internal.id.to_string(), &self.internal.spends).to_noun();
         js_sys::Uint8Array::from(&jam(n)[..])
+    }
+
+    #[wasm_bindgen(js_name = fromJam)]
+    pub fn from_jam(jam: &[u8]) -> Result<Self, JsValue> {
+        let n = cue(jam).ok_or("Unable to decode jam")?;
+        let (txid, spends): (String, Spends) =
+            NounDecode::from_noun(&n).ok_or("Unable to decode noun")?;
+        let tx = RawTx {
+            version: Version::V1,
+            id: Digest::try_from(&*txid)?,
+            spends,
+        };
+        Ok(Self::from_internal(&tx))
     }
 }

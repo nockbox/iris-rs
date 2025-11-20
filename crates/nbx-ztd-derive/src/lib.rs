@@ -224,7 +224,7 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
                         }
                     }
                 } else if field_count == 1 {
-                    quote! { Self(nbx_ztd::NounDecode::from_noun(noun)?) }
+                    quote! { Some(Self(nbx_ztd::NounDecode::from_noun(noun)?)) }
                 } else {
                     let indices: Vec<_> = (0..field_count).map(|i| syn::Index::from(i)).collect();
                     quote! {

@@ -1,14 +1,15 @@
 use alloc::collections::btree_map::BTreeMap;
 use alloc::collections::btree_set::BTreeSet;
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use nbx_crypto::PrivateKey;
-use nbx_ztd::{Digest, Hashable as HashableTrait, Noun};
+use nbx_ztd::{noun_deserialize, noun_serialize, Digest, Hashable as HashableTrait, Noun};
 use serde::{Deserialize, Serialize};
 
 use super::note::Note;
 use super::tx::{Seed, Seeds, Spend, SpendCondition, Spends, Witness};
-use super::{Name, NoteData};
+use super::{Name, NoteData, Version};
 use crate::{Nicks, Pkh, RawTx};
 
 #[derive(Clone, Debug)]
@@ -23,11 +24,23 @@ pub enum MissingUnlocks {
     Brn,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SpendBuilder {
     note: Note,
+    #[serde(
+        serialize_with = "noun_serialize",
+        deserialize_with = "noun_deserialize"
+    )]
     spend: Spend,
+    #[serde(
+        serialize_with = "noun_serialize",
+        deserialize_with = "noun_deserialize"
+    )]
     spend_condition: SpendCondition,
+    #[serde(
+        serialize_with = "noun_serialize",
+        deserialize_with = "noun_deserialize"
+    )]
     refund_lock: Option<SpendCondition>,
 }
 
@@ -47,6 +60,24 @@ impl SpendBuilder {
             spend_condition,
             refund_lock,
         }
+    }
+
+    pub fn from_spend(
+        spend: Spend,
+        note: Note,
+        spend_condition: SpendCondition,
+        refund_lock: Option<SpendCondition>,
+    ) -> Option<Self> {
+        if spend.witness.lock_merkle_proof.proof.root != spend_condition.hash() {
+            return None;
+        }
+
+        Some(Self {
+            note,
+            spend,
+            spend_condition,
+            refund_lock,
+        })
     }
 
     pub fn fee(&mut self, fee_portion: Nicks) -> &mut Self {
@@ -216,6 +247,7 @@ impl SpendBuilder {
     }
 }
 
+#[derive(Serialize, Deserialize, Clone)]
 pub struct TxBuilder {
     spends: BTreeMap<Name, SpendBuilder>,
     fee_pool: Vec<SpendBuilder>,
@@ -230,6 +262,35 @@ impl TxBuilder {
             fee_pool: vec![],
             fee_per_word,
         }
+    }
+
+    pub fn from_tx(
+        tx: RawTx,
+        mut notes: BTreeMap<Name, (Note, SpendCondition)>,
+    ) -> Result<Self, BuildError> {
+        if tx.version != Version::V1 {
+            return Err(BuildError::InvalidVersion);
+        }
+
+        Ok(Self {
+            spends: tx
+                .spends
+                .0
+                .into_iter()
+                .map(|(n, s)| {
+                    let (note, sc) = notes
+                        .remove(&n)
+                        .ok_or_else(|| BuildError::NoteNotFound(n.clone()))?;
+                    Ok((
+                        n,
+                        SpendBuilder::from_spend(s, note, sc, None)
+                            .ok_or(BuildError::InvalidSpendCondition)?,
+                    ))
+                })
+                .collect::<Result<BTreeMap<_, _>, _>>()?,
+            fee_pool: vec![],
+            fee_per_word: 1 << 15,
+        })
     }
 
     /// Append a `SpendBuilder` to this transaction
@@ -346,6 +407,13 @@ impl TxBuilder {
                 .map(|(a, b)| (a.clone(), b.spend.clone()))
                 .collect(),
         ))
+    }
+
+    pub fn all_notes(&self) -> BTreeMap<Name, (Note, SpendCondition)> {
+        self.spends
+            .iter()
+            .map(|(a, b)| (a.clone(), (b.note.clone(), b.spend_condition.clone())))
+            .collect()
     }
 
     pub fn cur_fee(&self) -> Nicks {
@@ -514,7 +582,10 @@ pub enum BuildError {
     ZeroGift,
     InsufficientFunds,
     AccountingMismatch,
+    NoteNotFound(Name),
     InvalidFee(Nicks, Nicks),
+    InvalidVersion,
+    InvalidSpendCondition,
     UnbalancedSpends,
     MissingUnlocks(Vec<MissingUnlocks>),
 }
@@ -527,11 +598,21 @@ impl core::fmt::Display for BuildError {
             BuildError::AccountingMismatch => {
                 write!(f, "Assets in must equal gift + fee + refund")
             }
+            BuildError::NoteNotFound(name) => write!(
+                f,
+                "Unable to find note [{} {}]",
+                name.first.to_string(),
+                name.last.to_string()
+            ),
             BuildError::InvalidFee(expected, got) => {
                 write!(
                     f,
                     "Insufficient fee for transaction (needed: {expected}, got: {got})"
                 )
+            }
+            BuildError::InvalidVersion => write!(f, "Invalid RawTx version"),
+            BuildError::InvalidSpendCondition => {
+                write!(f, "Spend condition is invalid (mismatch?)")
             }
             BuildError::UnbalancedSpends => write!(
                 f,
@@ -571,17 +652,17 @@ mod tests {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
-                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".into(),
-                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".into(),
+                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".try_into().unwrap(),
+                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".try_into().unwrap(),
             ),
             note_data: NoteData::empty(),
             assets: 4294967296,
         };
 
-        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME".into();
+        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME".try_into().unwrap();
         let gift = 1234567;
         let fee = 2850816;
-        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX".into();
+        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX".try_into().unwrap();
         let spend_condition = SpendCondition(vec![
             LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
             LockPrimitive::Tim(LockTim::coinbase()),
@@ -656,8 +737,8 @@ mod tests {
                 version: Version::V1,
                 origin_page: 13,
                 name: Name::new(
-                    "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".into(),
-                    "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".into(),
+                    "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".try_into().unwrap(),
+                    "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".try_into().unwrap(),
                 ),
                 note_data: NoteData::empty(),
                 assets: 3000,
@@ -666,8 +747,8 @@ mod tests {
                 version: Version::V1,
                 origin_page: 14,
                 name: Name::new(
-                    "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".into(),
-                    "6yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".into(),
+                    "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".try_into().unwrap(),
+                    "6yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".try_into().unwrap(),
                 ),
                 note_data: NoteData::empty(),
                 assets: 3000,
@@ -676,17 +757,17 @@ mod tests {
                 version: Version::V1,
                 origin_page: 15,
                 name: Name::new(
-                    "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".into(),
-                    "5yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".into(),
+                    "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".try_into().unwrap(),
+                    "5yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".try_into().unwrap(),
                 ),
                 note_data: NoteData::empty(),
                 assets: 3000,
             },
         ];
 
-        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME".into();
+        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME".try_into().unwrap();
         let gift = 2700;
-        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX".into();
+        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX".try_into().unwrap();
         let spend_condition = SpendCondition(vec![
             LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
             LockPrimitive::Tim(LockTim::coinbase()),
@@ -760,16 +841,16 @@ mod tests {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
-                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".into(),
-                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".into(),
+                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".try_into().unwrap(),
+                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".try_into().unwrap(),
             ),
             note_data: NoteData::empty(),
             assets: 4294967296,
         };
-        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME".into();
+        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME".try_into().unwrap();
         let gift = 1234567;
         let fee = 2850816;
-        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX".into();
+        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX".try_into().unwrap();
         let spend_condition = SpendCondition(vec![
             LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
             LockPrimitive::Tim(LockTim::coinbase()),

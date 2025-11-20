@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use serde::{Deserialize, Serialize};
 use core::ops::{Add, Div, Mul, Neg, Sub};
 use num_traits::Pow;
 
@@ -14,7 +15,7 @@ pub const PRIME_128: u128 = 18446744069414584321;
 const RP: u128 = 340282366841710300967557013911933812736;
 pub const R2: u128 = 18446744065119617025;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Default)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Default, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct Belt(pub u64);
 
@@ -27,6 +28,14 @@ impl Belt {
             belts.push(Belt(u32::from_le_bytes(arr) as u64));
         }
         belts
+    }
+
+    pub fn to_bytes(belts: &[Belt]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for b in belts {
+            bytes.extend(u32::try_from(b.0).expect("Too big for u32").to_le_bytes());
+        }
+        bytes
     }
 }
 

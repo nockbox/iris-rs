@@ -1,6 +1,7 @@
 use alloc::{fmt, string::String, vec, vec::Vec};
 use ibig::ops::DivRem;
 use ibig::UBig;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     belt::{Belt, PRIME},
@@ -8,7 +9,7 @@ use crate::{
     Noun,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Digest(pub [Belt; 5]);
 
 impl From<[u64; 5]> for Digest {
@@ -65,9 +66,15 @@ impl fmt::Display for Digest {
     }
 }
 
-impl From<&str> for Digest {
-    fn from(s: &str) -> Self {
-        Self::from_bytes(&bs58::decode(s).into_vec().unwrap())
+impl TryFrom<&str> for Digest {
+    type Error = &'static str;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Ok(Self::from_bytes(
+            &bs58::decode(s)
+                .into_vec()
+                .map_err(|_| "unable to decode digest")?,
+        ))
     }
 }
 

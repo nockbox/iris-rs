@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use alloc::{string::String, vec};
 use nbx_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode, ZSet};
 use nbx_ztd_derive::{Hashable, NounDecode, NounEncode};
+use serde::{Deserialize, Serialize};
 
 use super::SpendCondition;
 
@@ -37,7 +38,18 @@ impl NounEncode for Pkh {
     }
 }
 
-#[derive(Debug, Clone, NounEncode, NounDecode)]
+impl NounDecode for Pkh {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let (m, hashes): (u64, ZSet<Digest>) = NounDecode::from_noun(noun)?;
+
+        Some(Pkh {
+            m,
+            hashes: hashes.into_iter().collect(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
 pub struct NoteDataEntry {
     pub key: String,
     pub val: Noun,
@@ -58,7 +70,7 @@ impl Hashable for NoteDataEntry {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NoteData(pub Vec<NoteDataEntry>);
 
 impl NoteData {
@@ -108,7 +120,7 @@ impl Hashable for NoteData {
     }
 }
 
-#[derive(Debug, Clone, Hashable)]
+#[derive(Debug, Clone, Hashable, Serialize, Deserialize)]
 pub struct Note {
     pub version: Version,
     pub origin_page: BlockHeight,
@@ -149,7 +161,7 @@ pub struct BalanceUpdate {
     pub notes: Balance,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Version {
     V0,
     V1,
@@ -159,6 +171,19 @@ pub enum Version {
 impl NounEncode for Version {
     fn to_noun(&self) -> Noun {
         u32::from(self.clone()).to_noun()
+    }
+}
+
+impl NounDecode for Version {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let v: u32 = NounDecode::from_noun(noun)?;
+
+        Some(match v {
+            0 => Version::V0,
+            1 => Version::V1,
+            2 => Version::V2,
+            _ => return None,
+        })
     }
 }
 
@@ -194,7 +219,19 @@ impl From<u32> for Version {
     }
 }
 
-#[derive(Clone, Debug, Hashable, NounEncode, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Clone,
+    Debug,
+    Hashable,
+    NounEncode,
+    NounDecode,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+)]
 pub struct Name {
     pub first: Digest,
     pub last: Digest,
@@ -218,7 +255,7 @@ pub struct Source {
 }
 
 /// Timelock range (for both absolute and relative constraints)
-#[derive(Debug, Clone, Hashable, NounEncode)]
+#[derive(Debug, Clone, Hashable, NounEncode, NounDecode)]
 pub struct TimelockRange {
     pub min: Option<BlockHeight>,
     pub max: Option<BlockHeight>,

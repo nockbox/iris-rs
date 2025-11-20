@@ -675,6 +675,23 @@ pub struct WasmSeed {
 
 #[wasm_bindgen]
 impl WasmSeed {
+    #[wasm_bindgen(constructor)]
+    pub fn new(
+        output_source: Option<WasmSource>,
+        lock_root: WasmDigest,
+        gift: Nicks,
+        note_data: WasmNoteData,
+        parent_hash: WasmDigest,
+    ) -> Self {
+        Self {
+            output_source,
+            lock_root,
+            gift,
+            note_data,
+            parent_hash,
+        }
+    }
+
     #[wasm_bindgen(js_name = newSinglePkh)]
     pub fn new_single_pkh(
         pkh: WasmDigest,
@@ -691,9 +708,24 @@ impl WasmSeed {
         seed.into()
     }
 
+    #[wasm_bindgen(getter, js_name = outputSource)]
+    pub fn output_source(&self) -> Option<WasmSource> {
+        self.output_source.clone()
+    }
+
+    #[wasm_bindgen(setter, js_name = outputSource)]
+    pub fn set_output_source(&mut self, output_source: Option<WasmSource>) {
+        self.output_source = output_source;
+    }
+
     #[wasm_bindgen(getter, js_name = lockRoot)]
     pub fn lock_root(&self) -> WasmDigest {
         self.lock_root.clone()
+    }
+
+    #[wasm_bindgen(setter, js_name = lockRoot)]
+    pub fn set_lock_root(&mut self, lock_root: WasmDigest) {
+        self.lock_root = lock_root;
     }
 
     #[wasm_bindgen(getter)]
@@ -701,9 +733,29 @@ impl WasmSeed {
         self.gift
     }
 
+    #[wasm_bindgen(setter)]
+    pub fn set_gift(&mut self, gift: Nicks) {
+        self.gift = gift;
+    }
+
+    #[wasm_bindgen(getter, js_name = noteData)]
+    pub fn note_data(&self) -> WasmNoteData {
+        self.note_data.clone()
+    }
+
+    #[wasm_bindgen(setter, js_name = noteData)]
+    pub fn set_note_data(&mut self, note_data: WasmNoteData) {
+        self.note_data = note_data;
+    }
+
     #[wasm_bindgen(getter, js_name = parentHash)]
     pub fn parent_hash(&self) -> WasmDigest {
         self.parent_hash.clone()
+    }
+
+    #[wasm_bindgen(setter, js_name = parentHash)]
+    pub fn set_parent_hash(&mut self, parent_hash: WasmDigest) {
+        self.parent_hash = parent_hash;
     }
 
     fn to_internal(&self) -> Result<Seed, String> {

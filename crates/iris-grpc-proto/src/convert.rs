@@ -559,3 +559,134 @@ impl TryFrom<PbBalance> for BalanceUpdate {
         })
     }
 }
+impl TryFrom<PbPkhLock> for Pkh {
+    type Error = ConversionError;
+    fn try_from(pkh: PbPkhLock) -> Result<Self, Self::Error> {
+        let hashes: Result<Vec<Digest>, ConversionError> =
+            pkh.hashes.into_iter().map(|h| h.try_into()).collect();
+        Ok(Pkh::new(pkh.m, hashes?))
+    }
+}
+
+impl TryFrom<PbLockPrimitive> for LockPrimitive {
+    type Error = ConversionError;
+    fn try_from(primitive: PbLockPrimitive) -> Result<Self, Self::Error> {
+        match primitive.primitive.required("LockPrimitive", "primitive")? {
+            lock_primitive::Primitive::Pkh(pkh) => Ok(LockPrimitive::Pkh(pkh.try_into()?)),
+            lock_primitive::Primitive::Tim(tim) => Ok(LockPrimitive::Tim(tim.try_into()?)),
+            lock_primitive::Primitive::Hax(hax) => {
+                let hashes: Result<Vec<Digest>, ConversionError> =
+                    hax.hashes.into_iter().map(|h| h.try_into()).collect();
+                Ok(LockPrimitive::Hax(Hax(hashes?)))
+            }
+            lock_primitive::Primitive::Burn(_) => Ok(LockPrimitive::Brn),
+        }
+    }
+}
+
+impl TryFrom<PbSpendCondition> for SpendCondition {
+    type Error = ConversionError;
+    fn try_from(condition: PbSpendCondition) -> Result<Self, Self::Error> {
+        let primitives: Result<Vec<LockPrimitive>, ConversionError> = condition
+            .primitives
+            .into_iter()
+            .map(|p| p.try_into())
+            .collect();
+        Ok(SpendCondition(primitives?))
+    }
+}
+
+impl TryFrom<PbSeed> for Seed {
+    type Error = ConversionError;
+    fn try_from(seed: PbSeed) -> Result<Self, Self::Error> {
+        Ok(Seed {
+            output_source: seed.output_source.map(|s| s.try_into()).transpose()?,
+            lock_root: seed.lock_root.required("Seed", "lock_root")?.try_into()?,
+            note_data: seed.note_data.required("Seed", "note_data")?.try_into()?,
+            gift: seed.gift.required("Seed", "gift")?.into(),
+            parent_hash: seed
+                .parent_hash
+                .required("Seed", "parent_hash")?
+                .try_into()?,
+        })
+    }
+}
+
+impl TryFrom<PbRawTransaction> for RawTx {
+    type Error = ConversionError;
+    fn try_from(tx: PbRawTransaction) -> Result<Self, Self::Error> {
+        let version: Version = tx.version.required("RawTransaction", "version")?.into();
+        let id: Digest = tx.id.required("RawTransaction", "id")?.try_into()?;
+        let spends: Result<Vec<(Name, Spend)>, ConversionError> = tx
+            .spends
+            .into_iter()
+            .map(|entry| {
+                let name = entry.name.required("SpendEntry", "name")?.try_into()?;
+                let spend_pb = entry.spend.required("SpendEntry", "spend")?;
+                let spend = match spend_pb.spend_kind.required("Spend", "spend_kind")? {
+                    spend::SpendKind::Witness(w) => {
+                        let witness_pb = w.witness.required("WitnessSpend", "witness")?;
+                        let lock_merkle_proof = witness_pb
+                            .lock_merkle_proof
+                            .required("Witness", "lock_merkle_proof")?;
+                        let spend_condition = lock_merkle_proof
+                            .spend_condition
+                            .required("LockMerkleProof", "spend_condition")?
+                            .try_into()?;
+                        let proof = lock_merkle_proof
+                            .proof
+                            .required("LockMerkleProof", "proof")?;
+
+                        let witness = Witness {
+                            lock_merkle_proof: LockMerkleProof {
+                                spend_condition,
+                                axis: lock_merkle_proof.axis,
+                                proof: MerkleProof {
+                                    root: proof.root.required("MerkleProof", "root")?.try_into()?,
+                                    path: proof
+                                        .path
+                                        .into_iter()
+                                        .map(|h| h.try_into())
+                                        .collect::<Result<Vec<_>, _>>()?,
+                                },
+                            },
+                            pkh_signature: PkhSignature(Vec::new()), // Signature verification not needed for this use case
+                            hax_map: {
+                                let mut map = iris_ztd::ZMap::new();
+                                for hax in witness_pb.hax {
+                                    let hash: Digest =
+                                        hax.hash.required("HaxPreimage", "hash")?.try_into()?;
+                                    let noun = iris_ztd::cue(&hax.value).ok_or(
+                                        ConversionError::Invalid("HaxPreimage value (invalid jam)"),
+                                    )?;
+                                    map.insert(hash, noun);
+                                }
+                                map
+                            },
+                            tim: (),
+                        };
+
+                        let seeds: Result<Vec<Seed>, ConversionError> =
+                            w.seeds.into_iter().map(|s| s.try_into()).collect();
+
+                        Spend {
+                            witness,
+                            seeds: Seeds(seeds?),
+                            fee: w.fee.required("WitnessSpend", "fee")?.into(),
+                        }
+                    }
+                    spend::SpendKind::Legacy(_) => {
+                        return Err(ConversionError::Invalid("Legacy spends are not supported"));
+                    }
+                };
+                Ok((name, spend))
+            })
+            .collect();
+
+        Ok(RawTx {
+            version,
+            id,
+            spends: Spends(spends?),
+        })
+    }
+}

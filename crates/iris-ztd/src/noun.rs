@@ -230,7 +230,11 @@ impl NounEncode for CheetahPoint {
 impl NounDecode for CheetahPoint {
     fn from_noun(noun: &Noun) -> Option<Self> {
         let (x, y, inf) = NounDecode::from_noun(noun)?;
-        Some(Self { x: F6lt(x), y: F6lt(y), inf })
+        Some(Self {
+            x: F6lt(x),
+            y: F6lt(y),
+            inf,
+        })
     }
 }
 

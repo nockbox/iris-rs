@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
-use serde::{Deserialize, Serialize};
 use core::ops::{Add, Div, Mul, Neg, Sub};
 use num_traits::Pow;
+use serde::{Deserialize, Serialize};
 
 pub mod bpoly;
 pub mod poly;

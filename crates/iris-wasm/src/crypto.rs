@@ -5,7 +5,7 @@ use wasm_bindgen::prelude::*;
 use iris_crypto::cheetah::{PrivateKey, PublicKey, Signature};
 use iris_crypto::slip10::{derive_master_key as derive_master_key_internal, ExtendedKey};
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = Signature)]
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WasmSignature {
     #[wasm_bindgen(skip)]
@@ -14,7 +14,7 @@ pub struct WasmSignature {
     pub s: Vec<u8>,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = Signature)]
 impl WasmSignature {
     #[wasm_bindgen(getter)]
     pub fn c(&self) -> Vec<u8> {
@@ -34,7 +34,7 @@ impl WasmSignature {
     }
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = ExtendedKey)]
 #[derive(Serialize, Deserialize)]
 pub struct WasmExtendedKey {
     #[wasm_bindgen(skip)]
@@ -45,7 +45,7 @@ pub struct WasmExtendedKey {
     pub chain_code: Vec<u8>,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = ExtendedKey)]
 impl WasmExtendedKey {
     #[wasm_bindgen(getter)]
     pub fn private_key(&self) -> Option<Vec<u8>> {

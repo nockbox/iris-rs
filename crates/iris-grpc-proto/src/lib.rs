@@ -50,7 +50,7 @@ pub mod serde_u32_as_string {
 pub mod serde_hash_as_base58 {
     use super::pb::common::v1::{Belt, Hash};
     use iris_ztd::Digest;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as DeError};
+    use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<S>(hash: &Option<Hash>, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -82,11 +82,21 @@ pub mod serde_hash_as_base58 {
             Some(s) => {
                 let digest = Digest::try_from(s.as_str()).map_err(DeError::custom)?;
                 Ok(Some(Hash {
-                    belt_1: Some(Belt { value: digest.0[0].0 }),
-                    belt_2: Some(Belt { value: digest.0[1].0 }),
-                    belt_3: Some(Belt { value: digest.0[2].0 }),
-                    belt_4: Some(Belt { value: digest.0[3].0 }),
-                    belt_5: Some(Belt { value: digest.0[4].0 }),
+                    belt_1: Some(Belt {
+                        value: digest.0[0].0,
+                    }),
+                    belt_2: Some(Belt {
+                        value: digest.0[1].0,
+                    }),
+                    belt_3: Some(Belt {
+                        value: digest.0[2].0,
+                    }),
+                    belt_4: Some(Belt {
+                        value: digest.0[3].0,
+                    }),
+                    belt_5: Some(Belt {
+                        value: digest.0[4].0,
+                    }),
                 }))
             }
         }

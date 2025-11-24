@@ -8,7 +8,12 @@ struct TxEngine {
 }
 
 impl TxEngine {
-    pub fn create_tx(&self, fee: Coins, recipients: &[Recipient], lock_intent: LockIntent) -> Draft {
+    pub fn create_tx(
+        &self,
+        fee: Coins,
+        recipients: &[Recipient],
+        lock_intent: LockIntent,
+    ) -> Draft {
         todo!()
     }
 }

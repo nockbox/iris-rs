@@ -11,7 +11,12 @@ pub struct LockIntent;
 pub struct Draft;
 
 // NOTE: this is called by TxEngine
-pub fn create_tx(names: &[Name], fee: Coins, recipients: &[Recipient], lock_intent: LockIntent) -> Draft {
+pub fn create_tx(
+    names: &[Name],
+    fee: Coins,
+    recipients: &[Recipient],
+    lock_intent: LockIntent,
+) -> Draft {
     todo!()
 }
 

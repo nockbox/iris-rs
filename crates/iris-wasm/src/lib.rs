@@ -1,9 +1,9 @@
 extern crate alloc;
 
 mod crypto;
-mod tx;
 mod grpc;
+mod tx;
 
 pub use crypto::*;
-pub use tx::*;
 pub use grpc::*;
+pub use tx::*;

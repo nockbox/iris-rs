@@ -5,6 +5,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use ibig::UBig;
 use iris_crypto::PrivateKey;
+use iris_grpc_proto::pb::common::v1 as pb_v1;
+use iris_grpc_proto::pb::common::v2 as pb;
 use iris_nockchain_types::{
     builder::TxBuilder,
     note::{Name, Note, NoteData, NoteDataEntry, Pkh, TimelockRange, Version},
@@ -28,7 +30,7 @@ pub struct WasmDigest {
     pub value: String,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = Digest)]
 impl WasmDigest {
     #[wasm_bindgen(constructor)]
     pub fn new(value: String) -> Self {
@@ -49,6 +51,22 @@ impl WasmDigest {
             value: digest.to_string(),
         }
     }
+
+    #[wasm_bindgen(js_name = toProtobuf)]
+    pub fn to_protobuf(&self) -> Result<JsValue, JsValue> {
+        let digest = self.to_internal().map_err(|e| JsValue::from_str(e))?;
+        let pb = pb_v1::Hash::from(digest);
+        serde_wasm_bindgen::to_value(&pb).map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = fromProtobuf)]
+    pub fn from_protobuf(value: JsValue) -> Result<WasmDigest, JsValue> {
+        let pb: pb_v1::Hash = serde_wasm_bindgen::from_value(value)?;
+        let digest: Digest = pb
+            .try_into()
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        Ok(WasmDigest::from_internal(&digest))
+    }
 }
 
 #[wasm_bindgen(js_name = Version)]
@@ -57,7 +75,7 @@ pub struct WasmVersion {
     version: u32,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = Version)]
 impl WasmVersion {
     #[wasm_bindgen(constructor)]
     pub fn new(version: u32) -> Self {
@@ -99,7 +117,7 @@ pub struct WasmName {
     pub last: Digest,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = Name)]
 impl WasmName {
     #[wasm_bindgen(constructor)]
     pub fn new(first: String, last: String) -> Result<Self, JsValue> {
@@ -131,6 +149,22 @@ impl WasmName {
             last: name.last,
         }
     }
+
+    #[wasm_bindgen(js_name = toProtobuf)]
+    pub fn to_protobuf(&self) -> Result<JsValue, JsValue> {
+        let name = self.to_internal();
+        let pb = pb_v1::Name::from(name);
+        serde_wasm_bindgen::to_value(&pb).map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = fromProtobuf)]
+    pub fn from_protobuf(value: JsValue) -> Result<WasmName, JsValue> {
+        let pb: pb_v1::Name = serde_wasm_bindgen::from_value(value)?;
+        let name: Name = pb
+            .try_into()
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        Ok(WasmName::from_internal(&name))
+    }
 }
 
 #[wasm_bindgen(js_name = TimelockRange)]
@@ -142,7 +176,7 @@ pub struct WasmTimelockRange {
     pub max: Option<u64>,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = TimelockRange)]
 impl WasmTimelockRange {
     #[wasm_bindgen(constructor)]
     pub fn new(min: Option<u64>, max: Option<u64>) -> Self {
@@ -180,7 +214,7 @@ pub struct WasmSource {
     pub is_coinbase: bool,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = Source)]
 impl WasmSource {
     #[wasm_bindgen(getter)]
     pub fn hash(&self) -> WasmDigest {
@@ -220,7 +254,7 @@ pub struct WasmNoteDataEntry {
     pub blob: Vec<u8>,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = NoteDataEntry)]
 impl WasmNoteDataEntry {
     #[wasm_bindgen(constructor)]
     pub fn new(key: String, blob: Vec<u8>) -> Self {
@@ -251,6 +285,22 @@ impl WasmNoteDataEntry {
             blob: jam(entry.val.clone()),
         }
     }
+
+    #[wasm_bindgen(js_name = toProtobuf)]
+    pub fn to_protobuf(&self) -> Result<JsValue, JsValue> {
+        let entry = self.to_internal().map_err(|e| JsValue::from_str(&e))?;
+        let pb = pb::NoteDataEntry::from(entry);
+        serde_wasm_bindgen::to_value(&pb).map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = fromProtobuf)]
+    pub fn from_protobuf(value: JsValue) -> Result<WasmNoteDataEntry, JsValue> {
+        let pb: pb::NoteDataEntry = serde_wasm_bindgen::from_value(value)?;
+        let entry: NoteDataEntry = pb
+            .try_into()
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        Ok(WasmNoteDataEntry::from_internal(&entry))
+    }
 }
 
 #[wasm_bindgen(js_name = NoteData)]
@@ -260,7 +310,7 @@ pub struct WasmNoteData {
     pub entries: Vec<WasmNoteDataEntry>,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = NoteData)]
 impl WasmNoteData {
     #[wasm_bindgen(constructor)]
     pub fn new(entries: Vec<WasmNoteDataEntry>) -> Self {
@@ -300,6 +350,22 @@ impl WasmNoteData {
                 .collect(),
         }
     }
+
+    #[wasm_bindgen(js_name = toProtobuf)]
+    pub fn to_protobuf(&self) -> Result<JsValue, JsValue> {
+        let data = self.to_internal().map_err(|e| JsValue::from_str(&e))?;
+        let pb = pb::NoteData::from(data);
+        serde_wasm_bindgen::to_value(&pb).map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = fromProtobuf)]
+    pub fn from_protobuf(value: JsValue) -> Result<WasmNoteData, JsValue> {
+        let pb: pb::NoteData = serde_wasm_bindgen::from_value(value)?;
+        let data: NoteData = pb
+            .try_into()
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        Ok(WasmNoteData::from_internal(&data))
+    }
 }
 
 #[wasm_bindgen(js_name = Note)]
@@ -317,7 +383,7 @@ pub struct WasmNote {
     pub assets: Nicks,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = Note)]
 impl WasmNote {
     #[wasm_bindgen(constructor)]
     pub fn new(
@@ -373,88 +439,20 @@ impl WasmNote {
     /// Expects response.notes[i].note (handles version internally)
     #[wasm_bindgen(js_name = fromProtobuf)]
     pub fn from_protobuf(pb_note: JsValue) -> Result<WasmNote, JsValue> {
-        use serde_wasm_bindgen::from_value;
+        let pb: pb::Note = serde_wasm_bindgen::from_value(pb_note)?;
+        let note: Note = pb
+            .try_into()
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        Ok(WasmNote::from_internal(note))
+    }
 
-        #[derive(Deserialize)]
-        struct PbNote {
-            note_version: PbNoteVersion,
-        }
-
-        #[derive(Deserialize)]
-        struct PbNoteVersion {
-            #[serde(rename = "V1")]
-            v1: Option<PbNoteV1>,
-        }
-
-        #[derive(Deserialize)]
-        struct PbNoteV1 {
-            version: PbVersion,
-            origin_page: PbValue,
-            name: PbName,
-            note_data: PbNoteData,
-            assets: PbValue,
-        }
-
-        #[derive(Deserialize)]
-        struct PbVersion {
-            value: String,
-        }
-
-        #[derive(Deserialize)]
-        struct PbValue {
-            value: String,
-        }
-
-        #[derive(Deserialize)]
-        struct PbName {
-            first: String,
-            last: String,
-        }
-
-        #[derive(Deserialize)]
-        struct PbNoteData {
-            entries: Vec<PbNoteDataEntry>,
-        }
-
-        #[derive(Deserialize)]
-        struct PbNoteDataEntry {
-            key: String,
-            blob: Vec<u8>,
-        }
-
-        let pb: PbNote = from_value(pb_note).map_err(|e| JsValue::from_str(&format!("{}", e)))?;
-
-        let v1 = pb
-            .note_version
-            .v1
-            .ok_or_else(|| JsValue::from_str("Only V1 notes are supported"))?;
-
-        let version_value: u32 = v1
-            .version
-            .value
-            .parse()
-            .map_err(|e| JsValue::from_str(&format!("Invalid version: {}", e)))?;
-        let version = WasmVersion::new(version_value);
-        let origin_page: u64 = v1
-            .origin_page
-            .value
-            .parse()
-            .map_err(|e| JsValue::from_str(&format!("Invalid origin_page: {}", e)))?;
-        let name = WasmName::new(v1.name.first, v1.name.last)?;
-        let note_data_entries: Vec<WasmNoteDataEntry> = v1
-            .note_data
-            .entries
-            .into_iter()
-            .map(|e| WasmNoteDataEntry::new(e.key, e.blob))
-            .collect();
-        let note_data = WasmNoteData::new(note_data_entries);
-        let assets: u64 = v1
-            .assets
-            .value
-            .parse()
-            .map_err(|e| JsValue::from_str(&format!("Invalid assets: {}", e)))?;
-
-        Ok(WasmNote::new(version, origin_page, name, note_data, assets))
+    #[wasm_bindgen(js_name = toProtobuf)]
+    pub fn to_protobuf(&self) -> Result<JsValue, JsValue> {
+        let note = self
+            .to_internal()
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        let pb = pb::Note::from(note);
+        serde_wasm_bindgen::to_value(&pb).map_err(|e| e.into())
     }
 
     fn to_internal(&self) -> Result<Note, String> {
@@ -491,7 +489,7 @@ pub struct WasmPkh {
     pub hashes: Vec<String>,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = Pkh)]
 impl WasmPkh {
     #[wasm_bindgen(constructor)]
     pub fn new(m: u64, hashes: Vec<String>) -> Self {
@@ -528,6 +526,22 @@ impl WasmPkh {
             internal.hashes.into_iter().map(|v| v.to_string()).collect(),
         )
     }
+
+    #[wasm_bindgen(js_name = toProtobuf)]
+    pub fn to_protobuf(&self) -> Result<JsValue, JsValue> {
+        let pkh = self.to_internal().map_err(|e| JsValue::from_str(&e))?;
+        let pb = pb::PkhLock::from(pkh);
+        serde_wasm_bindgen::to_value(&pb).map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = fromProtobuf)]
+    pub fn from_protobuf(value: JsValue) -> Result<WasmPkh, JsValue> {
+        let pb: pb::PkhLock = serde_wasm_bindgen::from_value(value)?;
+        let pkh: Pkh = pb
+            .try_into()
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        Ok(WasmPkh::from_internal(pkh))
+    }
 }
 
 #[wasm_bindgen(js_name = LockTim)]
@@ -539,7 +553,7 @@ pub struct WasmLockTim {
     pub abs: WasmTimelockRange,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = LockTim)]
 impl WasmLockTim {
     #[wasm_bindgen(constructor)]
     pub fn new(rel: WasmTimelockRange, abs: WasmTimelockRange) -> Self {
@@ -584,6 +598,22 @@ impl WasmLockTim {
             abs: WasmTimelockRange::from_internal(internal.abs),
         }
     }
+
+    #[wasm_bindgen(js_name = toProtobuf)]
+    pub fn to_protobuf(&self) -> Result<JsValue, JsValue> {
+        let tim = self.to_internal();
+        let pb = pb::LockTim::from(tim);
+        serde_wasm_bindgen::to_value(&pb).map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = fromProtobuf)]
+    pub fn from_protobuf(value: JsValue) -> Result<WasmLockTim, JsValue> {
+        let pb: pb::LockTim = serde_wasm_bindgen::from_value(value)?;
+        let tim: LockTim = pb
+            .try_into()
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        Ok(WasmLockTim::from_internal(tim))
+    }
 }
 
 #[wasm_bindgen(js_name = Hax)]
@@ -593,7 +623,7 @@ pub struct WasmHax {
     pub digests: Vec<WasmDigest>,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = Hax)]
 impl WasmHax {
     #[wasm_bindgen(constructor)]
     pub fn new(digests: Vec<WasmDigest>) -> Self {
@@ -630,7 +660,7 @@ pub struct WasmLockPrimitive {
     pub hax_data: Option<WasmHax>,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = LockPrimitive)]
 impl WasmLockPrimitive {
     #[wasm_bindgen(js_name = newPkh)]
     pub fn new_pkh(pkh: WasmPkh) -> WasmLockPrimitive {
@@ -708,6 +738,22 @@ impl WasmLockPrimitive {
             LockPrimitive::Brn => Self::new_brn(),
         }
     }
+
+    #[wasm_bindgen(js_name = toProtobuf)]
+    pub fn to_protobuf(&self) -> Result<JsValue, JsValue> {
+        let prim = self.to_internal().map_err(|e| JsValue::from_str(&e))?;
+        let pb = pb::LockPrimitive::from(prim);
+        serde_wasm_bindgen::to_value(&pb).map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = fromProtobuf)]
+    pub fn from_protobuf(value: JsValue) -> Result<WasmLockPrimitive, JsValue> {
+        let pb: pb::LockPrimitive = serde_wasm_bindgen::from_value(value)?;
+        let prim: LockPrimitive = pb
+            .try_into()
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        Ok(WasmLockPrimitive::from_internal(prim))
+    }
 }
 
 #[wasm_bindgen(js_name = SpendCondition)]
@@ -717,7 +763,7 @@ pub struct WasmSpendCondition {
     pub primitives: Vec<WasmLockPrimitive>,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = SpendCondition)]
 impl WasmSpendCondition {
     #[wasm_bindgen(constructor)]
     pub fn new(primitives: Vec<WasmLockPrimitive>) -> Self {
@@ -765,6 +811,22 @@ impl WasmSpendCondition {
                 .collect(),
         )
     }
+
+    #[wasm_bindgen(js_name = toProtobuf)]
+    pub fn to_protobuf(&self) -> Result<JsValue, JsValue> {
+        let cond = self.to_internal().map_err(|e| JsValue::from_str(&e))?;
+        let pb = pb::SpendCondition::from(cond);
+        serde_wasm_bindgen::to_value(&pb).map_err(|e| e.into())
+    }
+
+    #[wasm_bindgen(js_name = fromProtobuf)]
+    pub fn from_protobuf(value: JsValue) -> Result<WasmSpendCondition, JsValue> {
+        let pb: pb::SpendCondition = serde_wasm_bindgen::from_value(value)?;
+        let cond: SpendCondition = pb
+            .try_into()
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        Ok(WasmSpendCondition::from_internal(cond))
+    }
 }
 
 #[wasm_bindgen(js_name = Seed)]
@@ -781,7 +843,7 @@ pub struct WasmSeed {
     pub parent_hash: WasmDigest,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = Seed)]
 impl WasmSeed {
     #[wasm_bindgen(constructor)]
     pub fn new(
@@ -893,6 +955,29 @@ impl From<Seed> for WasmSeed {
     }
 }
 
+#[wasm_bindgen]
+impl WasmSeed {
+    #[wasm_bindgen(js_name = toProtobuf)]
+    pub fn to_protobuf(&self) -> Result<JsValue, JsValue> {
+        let seed = self.to_internal().map_err(|e| JsValue::from_str(&e))?;
+        let pb = pb::Seed::from(seed);
+        serde_wasm_bindgen::to_value(&pb).map_err(|e| e.into())
+    }
+
+    fn from_internal(seed: Seed) -> Self {
+        seed.into()
+    }
+
+    #[wasm_bindgen(js_name = fromProtobuf)]
+    pub fn from_protobuf(value: JsValue) -> Result<WasmSeed, JsValue> {
+        let pb: pb::Seed = serde_wasm_bindgen::from_value(value)?;
+        let seed: Seed = pb
+            .try_into()
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        Ok(WasmSeed::from_internal(seed))
+    }
+}
+
 // ============================================================================
 // Wasm Transaction Builder
 // ============================================================================
@@ -902,7 +987,7 @@ pub struct WasmTxBuilder {
     builder: TxBuilder,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = TxBuilder)]
 impl WasmTxBuilder {
     /// Create an empty transaction builder
     #[wasm_bindgen(constructor)]
@@ -1129,18 +1214,6 @@ impl WasmTxBuilder {
         let tx = self.builder.build();
         Ok(WasmRawTx::from_internal(&tx))
     }
-
-    #[wasm_bindgen(js_name = toJs)]
-    pub fn to_js(&self) -> Result<JsValue, JsValue> {
-        serde_wasm_bindgen::to_value(&self.builder).map_err(|e| e.into())
-    }
-
-    #[wasm_bindgen(js_name = fromJs)]
-    pub fn from_js(value: JsValue) -> Result<WasmTxBuilder, JsValue> {
-        serde_wasm_bindgen::from_value(value)
-            .map(|builder| WasmTxBuilder { builder })
-            .map_err(|e| e.into())
-    }
 }
 
 #[wasm_bindgen(js_name = TxNotes)]
@@ -1151,7 +1224,7 @@ pub struct WasmTxNotes {
     pub spend_conditions: Vec<WasmSpendCondition>,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = TxNotes)]
 impl WasmTxNotes {
     #[wasm_bindgen(getter)]
     pub fn get_notes(&self) -> Vec<WasmNote> {
@@ -1173,7 +1246,7 @@ pub struct WasmSpendBuilder {
     builder: SpendBuilder,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = SpendBuilder)]
 impl WasmSpendBuilder {
     /// Create a new `SpendBuilder` with a given note and spend condition
     #[wasm_bindgen(constructor)]
@@ -1331,7 +1404,7 @@ pub struct WasmRawTx {
     pub(crate) internal: RawTx,
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_class = RawTx)]
 impl WasmRawTx {
     #[wasm_bindgen(getter)]
     pub fn version(&self) -> WasmVersion {
@@ -1357,10 +1430,18 @@ impl WasmRawTx {
     /// Convert to protobuf RawTransaction for sending via gRPC
     #[wasm_bindgen(js_name = toProtobuf)]
     pub fn to_protobuf(&self) -> Result<JsValue, JsValue> {
-        use iris_grpc_proto::pb::common::v2::RawTransaction as PbRawTransaction;
-        let pb_tx = PbRawTransaction::from(self.internal.clone());
+        let pb_tx = pb::RawTransaction::from(self.internal.clone());
         serde_wasm_bindgen::to_value(&pb_tx)
             .map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))
+    }
+
+    #[wasm_bindgen(js_name = fromProtobuf)]
+    pub fn from_protobuf(value: JsValue) -> Result<WasmRawTx, JsValue> {
+        let pb: pb::RawTransaction = serde_wasm_bindgen::from_value(value)?;
+        let tx: RawTx = pb
+            .try_into()
+            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        Ok(WasmRawTx::from_internal(&tx))
     }
 
     /// Convert to jammed transaction file for inspecting through CLI

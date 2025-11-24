@@ -652,17 +652,25 @@ mod tests {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
-                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".try_into().unwrap(),
-                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".try_into().unwrap(),
+                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                    .try_into()
+                    .unwrap(),
+                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+                    .try_into()
+                    .unwrap(),
             ),
             note_data: NoteData::empty(),
             assets: 4294967296,
         };
 
-        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME".try_into().unwrap();
+        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
+            .try_into()
+            .unwrap();
         let gift = 1234567;
         let fee = 2850816;
-        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX".try_into().unwrap();
+        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
+            .try_into()
+            .unwrap();
         let spend_condition = SpendCondition(vec![
             LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
             LockPrimitive::Tim(LockTim::coinbase()),
@@ -737,8 +745,12 @@ mod tests {
                 version: Version::V1,
                 origin_page: 13,
                 name: Name::new(
-                    "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".try_into().unwrap(),
-                    "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".try_into().unwrap(),
+                    "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                        .try_into()
+                        .unwrap(),
+                    "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+                        .try_into()
+                        .unwrap(),
                 ),
                 note_data: NoteData::empty(),
                 assets: 3000,
@@ -747,8 +759,12 @@ mod tests {
                 version: Version::V1,
                 origin_page: 14,
                 name: Name::new(
-                    "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".try_into().unwrap(),
-                    "6yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".try_into().unwrap(),
+                    "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                        .try_into()
+                        .unwrap(),
+                    "6yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+                        .try_into()
+                        .unwrap(),
                 ),
                 note_data: NoteData::empty(),
                 assets: 3000,
@@ -757,17 +773,25 @@ mod tests {
                 version: Version::V1,
                 origin_page: 15,
                 name: Name::new(
-                    "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".try_into().unwrap(),
-                    "5yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".try_into().unwrap(),
+                    "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                        .try_into()
+                        .unwrap(),
+                    "5yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+                        .try_into()
+                        .unwrap(),
                 ),
                 note_data: NoteData::empty(),
                 assets: 3000,
             },
         ];
 
-        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME".try_into().unwrap();
+        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
+            .try_into()
+            .unwrap();
         let gift = 2700;
-        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX".try_into().unwrap();
+        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
+            .try_into()
+            .unwrap();
         let spend_condition = SpendCondition(vec![
             LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
             LockPrimitive::Tim(LockTim::coinbase()),
@@ -841,16 +865,24 @@ mod tests {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
-                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH".try_into().unwrap(),
-                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM".try_into().unwrap(),
+                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                    .try_into()
+                    .unwrap(),
+                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+                    .try_into()
+                    .unwrap(),
             ),
             note_data: NoteData::empty(),
             assets: 4294967296,
         };
-        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME".try_into().unwrap();
+        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
+            .try_into()
+            .unwrap();
         let gift = 1234567;
         let fee = 2850816;
-        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX".try_into().unwrap();
+        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
+            .try_into()
+            .unwrap();
         let spend_condition = SpendCondition(vec![
             LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
             LockPrimitive::Tim(LockTim::coinbase()),

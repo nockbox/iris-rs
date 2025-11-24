@@ -3,22 +3,50 @@ use alloc::vec::Vec;
 
 use bs58;
 use ibig::UBig;
-use once_cell::sync::Lazy;
 
-use crate::belt::{bneg, Belt, PRIME};
+use crate::belt::{bneg, Belt};
 use crate::belt::{bpegcd, bpscal};
 
-pub static G_ORDER: Lazy<UBig> = Lazy::new(|| {
-    UBig::from_str_radix(
-        "7af2599b3b3f22d0563fbf0f990a37b5327aa72330157722d443623eaed4accf",
-        16,
-    )
-    .unwrap()
-});
+// Pre-computed constant values stored as little-endian byte arrays
+const G_ORDER_BYTES: &[u8] = &[
+    0xcf, 0xac, 0xd4, 0xae, 0x3e, 0x62, 0x43, 0xd4, 0x22, 0x77, 0x15, 0x30, 0x23, 0xa7, 0x7a, 0x32,
+    0xb5, 0x37, 0x0a, 0x99, 0x0f, 0xbf, 0x3f, 0x56, 0xd0, 0x22, 0x3f, 0x3b, 0x9b, 0x59, 0xf2, 0x7a,
+];
 
-pub static P_BIG: Lazy<UBig> = Lazy::new(|| UBig::from(PRIME));
-pub static P_BIG_2: Lazy<UBig> = Lazy::new(|| &*P_BIG * &*P_BIG);
-pub static P_BIG_3: Lazy<UBig> = Lazy::new(|| &*P_BIG_2 * &*P_BIG);
+const P_BIG_BYTES: &[u8] = &[0x01, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff];
+
+const P_BIG_2_BYTES: &[u8] = &[
+    0x01, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff, 0xff, 0x02, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff, 0xff,
+];
+
+const P_BIG_3_BYTES: &[u8] = &[
+    0x01, 0x00, 0x00, 0x00, 0xfd, 0xff, 0xff, 0xff, 0x05, 0x00, 0x00, 0x00, 0xf9, 0xff, 0xff, 0xff,
+    0x05, 0x00, 0x00, 0x00, 0xfd, 0xff, 0xff, 0xff,
+];
+
+/// Returns the curve order constant as a UBig
+#[inline]
+pub fn g_order() -> UBig {
+    UBig::from_le_bytes(G_ORDER_BYTES)
+}
+
+/// Returns PRIME as a UBig
+#[inline]
+pub fn p_big() -> UBig {
+    UBig::from_le_bytes(P_BIG_BYTES)
+}
+
+/// Returns PRIME^2 as a UBig
+#[inline]
+pub fn p_big_2() -> UBig {
+    UBig::from_le_bytes(P_BIG_2_BYTES)
+}
+
+/// Returns PRIME^3 as a UBig
+#[inline]
+pub fn p_big_3() -> UBig {
+    UBig::from_le_bytes(P_BIG_3_BYTES)
+}
 
 pub const A_GEN: CheetahPoint = CheetahPoint {
     x: F6lt([
@@ -109,7 +137,7 @@ impl CheetahPoint {
         if *self == A_ID {
             return true;
         }
-        let scaled = ch_scal_big(&G_ORDER, self).unwrap();
+        let scaled = ch_scal_big(&g_order(), self).unwrap();
         scaled == A_ID
     }
 
@@ -340,9 +368,9 @@ pub fn ch_scal_big(n: &UBig, p: &CheetahPoint) -> Result<CheetahPoint, CheetahEr
 
 pub fn trunc_g_order(a: &[u64]) -> UBig {
     let mut result = UBig::from(a[0]);
-    result += &*P_BIG * UBig::from(a[1]);
-    result += &*P_BIG_2 * UBig::from(a[2]);
-    result += &*P_BIG_3 * UBig::from(a[3]);
+    result += p_big() * UBig::from(a[1]);
+    result += p_big_2() * UBig::from(a[2]);
+    result += p_big_3() * UBig::from(a[3]);
 
-    result % &*G_ORDER
+    result % g_order()
 }

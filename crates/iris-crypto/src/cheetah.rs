@@ -1,13 +1,13 @@
+use alloc::vec::Vec;
 use ibig::UBig;
 use iris_ztd::{
     crypto::cheetah::{
-        ch_add, ch_neg, ch_scal_big, trunc_g_order, CheetahPoint, F6lt, A_GEN, G_ORDER,
+        ch_add, ch_neg, ch_scal_big, g_order, trunc_g_order, CheetahPoint, F6lt, A_GEN,
     },
     tip5::hash::hash_varlen,
     Belt, Digest, Hashable, Noun, NounDecode, NounEncode,
 };
 use iris_ztd_derive::{NounDecode, NounEncode};
-extern crate alloc;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, NounEncode, NounDecode)]
 pub struct PublicKey(pub CheetahPoint);
@@ -15,9 +15,9 @@ pub struct PublicKey(pub CheetahPoint);
 impl PublicKey {
     pub fn verify(&self, m: &Digest, sig: &Signature) -> bool {
         if sig.c == UBig::from(0u64)
-            || sig.c >= *G_ORDER
+            || &sig.c >= &g_order()
             || sig.s == UBig::from(0u64)
-            || sig.s >= *G_ORDER
+            || &sig.s >= &g_order()
         {
             return false;
         }
@@ -287,7 +287,7 @@ impl PrivateKey {
             trunc_g_order(&hash_varlen(&mut transcript))
         };
         let nonce = self.nonce_for(m);
-        let sig = (&nonce + &chal * &self.0) % &*G_ORDER;
+        let sig = (&nonce + &chal * &self.0) % g_order();
         Signature { c: chal, s: sig }
     }
 

@@ -582,7 +582,6 @@ checksum = "d1fcc7f316b2c079dde77564a1360639c1a956a23fa96122732e416cb10717bb"
 dependencies = [
  "cfg-if",
  "num-traits",
- "rand",
  "static_assertions",
 ]
 
@@ -687,7 +686,6 @@ dependencies = [
  "bs58",
  "ibig",
  "num-traits",
- "once_cell",
  "serde",
 ]
 

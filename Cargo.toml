@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/iris-wallet",
   "crates/iris-ztd",
   "crates/iris-crypto",
   "crates/iris-nockchain-types",
@@ -41,4 +42,5 @@ version = "0.1"
 [workspace.dependencies]
 nockvm = { git = "https://github.com/zorp-corp/nockchain.git" }
 nockchain-math = { git = "https://github.com/zorp-corp/nockchain.git" }
-ibig = "0.3"
+ibig = { version = "0.3", default-features = false, features = ["num-traits"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }

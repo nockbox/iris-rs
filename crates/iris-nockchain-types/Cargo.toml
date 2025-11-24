@@ -9,6 +9,6 @@ iris-ztd = { workspace = true }
 iris-ztd-derive = { path = "../iris-ztd-derive" }
 bip39 = { version = "2.0", default-features = false, features = ["alloc", "std"] }
 iris-crypto = { path = "../iris-crypto" }
-serde = { version = "1.0", features = ["derive"], default-features = false }
+serde = { workspace = true }
 thiserror = "2.0"
 ibig = { workspace = true }

@@ -1,6 +1,7 @@
+use alloc::vec::Vec;
 use hmac::{Hmac, Mac};
 use ibig::UBig;
-use iris_ztd::crypto::cheetah::{ch_add, ch_scal_big, A_GEN, G_ORDER};
+use iris_ztd::crypto::cheetah::{ch_add, ch_scal_big, g_order, A_GEN};
 use sha2::Sha512;
 
 use crate::cheetah::{PrivateKey, PublicKey};
@@ -45,10 +46,10 @@ impl ExtendedKey {
             let mut chain_code = [0u8; 32];
             chain_code.copy_from_slice(&result[32..]);
 
-            if left < *G_ORDER {
+            if &left < &g_order() {
                 match self.private_key.as_ref() {
                     Some(pk) => {
-                        let s = (&left + &pk.0) % &*G_ORDER;
+                        let s = (&left + &pk.0) % g_order();
                         if s != UBig::from(0u64) {
                             let private_key = PrivateKey(s);
                             let public_key = private_key.public_key();
@@ -89,7 +90,7 @@ pub fn derive_master_key(seed: &[u8]) -> ExtendedKey {
         let s = UBig::from_be_bytes(&result[..32]);
         let mut chain_code = [0u8; 32];
         chain_code.copy_from_slice(&result[32..]);
-        if s < *G_ORDER && s != UBig::from(0u64) {
+        if &s < &g_order() && s != UBig::from(0u64) {
             let private_key = PrivateKey(s);
             let public_key = private_key.public_key();
             return ExtendedKey {

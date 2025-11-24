@@ -649,17 +649,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iris-wallet"
-version = "0.1.0"
-dependencies = [
- "bs58",
- "ibig",
- "iris-crypto",
- "iris-nockchain-types",
- "iris-ztd",
-]
-
-[[package]]
 name = "iris-wasm"
 version = "0.1.0"
 dependencies = [

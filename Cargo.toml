@@ -1,6 +1,5 @@
 [workspace]
 members = [
-  "crates/iris-wallet",
   "crates/iris-ztd",
   "crates/iris-crypto",
   "crates/iris-nockchain-types",
@@ -13,9 +12,6 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-
-[workspace.dependencies.iris-wallet]
-path = "crates/iris-wallet"
 
 [workspace.dependencies.iris-ztd]
 path = "crates/iris-ztd"

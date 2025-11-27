@@ -1,4 +1,4 @@
-use alloc::{fmt, string::String, vec::Vec};
+use alloc::{fmt, string::String, vec, vec::Vec};
 use ibig::ops::DivRem;
 use ibig::UBig;
 use serde::{Deserialize, Serialize};
@@ -6,8 +6,11 @@ use serde::{Deserialize, Serialize};
 use crate::{
     belt::{Belt, PRIME},
     tip5::hash::{hash_fixed, hash_varlen},
-    Noun,
+    Noun, Zeroable,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Base58Belts<const N: usize>(pub [Belt; N]);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Digest(pub [Belt; 5]);
@@ -18,51 +21,112 @@ impl From<[u64; 5]> for Digest {
     }
 }
 
-impl Digest {
+impl From<Digest> for Base58Belts<5> {
+    fn from(digest: Digest) -> Self {
+        Base58Belts(digest.0)
+    }
+}
+
+impl From<Base58Belts<5>> for Digest {
+    fn from(belts: Base58Belts<5>) -> Self {
+        Digest(belts.0)
+    }
+}
+
+impl<const N: usize> From<[u64; N]> for Base58Belts<N> {
+    fn from(belts: [u64; N]) -> Self {
+        Base58Belts(belts.map(Belt))
+    }
+}
+
+impl<const N: usize> Base58Belts<N> {
     pub fn to_atom(&self) -> UBig {
         let p = UBig::from(PRIME);
-        let p2 = &p * &p;
-        let p3 = &p * &p2;
-        let p4 = &p * &p3;
+        let mut result = UBig::from(0u64);
+        let mut power = UBig::from(1u64);
 
-        let [a, b, c, d, e] = self.0.map(|b| UBig::from(b.0));
-        a + b * &p + c * p2 + d * p3 + e * p4
+        for belt in &self.0 {
+            result += UBig::from(belt.0) * &power;
+            power *= &p;
+        }
+
+        result
     }
 
-    pub fn to_bytes(&self) -> [u8; 40] {
+    pub fn to_bytes(&self) -> Vec<u8> {
         let res = self.to_atom();
-        let mut bytes = [0u8; 40];
         let res_bytes = res.to_be_bytes();
-        bytes[40 - res_bytes.len()..].copy_from_slice(&res_bytes);
+        let expected_len = N * 8; // Each belt is 8 bytes
+
+        let mut bytes = vec![0u8; expected_len];
+        let start_offset = expected_len.saturating_sub(res_bytes.len());
+        bytes[start_offset..].copy_from_slice(&res_bytes);
         bytes
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        use ibig::UBig;
-
         let p = UBig::from(PRIME);
         let num = UBig::from_be_bytes(bytes);
 
-        let (q1, a) = num.div_rem(&p);
-        let (q2, b) = q1.div_rem(&p);
-        let (q3, c) = q2.div_rem(&p);
-        let (q4, d) = q3.div_rem(&p);
-        let e = q4;
+        let mut belts = Vec::with_capacity(N);
+        let mut remainder = num;
 
-        Digest([
-            Belt(a.try_into().unwrap()),
-            Belt(b.try_into().unwrap()),
-            Belt(c.try_into().unwrap()),
-            Belt(d.try_into().unwrap()),
-            Belt(e.try_into().unwrap()),
-        ])
+        for _ in 0..N {
+            let (quotient, rem) = remainder.div_rem(&p);
+            belts.push(Belt(rem.try_into().unwrap()));
+            remainder = quotient;
+        }
+
+        // Convert Vec to array
+        let array: [Belt; N] = belts
+            .try_into()
+            .unwrap_or_else(|_| panic!("Invalid belt count"));
+        Base58Belts(array)
     }
 }
 
-impl fmt::Display for Digest {
+// Digest-specific implementations that delegate to Base58Belts<5>
+impl Digest {
+    pub fn to_atom(&self) -> UBig {
+        Base58Belts::<5>::from(*self).to_atom()
+    }
+
+    pub fn to_bytes(&self) -> [u8; 40] {
+        let vec = Base58Belts::<5>::from(*self).to_bytes();
+        let mut arr = [0u8; 40];
+        arr.copy_from_slice(&vec);
+        arr
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Base58Belts::<5>::from_bytes(bytes).into()
+    }
+}
+
+// Display and TryFrom implementations for Base58Belts<N>
+impl<const N: usize> fmt::Display for Base58Belts<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let bytes = self.to_bytes();
         write!(f, "{}", bs58::encode(bytes).into_string())
+    }
+}
+
+impl<const N: usize> TryFrom<&str> for Base58Belts<N> {
+    type Error = &'static str;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Ok(Base58Belts::from_bytes(
+            &bs58::decode(s)
+                .into_vec()
+                .map_err(|_| "unable to decode base58 belts")?,
+        ))
+    }
+}
+
+// Digest implementations delegate to Base58Belts<5>
+impl fmt::Display for Digest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Base58Belts::<5>::from(*self).fmt(f)
     }
 }
 
@@ -70,11 +134,7 @@ impl TryFrom<&str> for Digest {
     type Error = &'static str;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Ok(Self::from_bytes(
-            &bs58::decode(s)
-                .into_vec()
-                .map_err(|_| "unable to decode digest")?,
-        ))
+        Ok(Base58Belts::<5>::try_from(s)?.into())
     }
 }
 
@@ -137,6 +197,15 @@ impl<T: Hashable> Hashable for Option<T> {
         match self {
             None => 0.hash(),
             Some(v) => (&0, v).hash(),
+        }
+    }
+}
+
+impl<T: Hashable> Hashable for Zeroable<T> {
+    fn hash(&self) -> Digest {
+        match &self.0 {
+            None => 0.hash(),
+            Some(v) => v.hash(),
         }
     }
 }

@@ -7,11 +7,13 @@ use iris_ztd::{noun_deserialize, noun_serialize, Digest, Hashable as HashableTra
 use serde::{Deserialize, Serialize};
 
 use super::note::Note;
-use super::tx::{Seed, Seeds, Spend, SpendCondition, Spends, Witness};
+use super::tx::{
+    LockRoot, NockchainTx, Seed, Seeds, Spend, SpendCondition, Spends, TransactionDisplay, Witness,
+};
 use super::{Name, NoteData, Version};
 use crate::{Nicks, Pkh, RawTx};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MissingUnlocks {
     Pkh {
         num_sigs: u64,
@@ -91,9 +93,12 @@ impl SpendBuilder {
         if self.refund_lock.is_some() {
             self.invalidate_sigs();
             let rl = self.refund_lock.clone().unwrap();
-            let lock_root = rl.hash();
+            let lock_root = LockRoot::Lock(rl.clone());
             // Remove the previous refund
-            self.spend.seeds.0.retain(|v| v.lock_root != lock_root);
+            self.spend
+                .seeds
+                .0
+                .retain(|v| v.lock_root.hash() != lock_root.hash());
             let refund = self.note.assets
                 - self.spend.fee
                 - self.spend.seeds.0.iter().map(|v| v.gift).sum::<u64>();
@@ -108,8 +113,12 @@ impl SpendBuilder {
 
     pub fn cur_refund(&self) -> Option<&Seed> {
         let rl = self.refund_lock.as_ref()?;
-        let lock_root = rl.hash();
-        self.spend.seeds.0.iter().find(|v| v.lock_root == lock_root)
+        let lock_root = LockRoot::Lock(rl.clone());
+        self.spend
+            .seeds
+            .0
+            .iter()
+            .find(|v| v.lock_root.hash() == lock_root.hash())
     }
 
     pub fn is_balanced(&self) -> bool {
@@ -118,7 +127,7 @@ impl SpendBuilder {
     }
 
     pub fn build_seed(&self, lock: SpendCondition, gift: Nicks, include_lock_data: bool) -> Seed {
-        let lock_root = lock.hash();
+        let lock_root = LockRoot::Lock(lock.clone());
         let mut note_data = NoteData::empty();
         if include_lock_data {
             note_data.push_lock(lock);
@@ -149,12 +158,11 @@ impl SpendBuilder {
 
         for p in self.spend_condition.pkh() {
             let mut checked_pkh = BTreeSet::new();
-            let mut valid_pkh = BTreeSet::new();
+            let valid_pkh = p.hashes.iter().cloned().collect::<BTreeSet<_>>();
 
             if p.m > 0 {
                 for (pkh, _, _) in &self.spend.witness.pkh_signature.0 {
-                    valid_pkh.insert(*pkh);
-                    if !checked_pkh.contains(pkh) && p.hashes.contains(pkh) {
+                    if !checked_pkh.contains(pkh) && valid_pkh.contains(pkh) {
                         checked_pkh.insert(*pkh);
                         if checked_pkh.len() as u64 >= p.m {
                             break;
@@ -400,13 +408,33 @@ impl TxBuilder {
         Ok(self)
     }
 
-    pub fn build(&self) -> RawTx {
-        RawTx::new(Spends(
-            self.spends
-                .iter()
-                .map(|(a, b)| (a.clone(), b.spend.clone()))
-                .collect(),
-        ))
+    pub fn build(&self) -> NockchainTx {
+        let mut display = TransactionDisplay::default();
+        let mut spends = Spends(Vec::new());
+
+        for (name, spend) in &self.spends {
+            display
+                .inputs
+                .insert(name.clone(), spend.spend_condition.clone());
+            for seed in spend.spend.seeds.0.iter() {
+                if let LockRoot::Lock(lock) = &seed.lock_root {
+                    display.outputs.insert(lock.hash(), lock.clone().into());
+                }
+            }
+            spends.0.push((name.clone(), spend.spend.clone()));
+        }
+
+        let version = Version::V1;
+        let id = (&version, &spends).hash();
+        let (spends, witness_data) = spends.split_witness();
+
+        NockchainTx {
+            version,
+            id,
+            spends,
+            display,
+            witness_data,
+        }
     }
 
     pub fn all_notes(&self) -> BTreeMap<Name, (Note, SpendCondition)> {
@@ -414,6 +442,10 @@ impl TxBuilder {
             .iter()
             .map(|(a, b)| (a.clone(), (b.note.clone(), b.spend_condition.clone())))
             .collect()
+    }
+
+    pub fn all_spends(&self) -> &BTreeMap<Name, SpendBuilder> {
+        &self.spends
     }
 
     pub fn cur_fee(&self) -> Nicks {
@@ -729,7 +761,7 @@ mod tests {
 
         let tx = builder.sign(&private_key).build();
 
-        assert_eq!(tx.spends.fee(fee_per_word), 2520000);
+        assert_eq!(tx.to_raw_tx().spends.fee(fee_per_word), 2520000);
         assert_eq!(fee1, 2520000);
     }
 
@@ -934,14 +966,14 @@ mod tests {
 
         assert_eq!(
             tx.id.to_string(),
-            "3s1BvrUAjgJds563tKx7BckuadveJfSoUQBhzLDcVYizLtYq9HJ8jJ9",
+            "2AZCrc5hQiTBYvovYSjjWuYAmSbgNQtAtA252YNosdcrCNDycf4SZ9g",
         );
 
-        let mut jam_vec = jam(tx.to_nockchain_tx());
+        let mut jam_vec = jam(tx.to_noun());
         jam_vec.reverse();
         assert_eq!(
             bs58::encode(jam_vec).into_string(),
-            "3wKbrudLbFDNAdjeidih9YjZwFE6RsWcmnpjYQLsgVLuigKeUeQKmRLd3a8gUSPsGmCyJaqUvp4KGYyKxYZH2aeVuH154HtUcvH8jjFQXshNSr58ecaoW2iornWGR4yWt7gbVUiktgeu72PkTM5iA3HFJry41T84WM1aLrxYjjB5Q9bu7eDtcPfAT1cbWex46a9ceVPiYhWdr4hTXcdfNvHG74cr5tnxegQ2fs66AG2Vb3zTDsdLzTfTvLsSaPYYv3mx6PhiTXhUYu2AWsstGg6ZhWv6J8gJgZeacatqTGM59emcDwiXVXjqZPA3JxVeC7bFnX5K488eTdNEXVCwFym5hsv2QyxVe7Uy95eAfvXGD5e7XSEHV7effUi5CNwHHvpwksoqYhep3uMLWEkUJG5reZseuQkGVjGpfTUAiCKRVfmaKgvs14kxawaK7XAx4eYGpGkMxfSEhbXTaQwuyHYLFhzd5WGjq1js3MDwGL21PFY67quBASh5DtmTryoSgTSuhjkHLS3yogeDrzE3dMEb1BXHX6wTRnPN7q1qUTNrGzRu8G3LJpXSQYDUG2uD3DJvN95977uuLvyLjHAA7HEn57wijmzocygxtwL4iMEEnKpiuksm4V39RcyKfg2f7QbekXR7vfiwkSD6o4Vrog7tDkYfhiz7tGSwApGMgmuhN6TRhVKamz8x5i4cCEs5yYN19fSE7tsafb1E3ZyAAmpbmoULdVMTkEUPkmB6BWc78NHTrVs4iCf8RzaH9AhC219N9mDKwq2YczdUgVrhoYS2VLuRdS3WZJ3BxGNyiBpoVz8GHdD8SnwSa6Jkx4ykzm7x8wStcQYosaWBKNmrVgj9kkV4AYoUN5SZT6PAc2frJaFQgmqFTdWNRdfA7yvz1K8XETwtoxDb3FPYQGrVXAAGrL1Qf7USDf8crQAXmTho3tLqL5cn1g7puUicHDiBUoXnsjwLk4vAFvb5v6S1N7agUoZFtDFvLGPCmB4RbLSsyXRo8R26hZ9H7fJ8dubuJ42SMED7whzNrwCt1VkeDhj5AnNvpUsEc2h9NY5aama44QS1rn7uXFGFyAYLV37sBwica4CqACLYx4hjYucfL331EtUHSTxi5DKHBWTLyxonH6M4RqoPFETs57WRyRXknh6VJDakxWSGdVYQHtoaCWZAqmd61Xv9W4UXKToTGKwegHrPLbsQ8P8CqFKrCdyVni4A31RdPgx2JgvSASb79ExvRE7NdZX3vBUsDZiknWLfm5TUyVYwzHKSXJ2KHfBoyqC5ptzb5hwXc5WAZtgd1n7oUr8Wb2pnt4Nanak29DTMpqWhvFK3j2m4sLQRoJmDemAvwdE1NTpcoQM1X32t1EcXShhjn5xjCv2vU4w374zrB73wopPzEzR2WYpkJtuN",
+            "3Rjw3yC2WJumTugHhn9TS8SB8n3h6gc2bCKvhgHArZCwW2zWhzXtFX9x7owmx5XJGX8pRZSAsrM8Cj9JKMANcJ6KJHhYA1BP557jThfKwDmEKe6JduSmRa5fmsE1MYNBjuFNPL7uFTH3iqpk1ACWpPHRaffKhct9Z9Dq1A1mqgu5WQ2MtVUNVqkbHnyKnd1AmWMDtcnhmfvWBRq6t6BhYDLFSdDFKgoQwqVi4bvjaY56XxWDPneU2w5WCWKf9JBJKhucSAEvPjk2BmDgkcmSuwskCkaoLW82eZfdQTWy4Gc22EHZrSjGaXJYnQYEkgWWzaSSQbRJuXGMPyFPN1CRHecKm2ktgj3qirkHZHN6qJasdVeX9itovLhmCHn13DSvHmRGoqAh2haX4SrJMusHL2Eg7pGGNHWQsrPCVZ82qRJ3svai4RSKKVA7Z3PvuMfpKkgeA8SVsYUryViaBULu9mgqa38QcbbtToPiZsvBq8zDAURVPMeXtVscarvQ6WrhA2ksqarjyWwqbzKhVzADd2Z3GA14xdFaVtDUxpg8trgkdqnG5rgjL5QDxtW7EuCT1VtuJS2yqbmYd52B9p9JUa4XwYrEuxPVoYy1pMUPuJ6zx5Y4VnqtasFYez727DKWbfwiareiQRGAG7MidnEucW3gB3bnEQRPDMZyUdTmH1UocnYBSWH5cBgtdifc3VgwbfFR2QYpUmjoRuB7uHgQkXQvw1hyH8jd8DJbr2gpz5FV4fD5dxntaHwajzqKHFGViHnzWQ23sB5UuMHenrZbLb2R6Z2XdXYFd8cmkFPuEYtQKCg1u2rvUnc1V3Quty2jtDyGkhpAuT485Atc2FonS2TRTzCwcRf9DDZHTMMwaW9368C6q1UoVkfY757RjcueKMMyT85LY2nKFeAk15ZxG5LgZHAnHMCjHsGpWT4n1gzjDAJqacW3Q1GszsmyU7XTx5BXXtWrHjHW5wQd7J9nr6QjFtAQf2dLDJHdqK8g66bExJ1iiRBVdTVHW12dVrvp4vsoyLhTLeyr5ADh2SEsX126xHTNKxuPWvLJ5oDSK4mhfKgLwKLxWzQqZnpSg5CUni4fvA7HRv9p7KXxBndwCEAZCuKjVWDGYYChoSzJcfmJ6h7SoEZtyye9xynGSLoTF4CkY2vRyED62LdiLU12YtxJBSXmLb5TuiBydpQC2yy4DFVeV97WaEwcB42FbrEYmYo36zSGjas5soTUg7hW2E8ES8gHxHH7QLkiiiarjBE9gwzhVCp6rnZt1kJUzFAaRbYdLyyKDbSDDfJjHX3jxrJMjQ84PZrR3yz5csndZroMW2NLYRQ5XX3pBTGn7BopMyDZY2WM3hhbism9rm4o3SEaUc7X9c96gr7KZpojPPTrgLxLSqnsKzefQeACbNXSXQqVQEtXFaFzrSeVatYiFXfJnmBXXr5W6ufVD57hcuXqC62sdBv2UntRXp9zDEYak8jhrnvgK4o5cGgRr2fS6Wk1g3Z8R3BKgZEzeowvVmn1RN6xbVh8XHBq83NELH2mm35oqiTCuoeJ6vcdVvF2Cy9dkdqcXfJBnPyhnLG",
         );
 
         let outputs = tx.outputs();
@@ -968,6 +1000,138 @@ mod tests {
         // TODO: test note-data order
     }
 
+    #[test]
+    fn test_missing_unlock() {
+        let (private_key, _) = keys();
+        let note = Note {
+            version: Version::V1,
+            origin_page: 13,
+            name: Name::new(
+                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                    .try_into()
+                    .unwrap(),
+                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+                    .try_into()
+                    .unwrap(),
+            ),
+            note_data: NoteData::empty(),
+            assets: 4294967296,
+        };
+        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
+            .try_into()
+            .unwrap();
+        let gift = 1234567;
+        let fee = 2850816;
+        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
+            .try_into()
+            .unwrap();
+        let spend_condition = SpendCondition(vec![
+            LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+            LockPrimitive::Tim(LockTim::coinbase()),
+        ]);
+        let mut builder = TxBuilder::new(1);
+
+        builder
+            .simple_spend_base(
+                vec![(note.clone(), spend_condition.clone())],
+                recipient,
+                gift,
+                refund_pkh,
+                true,
+            )
+            .unwrap()
+            .set_fee_and_balance_refund(fee, false, true)
+            .unwrap();
+
+        let unlocks = builder
+            .all_spends()
+            .values()
+            .flat_map(|v| v.missing_unlocks())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(unlocks.len(), 1);
+        assert_eq!(
+            unlocks.first(),
+            Some(&MissingUnlocks::Pkh {
+                num_sigs: 1,
+                sig_of: [private_key.public_key().hash()].into_iter().collect()
+            })
+        );
+    }
+
+    #[test]
+    fn test_missing_unlock_hax() {
+        use crate::Hax;
+        use iris_ztd::Belt;
+        let (private_key, _) = keys();
+        let note = Note {
+            version: Version::V1,
+            origin_page: 13,
+            name: Name::new(
+                "4aAqswWFkNi6bey6Ac58QxsmMLV3VAC1LKnXwAaQvhYSZb6epr7aXap"
+                    .try_into()
+                    .unwrap(),
+                "pnCZnNbZ1NGqeP2vSBBzQM3ecpjCoAnmFJH6Z6gGwpfjjBhNtddZqj"
+                    .try_into()
+                    .unwrap(),
+            ),
+            note_data: NoteData::empty(),
+            assets: 4294967296,
+        };
+        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
+            .try_into()
+            .unwrap();
+        let gift = 1234567;
+        let fee = 2850816;
+        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
+            .try_into()
+            .unwrap();
+        let spend_condition = SpendCondition(vec![
+            LockPrimitive::Pkh(Pkh::single(
+                "9zpwNfGdcPT1QUKw2Fnw2zvftzpAYEjzZfTqGW8KLnf3NmEJ7yR5t2Y"
+                    .try_into()
+                    .unwrap(),
+            )),
+            LockPrimitive::Hax(Hax(vec![Digest([
+                Belt(1730770831742798981),
+                Belt(2676322185709933211),
+                Belt(8329210750824781744),
+                Belt(16756092452590401876),
+                Belt(3547445316740171466),
+            ])])),
+        ]);
+        let mut builder = TxBuilder::new(1);
+
+        builder
+            .simple_spend_base(
+                vec![(note.clone(), spend_condition.clone())],
+                recipient,
+                gift,
+                refund_pkh,
+                true,
+            )
+            .unwrap()
+            .set_fee_and_balance_refund(fee, false, true)
+            .unwrap();
+
+        builder.add_preimage(0.to_noun());
+
+        let unlocks = builder
+            .all_spends()
+            .values()
+            .flat_map(|v| v.missing_unlocks())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            unlocks.into_iter().collect::<Vec<_>>(),
+            vec![MissingUnlocks::Pkh {
+                num_sigs: 1,
+                sig_of: ["9zpwNfGdcPT1QUKw2Fnw2zvftzpAYEjzZfTqGW8KLnf3NmEJ7yR5t2Y"
+                    .try_into()
+                    .unwrap()]
+                .into_iter()
+                .collect()
+            }]
+        );
+    }
     #[test]
     fn test_jam_vector() {
         let (private_key, _) = keys();
@@ -1021,7 +1185,7 @@ mod tests {
         jam_vec.reverse();
         assert_eq!(
             bs58::encode(jam_vec).into_string(),
-            "We2QrLoo6X48Y58ZPCBKuv1oy859epNaxa9CNvstysytqWhtNxzuViSDShA7VFXevc62rNDcGqLiaggx5gswVJ5SSE9JKwMNZeMiyacmWGNtj1jk287RAvybG7BZ6MiwwZDBaTQgXxvvRmJBseKFnz8Rt3SQbU4zkPNkfbt4n9ZNHGTfqPhYiUhPwcf5PRG7pEbtAUZf7HXpfWPQffBcvMKuJdErUEytq27p2kjqzeqqbReCiRDGmfe6DF8JnVvo6ePiyrhscA1tdaH1P6jUphxeFnHAMUEd4E5WhHHx2YceQciw5NxnCkbUbauz4HEj7ioaZtWX3MfXfebLuiVf75eFNJa2wKtgrEfcevy6LT2XWDXGJPk59D8xUaSjPzNwwGwj1tvqxYQt9G3BBZvVDpS1aRvWRdjd1NmakevKfGCwaAyVpGJsvacgJxa1918ab5EWj4ZSXKZsar2oWohPN1Fi4EAFuL5MFFeJdtmtbBTEE8qGmJZ56XTeByszhhmPfbJY8XXqEigNVNxX2US5mtv6MyeFvhCXcQGGcENYcFUv4tHDwrx3Hf7GUXqKsjpR53dbGG54T7gmQ9NEAiFFwRoVRiCfBNajDCCixEQqVa4BLtfmPmZEtfSS9Q9qpMAFiXTYdErFg5GxW6Qb7aXh5XCAq3aW67fqCs3Q6x6SL2si9zFDXsX9QAyjYqXYAjYVCrV4UYfRdmiB3jsJBRacAmbqj2KjAzwKHaJNtr4vmwKuTave2vFFE46yxG3yRUxm9oZGBD2oBLsfTasV2xj3ZoxPvdPjy2sutsQVboXVvS91ux8umyJQ6TdcNnWyKqa4r2fkAhDGMe3Kb2Ag7b8VemsAiR5ijcQyj2q5qHMUUTKYXA7jzDh8WnQDtFg3z3ehVtdZLS8uh4RyubmSoeDDxMVYh9yqMBca5dRb5QPQtmRw7cYoZxRigNqaRCJdbM1VxJAHQkVpmSvuHi3NucJbZRzB8VbWsmAWx57WC96MLtQDNiB1a",
+            "3gBbvwuhALLvTWnLfgP3KVWz2qSWKsvLXHmFAKXfqYjiNiu1Xc32GguLGUTzfEFyWMCfWuxurCkmgUaXnWJEoWdX62tiTwmdXPhJzcEgDeoy99rmZyezkHK992jinuFNmDEDEvVd5vM19g7MRNRi5d3zWPtjCL2j9JyfT6mtTKgh9PNnWLY75A2JwzUDd6FSytomgVBeyqhjBWm7tMgkXngduhJGoZ6rS5MkyrzFhmtAYmtjVV9p4HnjDW6rrtgKXLEqUp3jpEdxXA4nHT8mtbSAxNvvQF5V4wmYddKDrzCPeWd8mccHUnsSxWLLRgEbYgUHvC6Wh5F5nKsEb6zvT9jGB9s9etXPYknTRBHmsDBWBveCmAzVy6Fa2x8iNuc15NPmQQwbbGZsmjGbVQKFT8vJz7HjcefhEZg9zbyq9BhQ3u6gY8vYqETL5u8wCvRb9bkNMkUEBcsNnkfmeXQcSdaYfTaExQFPpdLDkBPcG4bHTffXsgEwRxFpLXRWgzzM5ESBYZvKyEtk32tUodnsbQ9zun2mptmFq6zLW6kLhDwKBT6rR3ErddCE82p5qcUaC4ZLR3fiz59Hg14MQeYnBkAy7Cj3Z7WdqvfPoXhZZ2FCztn9SZXeLFxotFZNqeHp9PQu754PnCq1rUpgCUcnoQiWwyjEP7JbY6T9hLyA3m7T6b97DbEqD7iuDNwrhwbofKyyfPxFeZKap",
         );
     }
 }

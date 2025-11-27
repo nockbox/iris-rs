@@ -1,4 +1,4 @@
-use crate::{Digest, Hashable, Noun, NounDecode, NounEncode};
+use crate::{Digest, Hashable, Noun, NounDecode, NounEncode, Zeroable};
 use alloc::boxed::Box;
 use alloc::fmt::Debug;
 use alloc::vec;
@@ -6,14 +6,14 @@ use alloc::vec::Vec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZSet<T> {
-    root: Option<Box<Node<T>>>,
+    root: Zeroable<Box<Node<T>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Node<T> {
     value: T,
-    left: Option<Box<Node<T>>>,
-    right: Option<Box<Node<T>>>,
+    left: Zeroable<Box<Node<T>>>,
+    right: Zeroable<Box<Node<T>>>,
 }
 
 impl<T> Default for ZSet<T> {
@@ -24,14 +24,16 @@ impl<T> Default for ZSet<T> {
 
 impl<T> ZSet<T> {
     pub fn new() -> Self {
-        ZSet { root: None }
+        ZSet {
+            root: Zeroable(None),
+        }
     }
 }
 
 impl<T: NounEncode> ZSet<T> {
     pub fn insert(&mut self, value: T) -> bool {
         let (new_root, inserted) = Self::put(self.root.take(), value);
-        self.root = Some(new_root);
+        self.root = Zeroable(Some(new_root));
         inserted
     }
 
@@ -40,8 +42,8 @@ impl<T: NounEncode> ZSet<T> {
             None => (
                 Box::new(Node {
                     value,
-                    left: None,
-                    right: None,
+                    left: Zeroable(None),
+                    right: Zeroable(None),
                 }),
                 true,
             ),
@@ -52,24 +54,24 @@ impl<T: NounEncode> ZSet<T> {
                 let go_left = Self::gor_tip(&value, &n.value);
                 if go_left {
                     let (new_left, inserted) = Self::put(n.left.take(), value);
-                    n.left = Some(new_left);
+                    n.left = Zeroable(Some(new_left));
                     if !Self::mor_tip(&n.value, &n.left.as_ref().unwrap().value) {
                         // Rotate right
                         let mut new_root = n.left.take().unwrap();
-                        n.left = new_root.right.take();
-                        new_root.right = Some(n);
+                        n.left = Zeroable(new_root.right.take());
+                        new_root.right = Zeroable(Some(n));
                         (new_root, inserted)
                     } else {
                         (n, inserted)
                     }
                 } else {
                     let (new_right, inserted) = Self::put(n.right.take(), value);
-                    n.right = Some(new_right);
+                    n.right = Zeroable(Some(new_right));
                     if !Self::mor_tip(&n.value, &n.right.as_ref().unwrap().value) {
                         // Rotate left
                         let mut new_root = n.right.take().unwrap();
-                        n.right = new_root.left.take();
-                        new_root.left = Some(n);
+                        n.right = Zeroable(new_root.left.take());
+                        new_root.left = Zeroable(Some(n));
                         (new_root, inserted)
                     } else {
                         (n, inserted)
@@ -124,8 +126,8 @@ impl<T: NounEncode + Hashable> Hashable for ZSet<T> {
 
 impl<T: NounEncode> NounEncode for ZSet<T> {
     fn to_noun(&self) -> Noun {
-        fn visit<T: NounEncode>(node: &Option<Box<Node<T>>>) -> Noun {
-            match node {
+        fn visit<T: NounEncode>(node: &Zeroable<Box<Node<T>>>) -> Noun {
+            match node.as_ref() {
                 None => 0.to_noun(),
                 Some(n) => {
                     let left_hash = visit(&n.left);
@@ -147,7 +149,7 @@ impl<T: NounDecode> NounDecode for Node<T> {
 
 impl<T: NounDecode> NounDecode for ZSet<T> {
     fn from_noun(noun: &Noun) -> Option<Self> {
-        let root: Option<Box<Node<T>>> = NounDecode::from_noun(noun)?;
+        let root: Zeroable<Box<Node<T>>> = NounDecode::from_noun(noun)?;
         Some(Self { root })
     }
 }
@@ -161,10 +163,10 @@ impl<T> Iterator for ZSetIntoIterator<T> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let cur = self.stack.pop()?;
-        if let Some(n) = cur.left {
+        if let Some(n) = cur.left.0 {
             self.stack.push(n);
         }
-        if let Some(n) = cur.right {
+        if let Some(n) = cur.right.0 {
             self.stack.push(n);
         }
         Some(cur.value)
@@ -177,7 +179,7 @@ impl<T> IntoIterator for ZSet<T> {
 
     fn into_iter(self) -> Self::IntoIter {
         let mut stack = vec![];
-        if let Some(n) = self.root {
+        if let Some(n) = self.root.0 {
             stack.push(n);
         }
         ZSetIntoIterator { stack }
@@ -187,5 +189,21 @@ impl<T> IntoIterator for ZSet<T> {
 impl<T: NounEncode> From<ZSet<T>> for Vec<T> {
     fn from(set: ZSet<T>) -> Self {
         set.into_iter().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::{String, ToString};
+
+    #[test]
+    fn test_zset_encode_decode() {
+        let mut zm = ZSet::<String>::new();
+        zm.insert("ver".to_string());
+        zm.insert("ve2".to_string());
+        let zm_noun = zm.to_noun();
+        let zm_decode = ZSet::<String>::from_noun(&zm_noun).unwrap();
+        assert_eq!(Vec::from(zm), Vec::from(zm_decode));
     }
 }

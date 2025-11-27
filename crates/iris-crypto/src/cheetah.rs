@@ -127,7 +127,7 @@ impl NounEncode for Signature {
 
 impl NounDecode for Signature {
     fn from_noun(noun: &Noun) -> Option<Self> {
-        let (c, s): (Vec<Belt>, Vec<Belt>) = NounDecode::from_noun(noun)?;
+        let (c, s): ([Belt; 8], [Belt; 8]) = NounDecode::from_noun(noun)?;
 
         let c = Belt::to_bytes(&c);
         let s = Belt::to_bytes(&s);

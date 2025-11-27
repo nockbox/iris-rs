@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "iris-crypto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "argon2",
  "bip39",
@@ -624,10 +624,11 @@ dependencies = [
 
 [[package]]
 name = "iris-grpc-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bip39",
  "glob",
+ "ibig",
  "iris-crypto",
  "iris-nockchain-types",
  "iris-ztd",
@@ -635,6 +636,7 @@ dependencies = [
  "prost-build",
  "prost-types",
  "serde",
+ "serde_json",
  "thiserror 2.0.17",
  "tokio",
  "tonic",
@@ -643,10 +645,11 @@ dependencies = [
 
 [[package]]
 name = "iris-nockchain-types"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bip39",
  "bs58",
+ "hex",
  "ibig",
  "iris-crypto",
  "iris-ztd",
@@ -657,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "iris-wasm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bip39",
  "getrandom 0.2.16",
@@ -677,7 +680,7 @@ dependencies = [
 
 [[package]]
 name = "iris-ztd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arrayref",
  "bitvec",
@@ -690,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "iris-ztd-derive"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1029,6 +1032,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
+name = "ryu"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
+
+[[package]]
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1067,6 +1076,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "serde_json"
+version = "1.0.145"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "402a6f66d8c709116cf22f558eab210f5a50187f702eb4d7e5ef38d9a7f1c79c"
+dependencies = [
+ "itoa",
+ "memchr",
+ "ryu",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

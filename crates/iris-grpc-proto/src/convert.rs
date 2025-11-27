@@ -1,5 +1,5 @@
 use iris_nockchain_types::*;
-use iris_ztd::{jam, Belt, Digest};
+use iris_ztd::{jam, Belt, Digest, Noun};
 
 use crate::common::{ConversionError, Required};
 use crate::pb::common::v1::{
@@ -10,12 +10,13 @@ use crate::pb::common::v1::{
 };
 use crate::pb::common::v2::{
     lock_primitive, spend, Balance as PbBalance, BalanceEntry as PbBalanceEntry,
-    BurnLock as PbBurnLock, HaxLock as PbHaxLock, LockMerkleProof as PbLockMerkleProof,
-    LockPrimitive as PbLockPrimitive, LockTim as PbLockTim, MerkleProof as PbMerkleProof,
-    Note as PbNote, NoteData as PbNoteData, NoteDataEntry as PbNoteDataEntry, NoteV1 as PbNoteV1,
-    PkhLock as PbPkhLock, PkhSignature as PbPkhSignature, RawTransaction as PbRawTransaction,
-    Seed as PbSeed, Spend as PbSpend, SpendCondition as PbSpendCondition,
-    SpendEntry as PbSpendEntry, Witness as PbWitness, WitnessSpend as PbWitnessSpend,
+    BurnLock as PbBurnLock, HaxLock as PbHaxLock, HaxPreimage as PbHaxPreimage,
+    LockMerkleProof as PbLockMerkleProof, LockPrimitive as PbLockPrimitive, LockTim as PbLockTim,
+    MerkleProof as PbMerkleProof, Note as PbNote, NoteData as PbNoteData,
+    NoteDataEntry as PbNoteDataEntry, NoteV1 as PbNoteV1, PkhLock as PbPkhLock,
+    PkhSignature as PbPkhSignature, RawTransaction as PbRawTransaction, Seed as PbSeed,
+    Spend as PbSpend, SpendCondition as PbSpendCondition, SpendEntry as PbSpendEntry,
+    Witness as PbWitness, WitnessSpend as PbWitnessSpend,
 };
 
 // =========================
@@ -34,8 +35,9 @@ impl From<crate::pb::common::v1::Belt> for Belt {
     }
 }
 
-impl From<Digest> for PbHash {
-    fn from(h: Digest) -> Self {
+impl<T: Into<Digest>> From<T> for PbHash {
+    fn from(h: T) -> Self {
+        let h = h.into();
         PbHash {
             belt_1: Some(crate::pb::common::v1::Belt::from(h.0[0])),
             belt_2: Some(crate::pb::common::v1::Belt::from(h.0[1])),
@@ -56,6 +58,13 @@ impl TryFrom<PbHash> for Digest {
             h.belt_4.required("Hash", "belt_4")?.into(),
             h.belt_5.required("Hash", "belt_5")?.into(),
         ]))
+    }
+}
+
+impl TryFrom<PbHash> for LockRoot {
+    type Error = ConversionError;
+    fn try_from(h: PbHash) -> Result<Self, Self::Error> {
+        Ok(LockRoot::Hash(TryFrom::try_from(h)?))
     }
 }
 
@@ -387,12 +396,102 @@ impl From<PkhSignature> for PbPkhSignature {
     }
 }
 
+impl TryFrom<PbPkhSignature> for PkhSignature {
+    type Error = ConversionError;
+
+    fn try_from(pb: PbPkhSignature) -> Result<Self, Self::Error> {
+        use ibig::UBig;
+        use iris_crypto::{PublicKey, Signature};
+        use iris_ztd::crypto::cheetah::{CheetahPoint, F6lt};
+        use iris_ztd::Belt as ZBelt;
+
+        let entries = pb
+            .entries
+            .into_iter()
+            .map(|entry| {
+                let pkh: Digest = entry
+                    .hash
+                    .required("PkhSignatureEntry", "hash")?
+                    .try_into()?;
+
+                let pubkey_pb = entry
+                    .pubkey
+                    .required("PkhSignatureEntry", "pubkey")?
+                    .value
+                    .required("SchnorrPubkey", "value")?;
+
+                let x_pb = pubkey_pb.x.required("CheetahPoint", "x")?;
+                let y_pb = pubkey_pb.y.required("CheetahPoint", "y")?;
+
+                let pubkey = PublicKey(CheetahPoint {
+                    x: F6lt([
+                        ZBelt(x_pb.belt_1.required("SixBelt", "belt_1")?.value),
+                        ZBelt(x_pb.belt_2.required("SixBelt", "belt_2")?.value),
+                        ZBelt(x_pb.belt_3.required("SixBelt", "belt_3")?.value),
+                        ZBelt(x_pb.belt_4.required("SixBelt", "belt_4")?.value),
+                        ZBelt(x_pb.belt_5.required("SixBelt", "belt_5")?.value),
+                        ZBelt(x_pb.belt_6.required("SixBelt", "belt_6")?.value),
+                    ]),
+                    y: F6lt([
+                        ZBelt(y_pb.belt_1.required("SixBelt", "belt_1")?.value),
+                        ZBelt(y_pb.belt_2.required("SixBelt", "belt_2")?.value),
+                        ZBelt(y_pb.belt_3.required("SixBelt", "belt_3")?.value),
+                        ZBelt(y_pb.belt_4.required("SixBelt", "belt_4")?.value),
+                        ZBelt(y_pb.belt_5.required("SixBelt", "belt_5")?.value),
+                        ZBelt(y_pb.belt_6.required("SixBelt", "belt_6")?.value),
+                    ]),
+                    inf: pubkey_pb.inf,
+                });
+
+                let sig_pb = entry.signature.required("PkhSignatureEntry", "signature")?;
+                let chal_pb = sig_pb.chal.required("SchnorrSignature", "chal")?;
+                let sig_val_pb = sig_pb.sig.required("SchnorrSignature", "sig")?;
+
+                // Collect belt values into arrays
+                let chal_belts = [
+                    chal_pb.belt_1.required("EightBelt", "belt_1")?.value,
+                    chal_pb.belt_2.required("EightBelt", "belt_2")?.value,
+                    chal_pb.belt_3.required("EightBelt", "belt_3")?.value,
+                    chal_pb.belt_4.required("EightBelt", "belt_4")?.value,
+                    chal_pb.belt_5.required("EightBelt", "belt_5")?.value,
+                    chal_pb.belt_6.required("EightBelt", "belt_6")?.value,
+                    chal_pb.belt_7.required("EightBelt", "belt_7")?.value,
+                    chal_pb.belt_8.required("EightBelt", "belt_8")?.value,
+                ];
+                let sig_belts = [
+                    sig_val_pb.belt_1.required("EightBelt", "belt_1")?.value,
+                    sig_val_pb.belt_2.required("EightBelt", "belt_2")?.value,
+                    sig_val_pb.belt_3.required("EightBelt", "belt_3")?.value,
+                    sig_val_pb.belt_4.required("EightBelt", "belt_4")?.value,
+                    sig_val_pb.belt_5.required("EightBelt", "belt_5")?.value,
+                    sig_val_pb.belt_6.required("EightBelt", "belt_6")?.value,
+                    sig_val_pb.belt_7.required("EightBelt", "belt_7")?.value,
+                    sig_val_pb.belt_8.required("EightBelt", "belt_8")?.value,
+                ];
+
+                // Convert belt arrays to UBig
+                let c_vec: Vec<ZBelt> = chal_belts.iter().map(|v| ZBelt(*v)).collect();
+                let s_vec: Vec<ZBelt> = sig_belts.iter().map(|v| ZBelt(*v)).collect();
+
+                let c = UBig::from_le_bytes(&ZBelt::to_bytes(&c_vec));
+                let s = UBig::from_le_bytes(&ZBelt::to_bytes(&s_vec));
+
+                let signature = Signature { c, s };
+
+                Ok((pkh, pubkey, signature))
+            })
+            .collect::<Result<Vec<_>, ConversionError>>()?;
+
+        Ok(PkhSignature(entries))
+    }
+}
+
 impl From<Witness> for PbWitness {
     fn from(witness: Witness) -> Self {
         PbWitness {
             lock_merkle_proof: Some(PbLockMerkleProof::from(witness.lock_merkle_proof)),
             pkh_signature: Some(PbPkhSignature::from(witness.pkh_signature)),
-            hax: Vec::new(),
+            hax: witness.hax_map.into_iter().map(|hax| hax.into()).collect(),
         }
     }
 }
@@ -423,6 +522,15 @@ impl From<RawTx> for PbRawTransaction {
                     spend: Some(PbSpend::from(spend)),
                 })
                 .collect(),
+        }
+    }
+}
+
+impl From<(Digest, Noun)> for PbHaxPreimage {
+    fn from((hash, preimage): (Digest, Noun)) -> Self {
+        PbHaxPreimage {
+            hash: Some(PbHash::from(hash)),
+            value: jam(preimage),
         }
     }
 }
@@ -626,6 +734,10 @@ impl TryFrom<PbRawTransaction> for RawTx {
                 let spend = match spend_pb.spend_kind.required("Spend", "spend_kind")? {
                     spend::SpendKind::Witness(w) => {
                         let witness_pb = w.witness.required("WitnessSpend", "witness")?;
+                        let pkh_signature = witness_pb
+                            .pkh_signature
+                            .required("Witness", "pkh_signature")?
+                            .try_into()?;
                         let lock_merkle_proof = witness_pb
                             .lock_merkle_proof
                             .required("Witness", "lock_merkle_proof")?;
@@ -650,7 +762,7 @@ impl TryFrom<PbRawTransaction> for RawTx {
                                         .collect::<Result<Vec<_>, _>>()?,
                                 },
                             },
-                            pkh_signature: PkhSignature(Vec::new()), // Signature verification not needed for this use case
+                            pkh_signature,
                             hax_map: {
                                 let mut map = iris_ztd::ZMap::new();
                                 for hax in witness_pb.hax {
@@ -688,5 +800,204 @@ impl TryFrom<PbRawTransaction> for RawTx {
             id,
             spends: Spends(spends?),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_raw_tx() {
+        let json = r#"{
+   "version":{
+      "value":"1"
+   },
+   "id":"4SUkdDJXU6qM6CvYXSXStHrb8Xc1Ej1dfm3DDiEQL4giEsgn3oGGPYG",
+   "spends":[
+      {
+         "name":{
+            "first":"4rc6HmGGdZjnGmBu7T9oPsonr1aPUSPbX3MsxUKntUCfQKXQSFHApB3",
+            "last":"C5NQvzEBotZWiM55efVNsweKU5FMRsR9KQ6q3D32ioZwNxCV3FXpYoD"
+         },
+         "spend":{
+            "spend_kind":{
+               "Witness":{
+                  "witness":{
+                     "lock_merkle_proof":{
+                        "spend_condition":{
+                           "primitives":[
+                              {
+                                 "primitive":{
+                                    "Pkh":{
+                                       "m":1,
+                                       "hashes":[
+                                          "9zpwNfGdcPT1QUKw2Fnw2zvftzpAYEjzZfTqGW8KLnf3NmEJ7yR5t2Y"
+                                       ]
+                                    }
+                                 }
+                              }
+                           ]
+                        },
+                        "axis":1,
+                        "proof":{
+                           "root":"66oU5Tv4ukTdcNTWHwWJeNP873vJW1MLCWooj4udDn1cq3Yw8mTS2wH",
+                           "path":[
+                              
+                           ]
+                        }
+                     },
+                     "pkh_signature":{
+                        "entries":[
+                           {
+                              "hash":"9zpwNfGdcPT1QUKw2Fnw2zvftzpAYEjzZfTqGW8KLnf3NmEJ7yR5t2Y",
+                              "pubkey":{
+                                 "value":{
+                                    "x":{
+                                       "belt_1":{
+                                          "value":"11448626479992112395"
+                                       },
+                                       "belt_2":{
+                                          "value":"4069103203247753166"
+                                       },
+                                       "belt_3":{
+                                          "value":"14083262135992179683"
+                                       },
+                                       "belt_4":{
+                                          "value":"3912178729246839688"
+                                       },
+                                       "belt_5":{
+                                          "value":"11796384286367449624"
+                                       },
+                                       "belt_6":{
+                                          "value":"8532292594068841388"
+                                       }
+                                    },
+                                    "y":{
+                                       "belt_1":{
+                                          "value":"3947181904495261620"
+                                       },
+                                       "belt_2":{
+                                          "value":"923589050609273779"
+                                       },
+                                       "belt_3":{
+                                          "value":"6533369759867423146"
+                                       },
+                                       "belt_4":{
+                                          "value":"16899530554254371214"
+                                       },
+                                       "belt_5":{
+                                          "value":"1879763587494859085"
+                                       },
+                                       "belt_6":{
+                                          "value":"15936891756251089176"
+                                       }
+                                    },
+                                    "inf":false
+                                 }
+                              },
+                              "signature":{
+                                 "chal":{
+                                    "belt_1":{
+                                       "value":"232346795"
+                                    },
+                                    "belt_2":{
+                                       "value":"3400859460"
+                                    },
+                                    "belt_3":{
+                                       "value":"114700114"
+                                    },
+                                    "belt_4":{
+                                       "value":"633571327"
+                                    },
+                                    "belt_5":{
+                                       "value":"1411156586"
+                                    },
+                                    "belt_6":{
+                                       "value":"3759003710"
+                                    },
+                                    "belt_7":{
+                                       "value":"2978302736"
+                                    },
+                                    "belt_8":{
+                                       "value":"294106749"
+                                    }
+                                 },
+                                 "sig":{
+                                    "belt_1":{
+                                       "value":"645928783"
+                                    },
+                                    "belt_2":{
+                                       "value":"3130880521"
+                                    },
+                                    "belt_3":{
+                                       "value":"2031785340"
+                                    },
+                                    "belt_4":{
+                                       "value":"432223730"
+                                    },
+                                    "belt_5":{
+                                       "value":"2223476374"
+                                    },
+                                    "belt_6":{
+                                       "value":"3949686173"
+                                    },
+                                    "belt_7":{
+                                       "value":"708033354"
+                                    },
+                                    "belt_8":{
+                                       "value":"1410508543"
+                                    }
+                                 }
+                              }
+                           }
+                        ]
+                     },
+                     "hax":[
+                        
+                     ]
+                  },
+                  "seeds":[
+                     {
+                        "lock_root":"66oU5Tv4ukTdcNTWHwWJeNP873vJW1MLCWooj4udDn1cq3Yw8mTS2wH",
+                        "note_data":{
+                           "entries":[
+                              
+                           ]
+                        },
+                        "gift":{
+                           "value":"18210766"
+                        },
+                        "parent_hash":"9TmqsBWQmJoWg6ZABwLGu2WsHEzt5bbNWwga9hygVpax7UEscW7MCg2"
+                     },
+                     {
+                        "lock_root":"9baDCLsAat7JD2YoBBZCxpZMeh3QhUnmSaBTBu1UNH9oqeybehthbLx",
+                        "note_data":{
+                           "entries":[
+                              
+                           ]
+                        },
+                        "gift":{
+                           "value":"3276800"
+                        },
+                        "parent_hash":"9TmqsBWQmJoWg6ZABwLGu2WsHEzt5bbNWwga9hygVpax7UEscW7MCg2"
+                     }
+                  ],
+                  "fee":{
+                     "value":"3407872"
+                  }
+               }
+            }
+         }
+      }
+   ]
+}"#;
+        let pb_raw_tx: PbRawTransaction = serde_json::from_str(json).unwrap();
+        println!("{pb_raw_tx:?}");
+        let raw_tx: RawTx = pb_raw_tx.clone().try_into().unwrap();
+        println!("{raw_tx:?}");
+        let pb2_raw_tx: PbRawTransaction = raw_tx.try_into().unwrap();
+        println!("{pb2_raw_tx:?}");
+        assert_eq!(pb_raw_tx, pb2_raw_tx);
     }
 }

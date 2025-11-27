@@ -3,7 +3,6 @@ use crate::crypto::cheetah::F6lt;
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, format, string::String, vec, vec::Vec};
 use bitvec::prelude::{BitSlice, BitVec, Lsb0};
 use core::fmt;
-use core::mem::MaybeUninit;
 use ibig::UBig;
 use num_traits::Zero;
 use serde::de::{Error as DeError, SeqAccess, Visitor};
@@ -11,6 +10,25 @@ use serde::{ser::SerializeTuple, Serialize, Serializer};
 use serde::{Deserialize, Deserializer};
 
 use crate::{belt::Belt, crypto::cheetah::CheetahPoint, Digest};
+
+/// A transparent wrapper that encodes as a zero atom if the value is `None`.
+#[repr(transparent)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub struct Zeroable<T>(pub Option<T>);
+
+impl<T> core::ops::Deref for Zeroable<T> {
+    type Target = Option<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> core::ops::DerefMut for Zeroable<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 pub fn noun_serialize<T: NounEncode, S>(v: &T, serializer: S) -> Result<S::Ok, S::Error>
 where
@@ -296,6 +314,24 @@ impl<T: NounDecode> NounDecode for Option<T> {
     }
 }
 
+impl<T: NounEncode> NounEncode for Zeroable<T> {
+    fn to_noun(&self) -> Noun {
+        match &self.0 {
+            None => atom(0),
+            Some(value) => value.to_noun(),
+        }
+    }
+}
+
+impl<T: NounDecode> NounDecode for Zeroable<T> {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        match noun {
+            Noun::Atom(x) if x.is_zero() => Some(Zeroable(None)),
+            v => Some(Zeroable(Some(T::from_noun(v)?))),
+        }
+    }
+}
+
 macro_rules! impl_nounable_for_tuple {
     ($T0:ident => $i0:ident) => {};
     ($T:ident => $t:ident $( $U:ident => $u:ident )+) => {
@@ -353,17 +389,20 @@ impl<T: NounEncode, const N: usize> NounEncode for [T; N] {
 
 impl<T: NounDecode, const N: usize> NounDecode for [T; N] {
     fn from_noun(mut noun: &Noun) -> Option<Self> {
-        let mut ret = [(); N].map(|_| MaybeUninit::<T>::uninit());
-        for item in ret.iter_mut().take(N) {
-            let Noun::Cell(a, b) = noun else {
-                return None;
+        let mut ret: [Option<T>; N] = [(); N].map(|_| None);
+        for (i, item) in ret.iter_mut().enumerate() {
+            let decode = match noun {
+                Noun::Cell(a, b) => {
+                    noun = b;
+                    a
+                }
+                v if i == N - 1 => v,
+                _ => return None,
             };
-            *item = MaybeUninit::<T>::new(T::from_noun(a)?);
-            noun = b;
+            *item = Some(T::from_noun(decode)?);
         }
 
-        // SAFETY: all elements have been initialized in the loop
-        Some(unsafe { ret.map(|v| v.assume_init()) })
+        Some(ret.map(|v| v.unwrap()))
     }
 }
 

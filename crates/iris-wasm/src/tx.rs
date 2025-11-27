@@ -10,11 +10,11 @@ use iris_grpc_proto::pb::common::v2 as pb;
 use iris_nockchain_types::{
     builder::TxBuilder,
     note::{Name, Note, NoteData, NoteDataEntry, Pkh, TimelockRange, Version},
-    tx::{LockPrimitive, RawTx, Seed, SpendCondition},
+    tx::{LockPrimitive, LockRoot, NockchainTx, RawTx, Seed, SpendCondition},
     Nicks,
 };
-use iris_nockchain_types::{Hax, LockTim, MissingUnlocks, Source, SpendBuilder, Spends};
-use iris_ztd::{cue, jam, Digest, Hashable as HashableTrait, NounDecode};
+use iris_nockchain_types::{Hax, LockTim, MissingUnlocks, Source, SpendBuilder};
+use iris_ztd::{cue, jam, Digest, Hashable as HashableTrait, NounDecode, NounEncode};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -829,12 +829,57 @@ impl WasmSpendCondition {
     }
 }
 
+#[wasm_bindgen(js_name = LockRoot)]
+#[derive(Clone, Debug)]
+pub struct WasmLockRoot {
+    #[wasm_bindgen(skip)]
+    pub internal: LockRoot,
+}
+
+#[wasm_bindgen(js_class = LockRoot)]
+impl WasmLockRoot {
+    #[wasm_bindgen(js_name = fromHash)]
+    pub fn from_hash(hash: WasmDigest) -> Result<Self, JsValue> {
+        Ok(Self {
+            internal: LockRoot::Hash(hash.to_internal()?),
+        })
+    }
+
+    #[wasm_bindgen(js_name = fromSpendCondition)]
+    pub fn from_spend_condition(cond: WasmSpendCondition) -> Result<Self, JsValue> {
+        Ok(Self {
+            internal: LockRoot::Lock(cond.to_internal()?),
+        })
+    }
+
+    #[wasm_bindgen(getter, js_name = hash)]
+    pub fn hash(&self) -> WasmDigest {
+        WasmDigest::from_internal(&self.internal.hash())
+    }
+
+    #[wasm_bindgen(getter, js_name = lock)]
+    pub fn lock(&self) -> Option<WasmSpendCondition> {
+        match &self.internal {
+            LockRoot::Lock(cond) => Some(WasmSpendCondition::from_internal(cond.clone())),
+            _ => None,
+        }
+    }
+
+    fn to_internal(&self) -> LockRoot {
+        self.internal.clone()
+    }
+
+    fn from_internal(internal: LockRoot) -> Self {
+        Self { internal }
+    }
+}
+
 #[wasm_bindgen(js_name = Seed)]
 pub struct WasmSeed {
     #[wasm_bindgen(skip)]
     pub output_source: Option<WasmSource>,
     #[wasm_bindgen(skip)]
-    pub lock_root: WasmDigest,
+    pub lock_root: WasmLockRoot,
     #[wasm_bindgen(skip)]
     pub gift: Nicks,
     #[wasm_bindgen(skip)]
@@ -848,7 +893,7 @@ impl WasmSeed {
     #[wasm_bindgen(constructor)]
     pub fn new(
         output_source: Option<WasmSource>,
-        lock_root: WasmDigest,
+        lock_root: WasmLockRoot,
         gift: Nicks,
         note_data: WasmNoteData,
         parent_hash: WasmDigest,
@@ -889,12 +934,12 @@ impl WasmSeed {
     }
 
     #[wasm_bindgen(getter, js_name = lockRoot)]
-    pub fn lock_root(&self) -> WasmDigest {
+    pub fn lock_root(&self) -> WasmLockRoot {
         self.lock_root.clone()
     }
 
     #[wasm_bindgen(setter, js_name = lockRoot)]
-    pub fn set_lock_root(&mut self, lock_root: WasmDigest) {
+    pub fn set_lock_root(&mut self, lock_root: WasmLockRoot) {
         self.lock_root = lock_root;
     }
 
@@ -935,7 +980,7 @@ impl WasmSeed {
                 .as_ref()
                 .map(WasmSource::to_internal)
                 .transpose()?,
-            lock_root: self.lock_root.to_internal()?,
+            lock_root: self.lock_root.to_internal(),
             gift: self.gift,
             note_data: self.note_data.to_internal()?,
             parent_hash: self.parent_hash.to_internal()?,
@@ -947,7 +992,7 @@ impl From<Seed> for WasmSeed {
     fn from(value: Seed) -> Self {
         Self {
             output_source: value.output_source.as_ref().map(WasmSource::from_internal),
-            lock_root: WasmDigest::from_internal(&value.lock_root),
+            lock_root: WasmLockRoot::from_internal(value.lock_root),
             gift: value.gift,
             note_data: WasmNoteData::from_internal(&value.note_data),
             parent_hash: WasmDigest::from_internal(&value.parent_hash),
@@ -1211,9 +1256,18 @@ impl WasmTxBuilder {
     }
 
     #[wasm_bindgen]
-    pub fn build(&self) -> Result<WasmRawTx, JsValue> {
+    pub fn build(&self) -> Result<WasmNockchainTx, JsValue> {
         let tx = self.builder.build();
-        Ok(WasmRawTx::from_internal(&tx))
+        Ok(WasmNockchainTx::from_internal(&tx))
+    }
+
+    #[wasm_bindgen(js_name = allSpends)]
+    pub fn all_spends(&self) -> Vec<WasmSpendBuilder> {
+        self.builder
+            .all_spends()
+            .values()
+            .map(WasmSpendBuilder::from_internal)
+            .collect()
     }
 }
 
@@ -1347,6 +1401,17 @@ impl WasmSpendBuilder {
         let signing_key = PrivateKey(UBig::from_be_bytes(signing_key_bytes));
         Ok(self.builder.sign(&signing_key))
     }
+
+    fn from_internal(internal: &SpendBuilder) -> Self {
+        Self {
+            builder: internal.clone(),
+        }
+    }
+
+    #[allow(unused)]
+    fn to_internal(&self) -> SpendBuilder {
+        self.builder.clone()
+    }
 }
 
 impl From<SpendBuilder> for WasmSpendBuilder {
@@ -1442,26 +1507,21 @@ impl WasmRawTx {
         let tx: RawTx = pb
             .try_into()
             .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
+        //web_sys::console::log_1(&JsValue::from_str(&format!("{tx:?}")));
         Ok(WasmRawTx::from_internal(&tx))
     }
 
     /// Convert to jammed transaction file for inspecting through CLI
     #[wasm_bindgen(js_name = toJam)]
     pub fn to_jam(&self) -> js_sys::Uint8Array {
-        let n = self.internal.to_nockchain_tx();
+        let n = self.internal.to_noun();
         js_sys::Uint8Array::from(&jam(n)[..])
     }
 
     #[wasm_bindgen(js_name = fromJam)]
     pub fn from_jam(jam: &[u8]) -> Result<Self, JsValue> {
         let n = cue(jam).ok_or("Unable to decode jam")?;
-        let (txid, spends): (String, Spends) =
-            NounDecode::from_noun(&n).ok_or("Unable to decode noun")?;
-        let tx = RawTx {
-            version: Version::V1,
-            id: Digest::try_from(&*txid)?,
-            spends,
-        };
+        let tx: RawTx = NounDecode::from_noun(&n).ok_or("Unable to decode noun")?;
         Ok(Self::from_internal(&tx))
     }
 
@@ -1473,5 +1533,69 @@ impl WasmRawTx {
             .into_iter()
             .map(WasmNote::from_internal)
             .collect()
+    }
+
+    #[wasm_bindgen(js_name = toNockchainTx)]
+    pub fn to_nockchain_tx(&self) -> WasmNockchainTx {
+        WasmNockchainTx::from_internal(&self.internal.to_nockchain_tx())
+    }
+}
+
+#[wasm_bindgen(js_name = NockchainTx)]
+pub struct WasmNockchainTx {
+    #[wasm_bindgen(skip)]
+    pub(crate) internal: NockchainTx,
+}
+
+#[wasm_bindgen(js_class = NockchainTx)]
+impl WasmNockchainTx {
+    #[wasm_bindgen(getter)]
+    pub fn version(&self) -> WasmVersion {
+        WasmVersion::from_internal(&self.internal.version)
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn id(&self) -> WasmDigest {
+        WasmDigest::from_internal(&self.internal.id)
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn name(&self) -> String {
+        self.internal.id.to_string()
+    }
+
+    fn from_internal(tx: &NockchainTx) -> Self {
+        Self {
+            internal: tx.clone(),
+        }
+    }
+
+    /// Convert to jammed transaction file for inspecting through CLI
+    #[wasm_bindgen(js_name = toJam)]
+    pub fn to_jam(&self) -> js_sys::Uint8Array {
+        let n = self.internal.to_noun();
+        js_sys::Uint8Array::from(&jam(n)[..])
+    }
+
+    /// Convert from CLI-compatible jammed transaction file
+    #[wasm_bindgen(js_name = fromJam)]
+    pub fn from_jam(jam: &[u8]) -> Result<Self, JsValue> {
+        let n = cue(jam).ok_or("Unable to decode jam")?;
+        let tx: NockchainTx = NounDecode::from_noun(&n).ok_or("Unable to decode noun")?;
+        Ok(Self::from_internal(&tx))
+    }
+
+    #[wasm_bindgen]
+    pub fn outputs(&self) -> Vec<WasmNote> {
+        self.internal
+            .outputs()
+            .into_iter()
+            .map(WasmNote::from_internal)
+            .collect()
+    }
+
+    #[wasm_bindgen(js_name = toRawTx)]
+    pub fn to_raw_tx(&self) -> WasmRawTx {
+        WasmRawTx::from_internal(&self.internal.to_raw_tx())
     }
 }

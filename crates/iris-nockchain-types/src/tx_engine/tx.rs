@@ -56,7 +56,7 @@ impl From<LockRoot> for Digest {
 impl HashableTrait for LockRoot {
     fn hash(&self) -> Digest {
         match self {
-            LockRoot::Hash(d) => d.clone(),
+            LockRoot::Hash(d) => *d,
             LockRoot::Lock(l) => l.hash(),
         }
     }

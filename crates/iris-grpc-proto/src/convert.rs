@@ -996,7 +996,7 @@ mod tests {
         println!("{pb_raw_tx:?}");
         let raw_tx: RawTx = pb_raw_tx.clone().try_into().unwrap();
         println!("{raw_tx:?}");
-        let pb2_raw_tx: PbRawTransaction = raw_tx.try_into().unwrap();
+        let pb2_raw_tx: PbRawTransaction = raw_tx.into();
         println!("{pb2_raw_tx:?}");
         assert_eq!(pb_raw_tx, pb2_raw_tx);
     }

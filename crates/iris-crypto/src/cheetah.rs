@@ -103,6 +103,54 @@ impl PublicKey {
     }
 }
 
+impl core::ops::Add for &PublicKey {
+    type Output = PublicKey;
+
+    fn add(self, other: &PublicKey) -> PublicKey {
+        PublicKey(ch_add(&self.0, &other.0).unwrap())
+    }
+}
+
+impl core::ops::Add for PublicKey {
+    type Output = PublicKey;
+
+    fn add(self, other: PublicKey) -> PublicKey {
+        &self + &other
+    }
+}
+
+impl core::ops::AddAssign for PublicKey {
+    fn add_assign(&mut self, other: PublicKey) {
+        *self = &*self + &other;
+    }
+}
+
+impl core::ops::Sub for &PublicKey {
+    type Output = PublicKey;
+
+    fn sub(self, other: &PublicKey) -> PublicKey {
+        PublicKey(ch_add(&self.0, &ch_neg(&other.0)).unwrap())
+    }
+}
+
+impl core::ops::SubAssign for PublicKey {
+    fn sub_assign(&mut self, other: PublicKey) {
+        *self = &*self - &other;
+    }
+}
+
+impl core::iter::Sum<PublicKey> for PublicKey {
+    fn sum<I: Iterator<Item = PublicKey>>(iter: I) -> Self {
+        iter.fold(PublicKey(CheetahPoint::identity()), |acc, x| &acc + &x)
+    }
+}
+
+impl<'a> core::iter::Sum<&'a PublicKey> for PublicKey {
+    fn sum<I: Iterator<Item = &'a PublicKey>>(iter: I) -> Self {
+        iter.fold(PublicKey(CheetahPoint::identity()), |acc, x| &acc + x)
+    }
+}
+
 impl Hashable for PublicKey {
     fn hash(&self) -> Digest {
         self.to_noun().hash()
@@ -113,6 +161,21 @@ impl Hashable for PublicKey {
 pub struct Signature {
     pub c: UBig, // challenge
     pub s: UBig, // signature scalar
+}
+
+// Aggregate signature of the same challenge
+impl core::iter::Sum<Signature> for Option<Signature> {
+    fn sum<I: Iterator<Item = Signature>>(mut iter: I) -> Self {
+        let mut c = None;
+        let s = iter.try_fold(UBig::from(0u64), |acc, x| {
+            if c.is_some() && c.as_ref() != Some(&x.c) {
+                return None;
+            }
+            c = Some(x.c);
+            Some((acc + x.s) % &*G_ORDER)
+        });
+        Some(Signature { c: c?, s: s? })
+    }
 }
 
 impl NounEncode for Signature {
@@ -154,6 +217,10 @@ impl PrivateKey {
     }
 
     pub fn sign(&self, m: &Digest) -> Signature {
+        self.sign_multi(m, &self.nonce_for(m), &self.public_key())
+    }
+
+    pub fn nonce_for(&self, m: &Digest) -> UBig {
         let pubkey = self.public_key().0;
         let nonce = {
             let mut transcript = Vec::new();
@@ -167,17 +234,59 @@ impl PrivateKey {
             });
             trunc_g_order(&hash_varlen(&mut transcript))
         };
+        nonce
+    }
+
+    pub fn combine_nonces(nonces: &[UBig]) -> UBig {
+        nonces.iter().fold(UBig::from(0u64), |acc, x| &acc + x) % &*G_ORDER
+    }
+
+    /// Perform a multiparty sign
+    ///
+    /// # Arguments
+    /// * `m` - The digest of message to sign
+    /// * `shared_nonce` - The challenge nonce. This is after taking `nonce_for(m)` on all private keys, and combining them with [`PrivateKey::combine_nonces`].
+    /// * `combined_pubkey` - The combined public key to sign against.
+    ///
+    /// # Returns
+    /// * `Signature` - The partial signature. This will be invalid until combined with other partial signatures.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use iris_ztd::{Digest, Belt};
+    /// # use iris_crypto::cheetah::*;
+    /// # use ibig::UBig;
+    /// let pk1 = PrivateKey(UBig::from(123u64));
+    /// let pk2 = PrivateKey(UBig::from(456u64));
+    /// let m = Digest([Belt(8), Belt(9), Belt(10), Belt(11), Belt(12)]);
+    /// let nonce1 = pk1.nonce_for(&m);
+    /// let nonce2 = pk2.nonce_for(&m);
+    /// let combined_nonce = PrivateKey::combine_nonces(&[nonce1, nonce2]);
+    /// let combined_pubkey = pk1.public_key() + pk2.public_key();
+    /// let sig1 = pk1.sign_multi(&m, &combined_nonce, &combined_pubkey);
+    /// let sig2 = pk2.sign_multi(&m, &combined_nonce, &combined_pubkey);
+    /// let sig = [sig1, sig2].into_iter().sum::<Option<Signature>>().unwrap();
+    /// assert!(combined_pubkey.verify(&m, &sig));
+    /// ```
+    pub fn sign_multi(
+        &self,
+        m: &Digest,
+        shared_nonce: &UBig,
+        combined_pubkey: &PublicKey,
+    ) -> Signature {
         let chal = {
             // scalar = nonce * G
-            let scalar = ch_scal_big(&nonce, &A_GEN).unwrap();
+            let scalar = ch_scal_big(shared_nonce, &A_GEN).unwrap();
             let mut transcript = Vec::new();
             transcript.extend_from_slice(&scalar.x.0);
             transcript.extend_from_slice(&scalar.y.0);
-            transcript.extend_from_slice(&pubkey.x.0);
-            transcript.extend_from_slice(&pubkey.y.0);
+            transcript.extend_from_slice(&combined_pubkey.0.x.0);
+            transcript.extend_from_slice(&combined_pubkey.0.y.0);
             transcript.extend_from_slice(&m.0);
             trunc_g_order(&hash_varlen(&mut transcript))
         };
+        let nonce = self.nonce_for(m);
         let sig = (&nonce + &chal * &self.0) % &*G_ORDER;
         Signature { c: chal, s: sig }
     }
@@ -190,9 +299,105 @@ impl PrivateKey {
     }
 }
 
+impl core::ops::Add for &PrivateKey {
+    type Output = PrivateKey;
+
+    fn add(self, other: &PrivateKey) -> PrivateKey {
+        PrivateKey((&self.0 + &other.0) % &*G_ORDER)
+    }
+}
+
+impl core::ops::Add for PrivateKey {
+    type Output = PrivateKey;
+
+    fn add(self, other: PrivateKey) -> PrivateKey {
+        PrivateKey((&self.0 + &other.0) % &*G_ORDER)
+    }
+}
+
+impl core::ops::AddAssign for PrivateKey {
+    fn add_assign(&mut self, other: PrivateKey) {
+        *self = &*self + &other;
+    }
+}
+
+impl core::ops::Sub for &PrivateKey {
+    type Output = PrivateKey;
+
+    fn sub(self, other: &PrivateKey) -> PrivateKey {
+        PrivateKey((&self.0 - &other.0) % &*G_ORDER)
+    }
+}
+
+impl core::ops::SubAssign for PrivateKey {
+    fn sub_assign(&mut self, other: PrivateKey) {
+        *self = &*self - &other;
+    }
+}
+
+impl core::iter::Sum<PrivateKey> for PrivateKey {
+    fn sum<I: Iterator<Item = PrivateKey>>(iter: I) -> Self {
+        iter.fold(PrivateKey(UBig::from(0u64)), |acc, x| &acc + &x)
+    }
+}
+
+impl<'a> core::iter::Sum<&'a PrivateKey> for PrivateKey {
+    fn sum<I: Iterator<Item = &'a PrivateKey>>(iter: I) -> Self {
+        iter.fold(PrivateKey(UBig::from(0u64)), |acc, x| &acc + x)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mupk_test() {
+        let privs = [
+            UBig::from(123u64),
+            UBig::from(124u64),
+            &*G_ORDER - &UBig::from(1u64),
+        ]
+        .map(PrivateKey);
+        let pubs = privs.clone().map(|p| p.public_key());
+        let pub_key: PublicKey = pubs.iter().sum();
+        let priv_key: PrivateKey = privs.iter().sum();
+        let pub_key_from_priv = priv_key.public_key();
+        assert_eq!(pub_key, pub_key_from_priv);
+    }
+
+    #[test]
+    fn musig_test() {
+        let privs = [
+            UBig::from(123u64),
+            UBig::from(124u64),
+            &*G_ORDER - &UBig::from(1u64),
+        ]
+        .map(PrivateKey);
+        let pubs = privs.clone().map(|p| p.public_key());
+        let pub_key: PublicKey = pubs.iter().sum();
+        let priv_key: PrivateKey = privs.iter().sum();
+
+        let digest = Digest([Belt(1), Belt(2), Belt(3), Belt(4), Belt(5)]);
+        let signature_all = priv_key.sign(&digest);
+        // Just testing regular signing
+        assert!(pub_key.verify(&digest, &signature_all));
+
+        // Now do split signing
+        let nonces = privs
+            .iter()
+            .map(|p| p.nonce_for(&digest))
+            .collect::<Vec<_>>();
+        let nonce = PrivateKey::combine_nonces(&nonces);
+        let mut sigs = vec![];
+        for priv_key in &privs {
+            sigs.push(priv_key.sign_multi(&digest, &nonce, &pub_key));
+        }
+        // Combine all signatures
+        let sig = sigs.into_iter().sum::<Option<Signature>>().unwrap();
+        // Verify combined signature
+        assert!(pub_key.verify(&digest, &sig));
+    }
 
     #[test]
     fn test_sign_and_verify() {

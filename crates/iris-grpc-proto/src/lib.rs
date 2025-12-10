@@ -70,7 +70,7 @@ impl<'a> TryFrom<&'a pb::common::v1::Hash> for Base58Belts<5> {
     type Error = ();
 
     fn try_from(value: &'a pb::common::v1::Hash) -> Result<Self, Self::Error> {
-        value.clone().try_into()
+        (*value).try_into()
     }
 }
 
@@ -95,7 +95,7 @@ impl<'a> TryFrom<&'a pb::common::v1::EightBelt> for Base58Belts<8> {
     type Error = ();
 
     fn try_from(value: &'a pb::common::v1::EightBelt) -> Result<Self, Self::Error> {
-        value.clone().try_into()
+        (*value).try_into()
     }
 }
 
@@ -149,7 +149,7 @@ impl<'a> TryFrom<&'a pb::common::v1::SixBelt> for Base58Belts<6> {
     type Error = ();
 
     fn try_from(value: &'a pb::common::v1::SixBelt) -> Result<Self, Self::Error> {
-        value.clone().try_into()
+        (*value).try_into()
     }
 }
 

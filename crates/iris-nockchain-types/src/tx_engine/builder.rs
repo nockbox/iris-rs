@@ -1062,7 +1062,6 @@ mod tests {
     fn test_missing_unlock_hax() {
         use crate::Hax;
         use iris_ztd::Belt;
-        let (private_key, _) = keys();
         let note = Note {
             version: Version::V1,
             origin_page: 13,

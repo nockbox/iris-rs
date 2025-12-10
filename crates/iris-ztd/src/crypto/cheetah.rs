@@ -112,6 +112,10 @@ impl CheetahPoint {
         let scaled = ch_scal_big(&G_ORDER, self).unwrap();
         scaled == A_ID
     }
+
+    pub fn identity() -> Self {
+        A_ID
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

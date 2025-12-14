@@ -218,7 +218,11 @@ impl From<NoteDataEntry> for PbNoteDataEntry {
 impl From<NoteData> for PbNoteData {
     fn from(data: NoteData) -> Self {
         Self {
-            entries: data.0.into_iter().map(PbNoteDataEntry::from).collect(),
+            entries: data
+                .entries
+                .into_iter()
+                .map(PbNoteDataEntry::from)
+                .collect(),
         }
     }
 }
@@ -614,7 +618,7 @@ impl TryFrom<PbNoteData> for NoteData {
             .into_iter()
             .map(PbNoteDataEntry::try_into)
             .collect();
-        Ok(NoteData(entries?))
+        Ok(NoteData { entries: entries? })
     }
 }
 

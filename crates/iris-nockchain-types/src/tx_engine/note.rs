@@ -70,16 +70,20 @@ impl Hashable for NoteDataEntry {
     }
 }
 
+pub const MEMO_KEY: &str = "memo";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NoteData(pub Vec<NoteDataEntry>);
+pub struct NoteData {
+    pub entries: Vec<NoteDataEntry>,
+}
 
 impl NoteData {
     pub fn empty() -> Self {
-        Self(Vec::new())
+        Self { entries: Vec::new() }
     }
 
     pub fn push_pkh(&mut self, pkh: Pkh) {
-        self.0.push(NoteDataEntry {
+        self.entries.push(NoteDataEntry {
             key: "lock".to_string(),
             val: (0, ("pkh", &pkh), 0).to_noun(),
         });
@@ -87,7 +91,7 @@ impl NoteData {
 
     // TODO: support 2,4,8,16-way spend conditions.
     pub fn push_lock(&mut self, spend_condition: SpendCondition) {
-        self.0.push(NoteDataEntry {
+        self.entries.push(NoteDataEntry {
             key: "lock".to_string(),
             val: (0, spend_condition).to_noun(),
         });
@@ -98,25 +102,40 @@ impl NoteData {
         ret.push_pkh(pkh);
         ret
     }
+
+    pub fn push_memo(&mut self, memo: Noun) {
+        self.entries.push(NoteDataEntry {
+            key: MEMO_KEY.to_string(),
+            val: memo,
+        });
+    }
+
+    pub fn memo(&self) -> Option<&Noun> {
+        self.entries
+            .iter()
+            .find(|entry| entry.key == MEMO_KEY)
+            .map(|entry| &entry.val)
+    }
 }
 
 impl NounEncode for NoteData {
     fn to_noun(&self) -> Noun {
-        ZSet::from_iter(&self.0).to_noun()
+        ZSet::from_iter(&self.entries).to_noun()
     }
 }
 
 impl NounDecode for NoteData {
     fn from_noun(noun: &Noun) -> Option<Self> {
         let set = ZSet::<NoteDataEntry>::from_noun(noun)?;
-        let entries = set.into();
-        Some(Self(entries))
+        Some(Self {
+            entries: set.into_iter().collect(),
+        })
     }
 }
 
 impl Hashable for NoteData {
     fn hash(&self) -> Digest {
-        ZSet::from_iter(&self.0).hash()
+        ZSet::from_iter(&self.entries).hash()
     }
 }
 

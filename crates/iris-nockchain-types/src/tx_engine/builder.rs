@@ -103,7 +103,7 @@ impl SpendBuilder {
                 - self.spend.fee
                 - self.spend.seeds.0.iter().map(|v| v.gift).sum::<u64>();
             if refund > 0 {
-                let seed = self.build_seed(rl, refund, include_lock_data);
+                let seed = self.build_seed(rl, refund, include_lock_data, None);
                 // NOTE: by convention, the refund seed is always first
                 self.spend.seeds.0.insert(0, seed);
             }
@@ -126,11 +126,20 @@ impl SpendBuilder {
         self.note.assets == spend_sum + self.spend.fee
     }
 
-    pub fn build_seed(&self, lock: SpendCondition, gift: Nicks, include_lock_data: bool) -> Seed {
+    pub fn build_seed(
+        &self,
+        lock: SpendCondition,
+        gift: Nicks,
+        include_lock_data: bool,
+        memo: Option<Noun>,
+    ) -> Seed {
         let lock_root = LockRoot::Lock(lock.clone());
         let mut note_data = NoteData::empty();
         if include_lock_data {
             note_data.push_lock(lock);
+        }
+        if let Some(memo) = memo {
+            note_data.push_memo(memo);
         }
         let parent_hash = self.note.hash();
         Seed {
@@ -314,6 +323,7 @@ impl TxBuilder {
         gift: Nicks,
         refund_pkh: Digest,
         include_lock_data: bool,
+        memo: Option<Noun>,
     ) -> Result<&mut Self, BuildError> {
         if gift == 0 {
             return Err(BuildError::ZeroGift);
@@ -334,6 +344,7 @@ impl TxBuilder {
                     SpendCondition::new_pkh(Pkh::single(recipient)),
                     gift_portion,
                     include_lock_data,
+                    memo.clone(),
                 );
                 spend.seed(seed);
                 spend.compute_refund(include_lock_data);
@@ -360,9 +371,17 @@ impl TxBuilder {
         gift: Nicks,
         refund_pkh: Digest,
         include_lock_data: bool,
+        memo: Option<Noun>,
     ) -> Result<&mut Self, BuildError> {
-        self.simple_spend_base(notes, recipient, gift, refund_pkh, include_lock_data)?
-            .recalc_and_set_fee(include_lock_data)?;
+        self.simple_spend_base(
+            notes,
+            recipient,
+            gift,
+            refund_pkh,
+            include_lock_data,
+            memo,
+        )?
+        .recalc_and_set_fee(include_lock_data)?;
 
         Ok(self)
     }
@@ -714,6 +733,7 @@ mod tests {
                 gift,
                 refund_pkh,
                 true,
+                None,
             )
             .unwrap()
             .set_fee_and_balance_refund(fee, false, true)
@@ -736,6 +756,7 @@ mod tests {
             gift,
             refund_pkh,
             true,
+            None,
         )
         .unwrap()
         .set_fee_and_balance_refund(fee, false, true)
@@ -754,6 +775,7 @@ mod tests {
                 gift,
                 refund_pkh,
                 false,
+                None,
             )
             .unwrap();
 
@@ -832,7 +854,7 @@ mod tests {
         let mut builder = TxBuilder::new(8);
 
         builder
-            .simple_spend_base(notes, recipient, gift, refund_pkh, false)
+            .simple_spend_base(notes, recipient, gift, refund_pkh, false, None)
             .unwrap();
 
         // By default, fee is just 504, because we are using one note, and one note only.
@@ -867,6 +889,67 @@ mod tests {
 
         // And the transaction should validate.
         builder.validate().unwrap();
+    }
+
+    #[test]
+    fn test_memo_increases_fee() {
+        let (private_key, _) = keys();
+        let note = Note {
+            version: Version::V1,
+            origin_page: 13,
+            name: Name::new(
+                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                    .try_into()
+                    .unwrap(),
+                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+                    .try_into()
+                    .unwrap(),
+            ),
+            note_data: NoteData::empty(),
+            assets: 10_000,
+        };
+        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
+            .try_into()
+            .unwrap();
+        let gift = 2_000;
+        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
+            .try_into()
+            .unwrap();
+        let spend_condition = SpendCondition(vec![
+            LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+            LockPrimitive::Tim(LockTim::coinbase()),
+        ]);
+        let notes = vec![(note.clone(), spend_condition.clone())];
+        let fee_per_word = 1 << 10;
+
+        let mut builder_without_memo = TxBuilder::new(fee_per_word);
+        builder_without_memo
+            .simple_spend_base(
+                notes.clone(),
+                recipient,
+                gift,
+                refund_pkh,
+                /* include_lock_data */ false,
+                None,
+            )
+            .unwrap();
+        let base_fee = builder_without_memo.calc_fee();
+
+        let memo = 7u64.to_noun();
+        let mut builder_with_memo = TxBuilder::new(fee_per_word);
+        builder_with_memo
+            .simple_spend_base(
+                notes,
+                recipient,
+                gift,
+                refund_pkh,
+                /* include_lock_data */ false,
+                Some(memo),
+            )
+            .unwrap();
+        let memo_fee = builder_with_memo.calc_fee();
+
+        assert!(memo_fee > base_fee);
     }
 
     #[test]
@@ -955,6 +1038,7 @@ mod tests {
                 gift,
                 refund_pkh,
                 false,
+                None,
             )
             .unwrap()
             .recalc_and_set_fee(false)
@@ -1038,6 +1122,7 @@ mod tests {
                 gift,
                 refund_pkh,
                 true,
+                None,
             )
             .unwrap()
             .set_fee_and_balance_refund(fee, false, true)
@@ -1107,6 +1192,7 @@ mod tests {
                 gift,
                 refund_pkh,
                 true,
+                None,
             )
             .unwrap()
             .set_fee_and_balance_refund(fee, false, true)
@@ -1167,6 +1253,7 @@ mod tests {
                 gift,
                 refund_pkh,
                 true,
+                None,
             )
             .unwrap()
             .set_fee_and_balance_refund(fee, false, true)

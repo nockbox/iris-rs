@@ -85,7 +85,7 @@ impl Seed {
             note_data.push_pkh(Pkh::single(pkh));
         }
         if let Some(memo) = memo {
-            note_data.push_memo(memo);
+            note_data.set_memo(memo);
         }
         Self {
             output_source: None,

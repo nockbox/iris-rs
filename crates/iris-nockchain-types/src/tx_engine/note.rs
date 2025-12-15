@@ -74,12 +74,14 @@ pub const MEMO_KEY: &str = "memo";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NoteData {
-    pub entries: Vec<NoteDataEntry>,
+    pub entries: Vec<NoteDataEntry>
 }
 
 impl NoteData {
     pub fn empty() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new()
+        }
     }
 
     pub fn push_pkh(&mut self, pkh: Pkh) {
@@ -103,18 +105,11 @@ impl NoteData {
         ret
     }
 
-    pub fn push_memo(&mut self, memo: Noun) {
+    pub fn set_memo(&mut self, memo: Noun) {
         self.entries.push(NoteDataEntry {
             key: MEMO_KEY.to_string(),
-            val: memo,
+            val: memo.clone(),
         });
-    }
-
-    pub fn memo(&self) -> Option<&Noun> {
-        self.entries
-            .iter()
-            .find(|entry| entry.key == MEMO_KEY)
-            .map(|entry| &entry.val)
     }
 }
 
@@ -123,13 +118,11 @@ impl NounEncode for NoteData {
         ZSet::from_iter(&self.entries).to_noun()
     }
 }
-
 impl NounDecode for NoteData {
     fn from_noun(noun: &Noun) -> Option<Self> {
         let set = ZSet::<NoteDataEntry>::from_noun(noun)?;
-        Some(Self {
-            entries: set.into_iter().collect(),
-        })
+        let entries: Vec<NoteDataEntry> = set.into_iter().collect();
+        Some(Self { entries })
     }
 }
 

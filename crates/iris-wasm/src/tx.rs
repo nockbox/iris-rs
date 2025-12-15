@@ -355,9 +355,7 @@ impl WasmNoteData {
     fn to_internal(&self) -> Result<NoteData, String> {
         let entries: Result<Vec<NoteDataEntry>, String> =
             self.entries.iter().map(|e| e.to_internal()).collect();
-        Ok(NoteData {
-            entries: entries?,
-        })
+        Ok(NoteData { entries: entries? })
     }
 
     fn from_internal(note_data: &NoteData) -> Self {

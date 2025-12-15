@@ -139,7 +139,7 @@ impl SpendBuilder {
             note_data.push_lock(lock);
         }
         if let Some(memo) = memo {
-            note_data.push_memo(memo);
+            note_data.set_memo(memo);
         }
         let parent_hash = self.note.hash();
         Seed {

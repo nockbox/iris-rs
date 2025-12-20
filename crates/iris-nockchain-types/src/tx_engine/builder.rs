@@ -94,7 +94,23 @@ impl SpendBuilder {
             self.invalidate_sigs();
             let rl = self.refund_lock.clone().unwrap();
             let lock_root = LockRoot::Lock(rl.clone());
-            // Remove the previous refund
+            // If the previous refund seed had memo note-data, preserve it across refund
+            // recomputation (fee changes rebuild the refund seed).
+            let preserved_memo: Option<Noun> = self
+                .spend
+                .seeds
+                .0
+                .iter()
+                .find(|v| v.lock_root.hash() == lock_root.hash())
+                .and_then(|seed| {
+                    seed.note_data
+                        .entries
+                        .iter()
+                        .find(|e| e.key == crate::MEMO_KEY)
+                        .map(|e| e.val.clone())
+                });
+
+            // Remove the previous refund.
             self.spend
                 .seeds
                 .0
@@ -103,7 +119,10 @@ impl SpendBuilder {
                 - self.spend.fee
                 - self.spend.seeds.0.iter().map(|v| v.gift).sum::<u64>();
             if refund > 0 {
-                let seed = self.build_seed(rl, refund, include_lock_data);
+                let mut seed = self.build_seed(rl, refund, include_lock_data);
+                if let Some(memo) = preserved_memo {
+                    seed.note_data.push_memo(memo);
+                }
                 // NOTE: by convention, the refund seed is always first
                 self.spend.seeds.0.insert(0, seed);
             }
@@ -1184,6 +1203,77 @@ mod tests {
             .entries
             .iter()
             .any(|e| e.key == crate::MEMO_KEY));
+    }
+
+    #[test]
+    fn test_memo_survives_fee_recalc_and_refund_recompute() {
+        // This test exercises the real wasm flow:
+        // `simple_spend` calls `simple_spend_base` then `recalc_and_set_fee`, which recomputes
+        // refunds (rebuilding the refund seed). If memo was placed onto the refund seed (because
+        // refund lock-root is best), it must survive that rebuild.
+        let (private_key, public_key) = keys();
+
+        let note1 = Note {
+            version: Version::V1,
+            origin_page: 13,
+            name: Name::new(
+                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                    .try_into()
+                    .unwrap(),
+                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+                    .try_into()
+                    .unwrap(),
+            ),
+            note_data: NoteData::empty(),
+            assets: 1_000_000,
+        };
+
+        let recipient: Digest = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
+            .try_into()
+            .unwrap();
+        let refund_pkh: Digest = public_key.hash();
+        let gift: Nicks = 1_000;
+
+        let spend_condition = SpendCondition(vec![
+            LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+            LockPrimitive::Tim(LockTim::coinbase()),
+        ]);
+
+        // Use a non-trivial fee_per_word so that `recalc_and_set_fee` adjusts fee/refund, but
+        // keep it small enough that we have sufficient funds.
+        let mut builder = TxBuilder::new(1 << 10);
+        builder
+            .simple_spend(
+                vec![(note1, spend_condition)],
+                recipient,
+                gift,
+                refund_pkh,
+                /* include_lock_data */ false,
+                Some(7u64.to_noun()),
+            )
+            .unwrap();
+
+        // Refund output should be the best lock-root (it is much larger than gift).
+        let outputs = builder.build().outputs();
+        let out_recipient = outputs.iter().find(|n| n.assets == gift).unwrap();
+        let out_refund = outputs.iter().find(|n| n.assets > gift).unwrap();
+
+        assert!(
+            out_refund
+                .note_data
+                .entries
+                .iter()
+                .any(|e| e.key == crate::MEMO_KEY),
+            "memo should survive refund recomputation and land on refund output note-data"
+        );
+        assert!(
+            !out_recipient
+                .note_data
+                .entries
+                .iter()
+                .any(|e| e.key == crate::MEMO_KEY),
+            "memo should not be on recipient output for this case"
+        );
     }
 
     #[test]

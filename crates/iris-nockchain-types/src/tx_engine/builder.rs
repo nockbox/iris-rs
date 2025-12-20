@@ -669,7 +669,7 @@ impl core::fmt::Display for BuildError {
             BuildError::MissingUnlocks(unlocks) => {
                 write!(
                     f,
-                    "The note is note fully unlocked. The following unlocks are missing:"
+                    "The note is not fully unlocked. The following unlocks are missing:"
                 )?;
                 for u in unlocks {
                     write!(f, "{u:?}")?;

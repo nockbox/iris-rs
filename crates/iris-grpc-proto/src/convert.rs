@@ -8,6 +8,7 @@ use crate::pb::common::v1::{
     TimeLockRangeAbsolute as PbTimeLockRangeAbsolute,
     TimeLockRangeRelative as PbTimeLockRangeRelative,
 };
+use crate::pb::common::v1::{Lock as PbLegacyLock, Note as PbLegacyNote, SchnorrPubkey as PbSchnorrPubkey, TimeLockIntent as PbTimeLockIntent};
 use crate::pb::common::v2::{
     lock_primitive, spend, Balance as PbBalance, BalanceEntry as PbBalanceEntry,
     BurnLock as PbBurnLock, HaxLock as PbHaxLock, HaxPreimage as PbHaxPreimage,
@@ -629,9 +630,109 @@ impl TryFrom<PbNote> for Note {
                 note_data: v1.note_data.required("NoteV1", "note_data")?.try_into()?,
                 assets: v1.assets.required("NoteV1", "assets")?.into(),
             }),
-            crate::pb::common::v2::note::NoteVersion::Legacy(_) => Err(
-                ConversionError::UnsupportedVersion("Legacy note format not supported".to_string()),
-            ),
+            crate::pb::common::v2::note::NoteVersion::Legacy(legacy) => {
+                use iris_crypto::PublicKey;
+                use iris_ztd::crypto::cheetah::{CheetahPoint, F6lt};
+                use iris_ztd::Belt as ZBelt;
+                use iris_ztd::Hashable;
+
+                fn pb_schnorr_pubkey_to_public_key(
+                    pb: PbSchnorrPubkey,
+                ) -> Result<PublicKey, ConversionError> {
+                    let pt = pb.value.required("SchnorrPubkey", "value")?;
+                    let x_pb = pt.x.required("CheetahPoint", "x")?;
+                    let y_pb = pt.y.required("CheetahPoint", "y")?;
+
+                    Ok(PublicKey(CheetahPoint {
+                        x: F6lt([
+                            ZBelt(x_pb.belt_1.required("SixBelt", "belt_1")?.value),
+                            ZBelt(x_pb.belt_2.required("SixBelt", "belt_2")?.value),
+                            ZBelt(x_pb.belt_3.required("SixBelt", "belt_3")?.value),
+                            ZBelt(x_pb.belt_4.required("SixBelt", "belt_4")?.value),
+                            ZBelt(x_pb.belt_5.required("SixBelt", "belt_5")?.value),
+                            ZBelt(x_pb.belt_6.required("SixBelt", "belt_6")?.value),
+                        ]),
+                        y: F6lt([
+                            ZBelt(y_pb.belt_1.required("SixBelt", "belt_1")?.value),
+                            ZBelt(y_pb.belt_2.required("SixBelt", "belt_2")?.value),
+                            ZBelt(y_pb.belt_3.required("SixBelt", "belt_3")?.value),
+                            ZBelt(y_pb.belt_4.required("SixBelt", "belt_4")?.value),
+                            ZBelt(y_pb.belt_5.required("SixBelt", "belt_5")?.value),
+                            ZBelt(y_pb.belt_6.required("SixBelt", "belt_6")?.value),
+                        ]),
+                        inf: pt.inf,
+                    }))
+                }
+
+                fn tim_from_intent(intent: PbTimeLockIntent) -> Option<LockTim> {
+                    use crate::pb::common::v1::time_lock_intent;
+
+                    match intent.value? {
+                        time_lock_intent::Value::Neither(_) => None,
+                        time_lock_intent::Value::Absolute(abs) => Some(LockTim {
+                            rel: TimelockRange::none(),
+                            abs: abs.into(),
+                        }),
+                        time_lock_intent::Value::Relative(rel) => Some(LockTim {
+                            rel: rel.into(),
+                            abs: TimelockRange::none(),
+                        }),
+                        time_lock_intent::Value::AbsoluteAndRelative(ar) => Some(LockTim {
+                            rel: ar.relative.map(Into::into).unwrap_or_else(TimelockRange::none),
+                            abs: ar.absolute.map(Into::into).unwrap_or_else(TimelockRange::none),
+                        }),
+                    }
+                }
+
+                let PbLegacyNote {
+                    origin_page,
+                    timelock,
+                    name,
+                    lock,
+                    source: _,
+                    assets,
+                    version,
+                } = legacy;
+
+                let origin_page: BlockHeight = origin_page.required("LegacyNote", "origin_page")?.into();
+                let name: Name = name.required("LegacyNote", "name")?.try_into()?;
+                let assets: Nicks = assets.required("LegacyNote", "assets")?.into();
+                let version: Version = version.required("LegacyNote", "version")?.into();
+
+                let PbLegacyLock {
+                    keys_required,
+                    schnorr_pubkeys,
+                } = lock.required("LegacyNote", "lock")?;
+
+                let mut hashes = schnorr_pubkeys
+                    .into_iter()
+                    .map(pb_schnorr_pubkey_to_public_key)
+                    .map(|pk| pk.map(|p| p.hash()))
+                    .collect::<Result<Vec<Digest>, ConversionError>>()?;
+                hashes.sort();
+                hashes.dedup();
+
+                let pkh = Pkh::new(keys_required as u64, hashes);
+                let mut primitives = vec![LockPrimitive::Pkh(pkh)];
+
+                if let Some(intent) = timelock {
+                    if let Some(tim) = tim_from_intent(intent) {
+                        primitives.push(LockPrimitive::Tim(tim));
+                    }
+                }
+
+                let spend_condition = SpendCondition(primitives);
+                let mut note_data = NoteData::empty();
+                note_data.push_lock(spend_condition);
+
+                Ok(Note {
+                    version,
+                    origin_page,
+                    name,
+                    note_data,
+                    assets,
+                })
+            }
         }
     }
 }

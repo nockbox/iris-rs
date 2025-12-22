@@ -51,13 +51,14 @@ impl SpendBuilder {
         spend_condition: SpendCondition,
         refund_lock: Option<SpendCondition>,
     ) -> Self {
+        let spend = if note.version == Version::V0 {
+            Spend::new_legacy(Seeds(Default::default()), 0)
+        } else {
+            Spend::new_witness(Witness::new(spend_condition.clone()), Seeds(Default::default()), 0)
+        };
         Self {
             note,
-            spend: Spend::new(
-                Witness::new(spend_condition.clone()),
-                Seeds(Default::default()),
-                0,
-            ),
+            spend,
             spend_condition,
             refund_lock,
         }
@@ -69,8 +70,14 @@ impl SpendBuilder {
         spend_condition: SpendCondition,
         refund_lock: Option<SpendCondition>,
     ) -> Option<Self> {
-        if spend.witness.lock_merkle_proof.proof.root != spend_condition.hash() {
-            return None;
+        // Only witness spends can be validated against a merkle proof.
+        if note.version != Version::V0 {
+            let Spend::Witness(ws) = &spend else {
+                return None;
+            };
+            if ws.witness.lock_merkle_proof.proof.root != spend_condition.hash() {
+                return None;
+            }
         }
 
         Some(Self {
@@ -82,10 +89,10 @@ impl SpendBuilder {
     }
 
     pub fn fee(&mut self, fee_portion: Nicks) -> &mut Self {
-        if self.spend.fee != fee_portion {
+        if self.spend.fee() != fee_portion {
             self.invalidate_sigs();
         }
-        self.spend.fee = fee_portion;
+        *self.spend.fee_mut() = fee_portion;
         self
     }
 
@@ -96,16 +103,16 @@ impl SpendBuilder {
             let lock_root = LockRoot::Lock(rl.clone());
             // Remove the previous refund
             self.spend
-                .seeds
+                .seeds_mut()
                 .0
                 .retain(|v| v.lock_root.hash() != lock_root.hash());
             let refund = self.note.assets
-                - self.spend.fee
-                - self.spend.seeds.0.iter().map(|v| v.gift).sum::<u64>();
+                - self.spend.fee()
+                - self.spend.seeds().0.iter().map(|v| v.gift).sum::<u64>();
             if refund > 0 {
                 let seed = self.build_seed(rl, refund, include_lock_data);
                 // NOTE: by convention, the refund seed is always first
-                self.spend.seeds.0.insert(0, seed);
+                self.spend.seeds_mut().0.insert(0, seed);
             }
         }
         self
@@ -115,15 +122,15 @@ impl SpendBuilder {
         let rl = self.refund_lock.as_ref()?;
         let lock_root = LockRoot::Lock(rl.clone());
         self.spend
-            .seeds
+            .seeds()
             .0
             .iter()
             .find(|v| v.lock_root.hash() == lock_root.hash())
     }
 
     pub fn is_balanced(&self) -> bool {
-        let spend_sum: Nicks = self.spend.seeds.0.iter().map(|v| v.gift).sum();
-        self.note.assets == spend_sum + self.spend.fee
+        let spend_sum: Nicks = self.spend.seeds().0.iter().map(|v| v.gift).sum();
+        self.note.assets == spend_sum + self.spend.fee()
     }
 
     pub fn build_seed(&self, lock: SpendCondition, gift: Nicks, include_lock_data: bool) -> Seed {
@@ -144,32 +151,33 @@ impl SpendBuilder {
 
     pub fn seed(&mut self, seed: Seed) -> &mut Self {
         self.invalidate_sigs();
-        self.spend.seeds.0.push(seed);
+        self.spend.seeds_mut().0.push(seed);
         self
     }
 
     pub fn invalidate_sigs(&mut self) -> &mut Self {
-        self.spend.witness.pkh_signature.0.clear();
+        self.spend.clear_signatures();
         self
     }
 
     pub fn missing_unlocks(&self) -> Vec<MissingUnlocks> {
         let mut missing_unlocks = vec![];
 
-        for p in self.spend_condition.pkh() {
-            let mut checked_pkh = BTreeSet::new();
-            let valid_pkh = p.hashes.iter().cloned().collect::<BTreeSet<_>>();
+        let present_sigs: BTreeSet<Digest> = match &self.spend {
+            Spend::Legacy(ls) => ls.signature.signer_hashes().collect(),
+            Spend::Witness(ws) => ws
+                .witness
+                .pkh_signature
+                .0
+                .iter()
+                .map(|(pkh, _, _)| *pkh)
+                .collect(),
+        };
 
-            if p.m > 0 {
-                for (pkh, _, _) in &self.spend.witness.pkh_signature.0 {
-                    if !checked_pkh.contains(pkh) && valid_pkh.contains(pkh) {
-                        checked_pkh.insert(*pkh);
-                        if checked_pkh.len() as u64 >= p.m {
-                            break;
-                        }
-                    }
-                }
-            }
+        for p in self.spend_condition.pkh() {
+            let valid_pkh = p.hashes.iter().cloned().collect::<BTreeSet<_>>();
+            let checked_pkh: BTreeSet<Digest> =
+                present_sigs.intersection(&valid_pkh).cloned().collect();
 
             if (checked_pkh.len() as u64) < p.m {
                 let sig_of = &valid_pkh ^ &checked_pkh;
@@ -183,14 +191,16 @@ impl SpendBuilder {
         for h in self.spend_condition.hax() {
             let valid_hax = h.0.iter().cloned().collect::<BTreeSet<_>>();
 
-            let current_hax = self
-                .spend
-                .witness
-                .hax_map
-                .clone()
-                .into_iter()
-                .map(|v| v.0)
-                .collect::<BTreeSet<_>>();
+            let current_hax = match &self.spend {
+                Spend::Witness(ws) => ws
+                    .witness
+                    .hax_map
+                    .clone()
+                    .into_iter()
+                    .map(|v| v.0)
+                    .collect::<BTreeSet<_>>(),
+                Spend::Legacy(_) => BTreeSet::new(),
+            };
 
             let checked_hax = &current_hax & &valid_hax;
 
@@ -212,7 +222,10 @@ impl SpendBuilder {
 
         for h in self.spend_condition.hax() {
             if h.0.contains(&digest) {
-                self.spend.witness.hax_map.insert(digest, preimage);
+                let Spend::Witness(ws) = &mut self.spend else {
+                    return None;
+                };
+                ws.witness.hax_map.insert(digest, preimage);
                 return Some(digest);
             }
         }
@@ -416,7 +429,7 @@ impl TxBuilder {
             display
                 .inputs
                 .insert(name.clone(), spend.spend_condition.clone());
-            for seed in spend.spend.seeds.0.iter() {
+            for seed in spend.spend.seeds().0.iter() {
                 if let LockRoot::Lock(lock) = &seed.lock_root {
                     display.outputs.insert(lock.hash(), lock.clone().into());
                 }
@@ -424,7 +437,16 @@ impl TxBuilder {
             spends.0.push((name.clone(), spend.spend.clone()));
         }
 
-        let version = Version::V1;
+        // If any spend is legacy, treat the transaction as legacy.
+        let version = if spends
+            .0
+            .iter()
+            .any(|(_, s)| matches!(s, Spend::Legacy(_)))
+        {
+            Version::V0
+        } else {
+            Version::V1
+        };
         let id = (&version, &spends).hash();
         let (spends, witness_data) = spends.split_witness();
 
@@ -449,7 +471,7 @@ impl TxBuilder {
     }
 
     pub fn cur_fee(&self) -> Nicks {
-        self.spends.values().map(|v| v.spend.fee).sum::<Nicks>()
+        self.spends.values().map(|v| v.spend.fee()).sum::<Nicks>()
     }
 
     pub fn calc_fee(&self) -> Nicks {
@@ -489,9 +511,9 @@ impl TxBuilder {
                 if anra != bnra {
                     // By default, put the greatest non-refund transfers first
                     bnra.cmp(&anra)
-                } else if b.spend.fee != a.spend.fee {
+                } else if b.spend.fee() != a.spend.fee() {
                     // If equal, prioritize highest fee
-                    b.spend.fee.cmp(&a.spend.fee)
+                    b.spend.fee().cmp(&a.spend.fee())
                 } else {
                     // Otherwise, sort by name
                     b.note.name.cmp(&a.note.name)
@@ -503,7 +525,7 @@ impl TxBuilder {
                     let words = rs.note_data_words();
                     let sub_refund = rs.gift.min(fee_left);
                     if sub_refund > 0 {
-                        let cur_fee = s.spend.fee;
+                        let cur_fee = s.spend.fee();
                         s.fee(cur_fee + sub_refund);
                         fee_left -= sub_refund;
                         s.compute_refund(include_lock_data);
@@ -530,7 +552,7 @@ impl TxBuilder {
                 }
                 let sub_refund = rs.gift.min(fee_left);
                 if sub_refund > 0 {
-                    let cur_fee = r.spend.fee;
+                    let cur_fee = r.spend.fee();
                     r.fee(cur_fee + sub_refund);
                     fee_left -= sub_refund;
                     r.compute_refund(include_lock_data);
@@ -551,15 +573,15 @@ impl TxBuilder {
             spends.sort_by(|a, b| {
                 let anra = a.note.assets - a.cur_refund().map(|v| v.gift).unwrap_or(0);
                 let bnra = b.note.assets - b.cur_refund().map(|v| v.gift).unwrap_or(0);
-                let aor = a.spend.seeds.0.len() == 1 && a.cur_refund().is_some();
-                let bor = b.spend.seeds.0.len() == 1 && b.cur_refund().is_some();
+                let aor = a.spend.seeds().0.len() == 1 && a.cur_refund().is_some();
+                let bor = b.spend.seeds().0.len() == 1 && b.cur_refund().is_some();
                 if aor != bor {
                     // By default, pick a note that only has refund, as adjusting fee here does not
                     // change the fee.
                     bor.cmp(&aor)
-                } else if a.spend.fee != b.spend.fee {
+                } else if a.spend.fee() != b.spend.fee() {
                     // If both are like that, or neither, put the lowest fee first
-                    a.spend.fee.cmp(&b.spend.fee)
+                    a.spend.fee().cmp(&b.spend.fee())
                 } else if anra != bnra {
                     // If equal, prioritize lowest assets
                     anra.cmp(&bnra)
@@ -573,16 +595,16 @@ impl TxBuilder {
 
             for s in spends {
                 if s.refund_lock.is_some() {
-                    let add_refund = s.spend.fee.min(refund_left);
+                    let add_refund = s.spend.fee().min(refund_left);
 
                     if add_refund > 0 {
-                        let cur_fee = s.spend.fee;
+                        let cur_fee = s.spend.fee();
                         s.fee(cur_fee - add_refund);
                         refund_left -= add_refund;
                         s.compute_refund(include_lock_data);
                     }
 
-                    if s.spend.fee == add_refund {
+                    if s.spend.fee() == add_refund {
                         return_to_pool.push(s.note.name.clone());
                         // We are returning this note to pool (making it unused), all its required
                         // fee shall disappear. The only case we don't handle here is whenever we

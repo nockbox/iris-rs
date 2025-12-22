@@ -2,7 +2,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
-use iris_crypto::{PublicKey, Signature};
+use iris_crypto::{PrivateKey, PublicKey, Signature};
 use iris_ztd::{Digest, Hashable as HashableTrait, Noun, NounDecode, NounEncode, ZMap, ZSet};
 use iris_ztd_derive::{Hashable, NounDecode, NounEncode};
 
@@ -163,31 +163,108 @@ impl NounDecode for Seeds {
 }
 
 #[derive(Debug, Clone)]
-pub struct Spend {
+pub struct LegacySignature(pub Vec<(PublicKey, Signature)>);
+
+impl Default for LegacySignature {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl HashableTrait for LegacySignature {
+    fn hash(&self) -> Digest {
+        ZMap::from_iter(
+            self.0
+                .iter()
+                .cloned()
+                .map(|(pk, sig)| (pk.hash(), (pk, sig)))
+                .collect::<Vec<_>>(),
+        )
+        .hash()
+    }
+}
+
+impl NounEncode for LegacySignature {
+    fn to_noun(&self) -> Noun {
+        ZMap::from_iter(
+            self.0
+                .iter()
+                .cloned()
+                .map(|(pk, sig)| (pk.hash(), (pk, sig)))
+                .collect::<Vec<_>>(),
+        )
+        .to_noun()
+    }
+}
+
+impl NounDecode for LegacySignature {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let m: ZMap<Digest, (PublicKey, Signature)> = NounDecode::from_noun(noun)?;
+        Some(Self(m.into_iter().map(|(_, v)| v).collect::<Vec<_>>()))
+    }
+}
+
+impl LegacySignature {
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn add_entry(&mut self, pubkey: PublicKey, signature: Signature) {
+        self.0.push((pubkey, signature));
+    }
+
+    pub fn signer_hashes(&self) -> impl Iterator<Item = Digest> + '_ {
+        self.0.iter().map(|(pk, _)| pk.hash())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LegacySpend {
+    pub signature: LegacySignature,
+    pub seeds: Seeds,
+    pub fee: Nicks,
+}
+
+#[derive(Debug, Clone)]
+pub struct WitnessSpend {
     pub witness: Witness,
     pub seeds: Seeds,
     pub fee: Nicks,
 }
 
+#[derive(Debug, Clone)]
+pub enum Spend {
+    Legacy(LegacySpend),
+    Witness(WitnessSpend),
+}
+
 impl NounEncode for Spend {
     fn to_noun(&self) -> Noun {
-        (Version::V1, &self.witness, &self.seeds, &self.fee).to_noun()
+        match self {
+            Spend::Legacy(s) => (Version::V0, &s.signature, &s.seeds, &s.fee).to_noun(),
+            Spend::Witness(s) => (Version::V1, &s.witness, &s.seeds, &s.fee).to_noun(),
+        }
     }
 }
 
 impl NounDecode for Spend {
     fn from_noun(noun: &Noun) -> Option<Self> {
-        let (v, witness, seeds, fee): (Version, _, _, _) = NounDecode::from_noun(noun)?;
-
-        if v != Version::V1 {
-            return None;
+        let (v, a, seeds, fee): (Version, Noun, Seeds, Nicks) = NounDecode::from_noun(noun)?;
+        match v {
+            Version::V0 => {
+                let signature: LegacySignature = NounDecode::from_noun(&a)?;
+                Some(Spend::Legacy(LegacySpend {
+                    signature,
+                    seeds,
+                    fee,
+                }))
+            }
+            Version::V1 => {
+                let witness: Witness = NounDecode::from_noun(&a)?;
+                Some(Spend::Witness(WitnessSpend { witness, seeds, fee }))
+            }
+            _ => None,
         }
-
-        Some(Self {
-            witness,
-            seeds,
-            fee,
-        })
     }
 }
 
@@ -216,41 +293,109 @@ impl Spend {
     }
 
     pub fn calc_words(&self) -> (u64, u64) {
-        let seed_words: u64 = self.seeds.0.iter().map(|seed| seed.note_data_words()).sum();
-        let witness_words = noun_words(&self.witness.to_noun());
-
-        (seed_words, witness_words)
+        match self {
+            Spend::Legacy(s) => {
+                let seed_words: u64 = s.seeds.0.iter().map(|seed| seed.note_data_words()).sum();
+                let sig_words = noun_words(&s.signature.to_noun());
+                (seed_words, sig_words)
+            }
+            Spend::Witness(s) => {
+                let seed_words: u64 = s.seeds.0.iter().map(|seed| seed.note_data_words()).sum();
+                let witness_words = noun_words(&s.witness.to_noun());
+                (seed_words, witness_words)
+            }
+        }
     }
 
-    pub fn new(witness: Witness, seeds: Seeds, fee: Nicks) -> Self {
-        Self {
-            witness,
+    pub fn new_legacy(seeds: Seeds, fee: Nicks) -> Self {
+        Spend::Legacy(LegacySpend {
+            signature: LegacySignature::default(),
             seeds,
             fee,
+        })
+    }
+
+    pub fn new_witness(witness: Witness, seeds: Seeds, fee: Nicks) -> Self {
+        Spend::Witness(WitnessSpend { witness, seeds, fee })
+    }
+
+    pub fn fee(&self) -> Nicks {
+        match self {
+            Spend::Legacy(s) => s.fee,
+            Spend::Witness(s) => s.fee,
+        }
+    }
+
+    pub fn fee_mut(&mut self) -> &mut Nicks {
+        match self {
+            Spend::Legacy(s) => &mut s.fee,
+            Spend::Witness(s) => &mut s.fee,
+        }
+    }
+
+    pub fn seeds(&self) -> &Seeds {
+        match self {
+            Spend::Legacy(s) => &s.seeds,
+            Spend::Witness(s) => &s.seeds,
+        }
+    }
+
+    pub fn seeds_mut(&mut self) -> &mut Seeds {
+        match self {
+            Spend::Legacy(s) => &mut s.seeds,
+            Spend::Witness(s) => &mut s.seeds,
         }
     }
 
     pub fn sig_hash(&self) -> Digest {
-        (&self.seeds.sig_hash(), self.fee).hash()
+        match self {
+            Spend::Legacy(s) => (&s.seeds.sig_hash(), s.fee).hash(),
+            Spend::Witness(s) => (&s.seeds.sig_hash(), s.fee).hash(),
+        }
     }
 
     pub fn add_signature(&mut self, key: PublicKey, signature: Signature) {
-        self.witness
-            .pkh_signature
-            .0
-            .push((key.hash(), key, signature));
+        match self {
+            Spend::Legacy(s) => {
+                s.signature.add_entry(key, signature);
+            }
+            Spend::Witness(s) => {
+                s.witness
+                    .pkh_signature
+                    .0
+                    .push((key.hash(), key, signature));
+            }
+        }
     }
 
     pub fn add_preimage(&mut self, preimage: Noun) -> Digest {
-        let digest = preimage.hash();
-        self.witness.hax_map.insert(digest, preimage);
-        digest
+        match self {
+            Spend::Legacy(_) => {
+                // Legacy spends do not carry hax preimages
+                preimage.hash()
+            }
+            Spend::Witness(s) => {
+                let digest = preimage.hash();
+                s.witness.hax_map.insert(digest, preimage);
+                digest
+            }
+        }
+    }
+
+    pub fn clear_signatures(&mut self) {
+        match self {
+            Spend::Legacy(s) => s.signature.clear(),
+            Spend::Witness(s) => s.witness.pkh_signature.0.clear(),
+        }
     }
 }
 
 impl HashableTrait for Spend {
     fn hash(&self) -> Digest {
-        (Version::V1, &self.witness, &self.seeds, &self.fee).hash()
+        match self {
+            Spend::Legacy(s) => (Version::V0, &s.signature, &s.seeds, &s.fee).hash(),
+            Spend::Witness(s) => (Version::V1, &s.witness, &s.seeds, &s.fee).hash(),
+        }
     }
 }
 
@@ -497,9 +642,16 @@ impl Spends {
         let mut witness_data = WitnessData::default();
         for (name, spend) in &self.0 {
             let mut spend = spend.clone();
-            let witness = spend.witness.take_data();
-            spends.0.push((name.clone(), spend));
-            witness_data.data.insert(name.clone(), witness);
+            match &mut spend {
+                Spend::Witness(ws) => {
+                    let witness = ws.witness.take_data();
+                    spends.0.push((name.clone(), spend));
+                    witness_data.data.insert(name.clone(), witness);
+                }
+                Spend::Legacy(_) => {
+                    spends.0.push((name.clone(), spend));
+                }
+            }
         }
         (spends, witness_data)
     }
@@ -509,8 +661,10 @@ impl Spends {
         for (name, spend) in &self.0 {
             let mut spend = spend.clone();
             // NOTE: this behavior does not match the wallet hoon, but if the worst that can happen is transaction remain invalid, it's ok.
-            if let Some(witness) = witness_data.data.get(name) {
-                spend.witness = witness.clone();
+            if let Spend::Witness(ws) = &mut spend {
+                if let Some(witness) = witness_data.data.get(name) {
+                    ws.witness = witness.clone();
+                }
             }
             spends.0.push((name.clone(), spend));
         }
@@ -546,7 +700,16 @@ pub struct RawTx {
 
 impl RawTx {
     pub fn new(spends: Spends) -> Self {
-        let version = Version::V1;
+        // If any spend is legacy, consider this a legacy transaction.
+        let version = if spends
+            .0
+            .iter()
+            .any(|(_, s)| matches!(s, Spend::Legacy(_)))
+        {
+            Version::V0
+        } else {
+            Version::V1
+        };
         let id = (&version, &spends).hash();
         Self {
             version,
@@ -564,7 +727,7 @@ impl RawTx {
 
         let mut seeds_by_lock: BTreeMap<Digest, ZSet<Seed>> = BTreeMap::new();
         for (_, spend) in spends {
-            for seed in spend.seeds.0.iter() {
+            for seed in spend.seeds().0.iter() {
                 seeds_by_lock
                     .entry(seed.lock_root.hash())
                     .or_default()
@@ -620,12 +783,26 @@ impl RawTx {
     pub fn to_nockchain_tx(&self) -> NockchainTx {
         let (spends, witness_data) = self.spends.split_witness();
         NockchainTx {
-            version: Version::V1,
+            version: self.version.clone(),
             id: self.id,
             spends,
             display: TransactionDisplay::default(),
             witness_data,
         }
+    }
+
+    /// Sign all spends in this raw transaction with the given key.
+    ///
+    /// This is intentionally "dumb": it will append a signature entry to every spend without
+    /// checking whether the spend condition requires it. This makes it usable for v0 legacy spends
+    /// (which do not embed a witness/spend-condition in the spend itself).
+    pub fn sign_all(&mut self, signing_key: &PrivateKey) {
+        for (_, spend) in &mut self.spends.0 {
+            let signature = signing_key.sign(&spend.sig_hash());
+            spend.add_signature(signing_key.public_key(), signature);
+        }
+        // Recompute tx id since it commits to signatures.
+        self.id = (&self.version, &self.spends).hash();
     }
 
     pub fn calc_id(&self) -> TxId {
@@ -647,7 +824,7 @@ impl NockchainTx {
         let spends = self.spends.apply_witness(&self.witness_data);
 
         RawTx {
-            version: Version::V1,
+            version: self.version.clone(),
             id: self.id,
             spends,
         }
@@ -673,12 +850,10 @@ impl NounEncode for NockchainTx {
 
 impl NounDecode for NockchainTx {
     fn from_noun(noun: &Noun) -> Option<Self> {
-        let (Version::V1, id, spends, display, witness_data) = NounDecode::from_noun(noun)? else {
-            return None;
-        };
-
+        let (version, id, spends, display, witness_data): (Version, _, _, _, _) =
+            NounDecode::from_noun(noun)?;
         Some(Self {
-            version: Version::V1,
+            version,
             id,
             spends,
             display,
@@ -806,14 +981,14 @@ mod tests {
         let mut seed2 = seed1.clone();
         seed2.gift = 1234567;
 
-        let mut spend = Spend {
-            witness: Witness::new(SpendCondition(vec![
+        let mut spend = Spend::new_witness(
+            Witness::new(SpendCondition(vec![
                 LockPrimitive::Pkh(Pkh::single(pkh)),
                 LockPrimitive::Tim(LockTim::coinbase()),
             ])),
-            seeds: Seeds(vec![seed1.clone(), seed2.clone()]),
-            fee: 2850816,
-        };
+            Seeds(vec![seed1.clone(), seed2.clone()]),
+            2850816,
+        );
 
         check_hash(
             "sig-hash",
@@ -854,51 +1029,55 @@ mod tests {
             "AvHDRESkhM9F2FMPiYFPeQ9GrL2kX8QkmHP8dGpVT8Pr2f8xM1SLGJW",
         );
 
+        let Spend::Witness(ws) = &spend else {
+            panic!("expected witness spend");
+        };
+
         check_hash(
             "spend condition tim",
-            &spend.witness.lock_merkle_proof.spend_condition.0[1],
+            &ws.witness.lock_merkle_proof.spend_condition.0[1],
             "B5RtZnbphbf1D5vQwsZjHycLN2Ldp7RD2pK6V3qAMFCrxnUXAhgmKgg",
         );
 
         check_hash(
             "spend condition pkh",
-            &spend.witness.lock_merkle_proof.spend_condition.0[0],
+            &ws.witness.lock_merkle_proof.spend_condition.0[0],
             "65RqCgowDZJziLZzpQkPULVy2tb1dMGMUrgsxxfC1mPPK6hSNKAP6DP",
         );
 
         check_hash(
             "spend condition",
-            &spend.witness.lock_merkle_proof.spend_condition,
+            &ws.witness.lock_merkle_proof.spend_condition,
             "5k2qTDtcxyQWBmsVTi1fEmbSeoAnq5B83SGoJwDU8NJkRfXWevwQDWn",
         );
 
         check_hash(
             "pkh",
-            &spend.witness.pkh_signature,
+            &ws.witness.pkh_signature,
             "4oMCHwUMend6ds2Gt3bUyz4cNrZto4PepFgbQQWYDRKMB3v9qaccMT",
         );
 
         check_hash(
             "merkle proof",
-            &spend.witness.lock_merkle_proof.proof,
+            &ws.witness.lock_merkle_proof.proof,
             "MefKNQSmk8wzDzCPpY93GMdM53Pv1TGbUZe2Kn427FiuvbgjSZe5eJ",
         );
 
         check_hash(
             "lock merkle proof",
-            &spend.witness.lock_merkle_proof,
+            &ws.witness.lock_merkle_proof,
             "6MNHCVrns4DjMxAV4CJQWKsPcpXPDSqizJsChgMYozsHsLBev52RRW1",
         );
 
         check_hash(
             "witness",
-            &spend.witness,
+            &ws.witness,
             "4fnjd1sxmaxupG3EYqBkvaQs6aiKHi9bZKciYipBA9an4DXuRH938L8",
         );
 
         check_hash(
             "seeds",
-            &spend.seeds,
+            spend.seeds(),
             "7Zuskz3WibckR2anDXDuPcMUk45A2iJnrdPsFALj4Rc5NTufyca39gY",
         );
 

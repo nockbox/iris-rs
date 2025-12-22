@@ -1,10 +1,10 @@
 [workspace]
 members = [
-  "crates/iris-ztd",
-  "crates/iris-crypto",
-  "crates/iris-nockchain-types",
-  "crates/iris-grpc-proto",
-  "crates/iris-wasm",
+  "crates/rose-ztd",
+  "crates/rose-crypto",
+  "crates/rose-nockchain-types",
+  "crates/rose-grpc-proto",
+  "crates/rose-wasm",
 ]
 
 resolver = "2"
@@ -13,18 +13,24 @@ resolver = "2"
 version = "0.1.4"
 edition = "2021"
 
-[workspace.dependencies.iris-ztd]
-path = "crates/iris-ztd"
+[workspace.dependencies.rose-ztd]
+path = "crates/rose-ztd"
 
-[workspace.dependencies.iris-crypto]
-path = "crates/iris-crypto"
+[workspace.dependencies.rose-crypto]
+path = "crates/rose-crypto"
 
 
-[workspace.dependencies.iris-nockchain-types]
-path = "crates/iris-nockchain-types"
+[workspace.dependencies.rose-nockchain-types]
+path = "crates/rose-nockchain-types"
 
-[workspace.dependencies.iris-wasm]
-path = "crates/iris-wasm"
+[workspace.dependencies.rose-wasm]
+path = "crates/rose-wasm"
+
+[workspace.dependencies.rose-grpc-proto]
+path = "crates/rose-grpc-proto"
+
+[workspace.dependencies.rose-ztd-derive]
+path = "crates/rose-ztd-derive"
 
 [workspace.dependencies]
 nockvm = { git = "https://github.com/zorp-corp/nockchain.git" }

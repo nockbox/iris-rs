@@ -1,9 +1,9 @@
-# Iris
+# Rose
 
 [![Build and test]][workflows] [![Rustc 1.85]][rust] [![MIT licensed]][license]
 
-[Build and test]: https://github.com/nockbox/iris-rs/actions/workflows/test.yml/badge.svg
-[workflows]: https://github.com/nockbox/iris-rs/actions/workflows/test.yml
+[Build and test]: https://github.com/nocktoshi/rose-rs/actions/workflows/test.yml/badge.svg
+[workflows]: https://github.com/nocktoshi/rose-rs/actions/workflows/test.yml
 [MIT licensed]: https://img.shields.io/badge/license-MIT-blue.svg
 [license]: LICENSE
 [Rustc 1.85]: https://img.shields.io/badge/rustc-1.85+-lightgray.svg
@@ -15,7 +15,7 @@
 
 ## Cryptographic and Wallet Primitives for Nockchain
 
-Iris provides a comprehensive set of Rust libraries for building lightweight wallets for the Nockchain network. It includes cryptographic primitives, data structures, and WASM bindings for web integration.
+Rose provides a comprehensive set of Rust libraries for building lightweight wallets for the Nockchain network. It includes cryptographic primitives, data structures, and WASM bindings for web integration.
 
 > [!NOTE]
 > This library does not support V0 addresses.
@@ -30,13 +30,24 @@ The project is split into several crates:
 
 | Crate | Purpose | Status |
 |-------|---------|--------|
-| [iris-crypto](crates/iris-crypto) | Cryptographic primitives | Beta |
-| [iris-grpc-proto](crates/iris-grpc-proto) | gRPC protobuf definitions | Beta |
-| [iris-nockchain-types](crates/iris-nockchain-types) | Core Nockchain types | Beta |
-| [iris-wasm](crates/iris-wasm) | WASM bindings for web | Beta |
-| [iris-ztd](crates/iris-ztd) | Base Zero-knowledge data structures and noun-lib | Beta |
-| [iris-ztd-derive](crates/iris-ztd-derive) | Derive macros for iris-ztd | Beta |
+| [rose-crypto](crates/rose-crypto) | Cryptographic primitives | Beta |
+| [rose-grpc-proto](crates/rose-grpc-proto) | gRPC protobuf definitions | Beta |
+| [rose-nockchain-types](crates/rose-nockchain-types) | Core Nockchain types | Beta |
+| [rose-wasm](crates/rose-wasm) | WASM bindings for web | Beta |
+| [rose-ztd](crates/rose-ztd) | Base Zero-knowledge data structures and noun-lib | Beta |
+| [rose-ztd-derive](crates/rose-ztd-derive) | Derive macros for rose-ztd | Beta |
 
 ## no_std Support
 
 Most crates in this workspace support `no_std` environments (with `alloc` required) to facilitate usage in WASM and embedded contexts.
+
+> [!NOTE]
+> This repository is a fork. Modifications are © 2026 nockchain.net LLC <oss@nockchain.net>.
+
+## Release process
+
+- **Merge the release PR**: Release Please opens/updates a release PR based on Conventional Commits. Merge it into `main`/`master`.
+- **Release is published**: Merging triggers Release Please to create a GitHub Release / tag.
+- **Publish job runs**: The `Publish (crates.io + npm)` workflow runs on the published release and publishes:
+  - crates to **crates.io**
+  - `@nockchain/rose-wasm` to **npmjs**

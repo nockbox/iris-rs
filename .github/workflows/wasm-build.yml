@@ -2,9 +2,7 @@ name: WASM Build
 
 on:
   push:
-    branches: [ "main" ]
   pull_request:
-    branches: [ "main" ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,9 +34,26 @@ jobs:
         sudo apt-get install -y protobuf-compiler
 
     - name: Build WASM
-      working-directory: crates/iris-wasm
-      run: wasm-pack build --target web --scope nockbox
+      working-directory: crates/rose-wasm
+      run: wasm-pack build --target web --out-dir pkg --scope nockchain
+
+    - name: Set nightly/build version (non-main branches)
+      if: github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master'
+      working-directory: crates/rose-wasm/pkg
+      run: |
+        node - <<'NODE'
+        const fs = require('fs');
+        const path = require('path');
+        const pkgPath = path.join(process.cwd(), 'package.json');
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        const sha = (process.env.GITHUB_SHA || '').slice(0, 7);
+        const run = process.env.GITHUB_RUN_NUMBER || '0';
+        // npm semver: prerelease is allowed; build metadata is ignored by npm, so keep it minimal.
+        pkg.version = `${pkg.version}-nightly.${run}.${sha}`;
+        fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+        console.log('nightly version set to', pkg.version);
+        NODE
 
     - name: Validate npm package
-      working-directory: crates/iris-wasm/pkg
+      working-directory: crates/rose-wasm/pkg
       run: npm pack --dry-run

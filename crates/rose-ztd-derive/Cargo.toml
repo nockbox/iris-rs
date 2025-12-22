@@ -1,0 +1,20 @@
+[package]
+name = "rose-ztd-derive"
+version.workspace = true
+edition.workspace = true
+keywords = ["nockchain", "rose", "wallet", "nock"]
+license = "MIT"
+repository = "https://github.com/nocktoshi/rose-rs"
+rust-version = "1.85.0"
+description = "Derive macros for rose-ztd"
+documentation = "https://docs.rs/rose-ztd-derive"
+homepage = "https://nockchain.net"
+authors = ["Nockchain.net LLC <rust@nockchain.net>"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2.0", features = ["full"] }
+quote = "1.0"
+proc-macro2 = "1.0"

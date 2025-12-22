@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nockchain Wallet - gRPC-Web Demo</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 900px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        h1 {
+            color: #333;
+            border-bottom: 3px solid #4CAF50;
+            padding-bottom: 10px;
+        }
+
+        .section {
+            background: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        .input-group {
+            margin: 15px 0;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+
+        input,
+        select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+            font-size: 14px;
+        }
+
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 10px;
+        }
+
+        button:hover {
+            background-color: #45a049;
+        }
+
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+
+        #output {
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .error {
+            color: #d32f2f;
+            background-color: #ffebee;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+
+        .success {
+            color: #388e3c;
+            background-color: #e8f5e9;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+
+        .loading {
+            color: #1976d2;
+            font-style: italic;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Nockchain Wallet - gRPC-Web Demo</h1>
+
+    <div class="section">
+        <h2>Connection Settings</h2>
+        <div class="input-group">
+            <label for="endpoint">Envoy Endpoint:</label>
+            <input type="text" id="endpoint" value="http://localhost:8080" placeholder="http://localhost:8080">
+        </div>
+    </div>
+
+    <div class="section">
+        <h2>Get Balance</h2>
+        <div class="input-group">
+            <label for="lookupType">Lookup By:</label>
+            <select id="lookupType">
+                <option value="address">Wallet Address</option>
+                <option value="firstName">First Name</option>
+            </select>
+        </div>
+        <div class="input-group">
+            <label for="lookupValue">Value:</label>
+            <input type="text" id="lookupValue" placeholder="Enter address or first name">
+        </div>
+        <button onclick="getBalance()">Get Balance</button>
+    </div>
+
+    <div class="section">
+        <h2>Submit Example Transaction</h2>
+        <div class="input-group">
+            <label for="mnemonic">Mnemonic (leave blank for test mnemonic):</label>
+            <input type="text" id="mnemonic" placeholder="dice domain inspire horse time...">
+        </div>
+        <button onclick="submitTransaction()">Build, Sign & Submit Transaction</button>
+    </div>
+
+    <div class="section">
+        <h2>Check Transaction Status</h2>
+        <div class="input-group">
+            <label for="txId">Transaction ID:</label>
+            <input type="text" id="txId" placeholder="Enter transaction ID (Base58 hash)">
+        </div>
+        <button onclick="checkTransaction()">Check Transaction</button>
+    </div>
+
+    <div class="section">
+        <h2>Output</h2>
+        <div id="output">Ready. Click a button to start.</div>
+    </div>
+
+    <script type="module">
+        import init, {
+            GrpcClient,
+            deriveMasterKeyFromMnemonic,
+            hashPublicKey,
+            TxBuilder,
+            Note,
+            Digest,
+            SpendCondition,
+            Pkh,
+            LockPrimitive,
+            LockTim
+        } from '../pkg/rose_wasm.js';
+
+        let wasmReady = false;
+        let client = null;
+
+        async function initWasm() {
+            try {
+                await init();
+                wasmReady = true;
+                log('WASM module loaded successfully!', 'success');
+            } catch (err) {
+                log('Failed to load WASM module: ' + err, 'error');
+            }
+        }
+
+        function log(message, type = 'info') {
+            const output = document.getElementById('output');
+            const timestamp = new Date().toLocaleTimeString();
+            let className = '';
+
+            if (type === 'error') {
+                className = 'error';
+            } else if (type === 'success') {
+                className = 'success';
+            } else if (type === 'loading') {
+                className = 'loading';
+            }
+
+            const logEntry = `[${timestamp}] ${message}\n\n`;
+            output.innerHTML = `<div class="${className}">${logEntry}</div>` + output.innerHTML;
+        }
+
+        window.getBalance = async function () {
+            if (!wasmReady) {
+                log('WASM module not ready yet', 'error');
+                return;
+            }
+
+            const endpoint = document.getElementById('endpoint').value;
+            const lookupType = document.getElementById('lookupType').value;
+            const lookupValue = document.getElementById('lookupValue').value;
+
+            if (!lookupValue) {
+                log('Please enter a value to lookup', 'error');
+                return;
+            }
+
+            try {
+                log('Fetching balance...', 'loading');
+                client = new GrpcClient(endpoint);
+
+                let result;
+                if (lookupType === 'address') {
+                    result = await client.getBalanceByAddress(lookupValue);
+                } else {
+                    result = await client.getBalanceByFirstName(lookupValue);
+                }
+
+                log('Balance result:\n' + JSON.stringify(result, null, 2), 'success');
+            } catch (err) {
+                log('Error getting balance: ' + err, 'error');
+            }
+        };
+
+        window.submitTransaction = async function () {
+            if (!wasmReady) {
+                log('WASM module not ready yet', 'error');
+                return;
+            }
+
+            const endpoint = document.getElementById('endpoint').value;
+            let mnemonicInput = document.getElementById('mnemonic').value.trim();
+
+            // Use test mnemonic if none provided
+            if (!mnemonicInput) {
+                mnemonicInput = "dice domain inspire horse time initial monitor nature mass impose tone benefit vibrant dash kiss mosquito rice then color ribbon agent method drop fat";
+            }
+
+            try {
+                log('Deriving private key from mnemonic...', 'loading');
+                const masterKey = deriveMasterKeyFromMnemonic(mnemonicInput, "");
+                const privateKeyBytes = masterKey.private_key;
+                const pubkeyHashString = hashPublicKey(masterKey.public_key);
+
+                log('Fetching balance to get available notes...', 'loading');
+                client = new GrpcClient(endpoint);
+                const balanceResult = await client.get_balance_by_first_name("2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH");
+
+                if (!balanceResult.notes || balanceResult.notes.length === 0) {
+                    log('No notes available for the given address', 'error');
+                    return;
+                }
+
+                // Select a random note from the available notes
+                const randomIndex = Math.floor(Math.random() * balanceResult.notes.length);
+                const balanceEntry = balanceResult.notes[randomIndex];
+                log(`Selected random note ${randomIndex + 1} of ${balanceResult.notes.length}`, 'info');
+                log('Note:\n' + JSON.stringify(balanceEntry.note, null, 2), 'info');
+
+                // Convert protobuf note to Note
+                const note = Note.fromProtobuf(balanceEntry.note);
+                const spendCondition = new SpendCondition([
+                    LockPrimitive.newPkh(Pkh.single(pubkeyHashString)),
+                    LockPrimitive.newTim(LockTim.coinbase())
+                ]);
+                const recipientDigest = new Digest("6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX");
+                const refundDigest = new Digest("6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX");
+
+                const giftAmount = 1234567n;
+                const feeAmount = 2850816n;
+                const builder = TxBuilder.newSimple(
+                    [note],
+                    spendCondition,
+                    recipientDigest,
+                    giftAmount,
+                    feeAmount,
+                    refundDigest
+                );
+                const rawTx = builder.sign(privateKeyBytes);
+                log('Transaction built successfully!', 'success');
+                log('Transaction ID: ' + rawTx.id.value, 'info');
+
+                client = new GrpcClient(endpoint);
+                const result = await client.sendTransaction(rawTx.toProtobuf());
+                log('Transaction submitted! ' + result, 'success');
+            } catch (err) {
+                log('Error submitting transaction: ' + err, 'error');
+                console.error('Full error:', err);
+            }
+        };
+
+        window.checkTransaction = async function () {
+            if (!wasmReady) {
+                log('WASM module not ready yet', 'error');
+                return;
+            }
+
+            const endpoint = document.getElementById('endpoint').value;
+            const txId = document.getElementById('txId').value;
+
+            if (!txId) {
+                log('Please enter a transaction ID', 'error');
+                return;
+            }
+
+            try {
+                log('Checking transaction status...', 'loading');
+                client = new GrpcClient(endpoint);
+
+                const accepted = await client.transactionAccepted(txId);
+
+                if (accepted) {
+                    log('Transaction accepted: YES', 'success');
+                } else {
+                    log('Transaction accepted: NO', 'info');
+                }
+            } catch (err) {
+                log('Error checking transaction: ' + err, 'error');
+            }
+        };
+
+        // Initialize on page load
+        initWasm();
+    </script>
+</body>
+
+</html>

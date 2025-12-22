@@ -607,100 +607,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "iris-crypto"
-version = "0.1.4"
-dependencies = [
- "argon2",
- "bip39",
- "bs58",
- "hex",
- "hmac",
- "ibig",
- "iris-ztd",
- "iris-ztd-derive",
- "serde",
- "sha2",
-]
-
-[[package]]
-name = "iris-grpc-proto"
-version = "0.1.4"
-dependencies = [
- "bip39",
- "glob",
- "ibig",
- "iris-crypto",
- "iris-nockchain-types",
- "iris-ztd",
- "prost",
- "prost-build",
- "prost-types",
- "serde",
- "serde_json",
- "thiserror 2.0.17",
- "tokio",
- "tonic",
- "tonic-build",
-]
-
-[[package]]
-name = "iris-nockchain-types"
-version = "0.1.4"
-dependencies = [
- "bip39",
- "bs58",
- "hex",
- "ibig",
- "iris-crypto",
- "iris-ztd",
- "iris-ztd-derive",
- "serde",
- "thiserror 2.0.17",
-]
-
-[[package]]
-name = "iris-wasm"
-version = "0.1.4"
-dependencies = [
- "bip39",
- "getrandom 0.2.16",
- "ibig",
- "iris-crypto",
- "iris-grpc-proto",
- "iris-nockchain-types",
- "iris-ztd",
- "js-sys",
- "serde",
- "serde-wasm-bindgen",
- "tonic-web-wasm-client",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "iris-ztd"
-version = "0.1.4"
-dependencies = [
- "arrayref",
- "bitvec",
- "bs58",
- "ibig",
- "num-traits",
- "once_cell",
- "serde",
-]
-
-[[package]]
-name = "iris-ztd-derive"
-version = "0.1.4"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "itertools"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1011,6 +917,100 @@ name = "regex-syntax"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
+
+[[package]]
+name = "rose-crypto"
+version = "0.1.4"
+dependencies = [
+ "argon2",
+ "bip39",
+ "bs58",
+ "hex",
+ "hmac",
+ "ibig",
+ "rose-ztd",
+ "rose-ztd-derive",
+ "serde",
+ "sha2",
+]
+
+[[package]]
+name = "rose-grpc-proto"
+version = "0.1.4"
+dependencies = [
+ "bip39",
+ "glob",
+ "ibig",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "rose-crypto",
+ "rose-nockchain-types",
+ "rose-ztd",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
+name = "rose-nockchain-types"
+version = "0.1.4"
+dependencies = [
+ "bip39",
+ "bs58",
+ "hex",
+ "ibig",
+ "rose-crypto",
+ "rose-ztd",
+ "rose-ztd-derive",
+ "serde",
+ "thiserror 2.0.17",
+]
+
+[[package]]
+name = "rose-wasm"
+version = "0.1.4"
+dependencies = [
+ "bip39",
+ "getrandom 0.2.16",
+ "ibig",
+ "js-sys",
+ "rose-crypto",
+ "rose-grpc-proto",
+ "rose-nockchain-types",
+ "rose-ztd",
+ "serde",
+ "serde-wasm-bindgen",
+ "tonic-web-wasm-client",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "rose-ztd"
+version = "0.1.4"
+dependencies = [
+ "arrayref",
+ "bitvec",
+ "bs58",
+ "ibig",
+ "num-traits",
+ "once_cell",
+ "serde",
+]
+
+[[package]]
+name = "rose-ztd-derive"
+version = "0.1.4"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "rustix"

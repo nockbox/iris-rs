@@ -1,0 +1,92 @@
+name: Prerelease Publish (branches)
+
+on:
+  push:
+    branches-ignore:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prerelease:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute prerelease version
+        id: ver
+        run: |
+          echo "sha7=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "run=${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Set workspace prerelease version (Cargo.toml)
+        run: |
+          python3 - <<'PY'
+          import os, re, pathlib
+          run = os.environ["GITHUB_RUN_NUMBER"]
+          sha7 = os.environ["GITHUB_SHA"][:7]
+          p = pathlib.Path("Cargo.toml")
+          s = p.read_text()
+          m = re.search(r'\\n\\[workspace\\.package\\]\\nversion\\s*=\\s*\"([^\"]+)\"', s)
+          if not m:
+            raise SystemExit("Could not find [workspace.package] version in Cargo.toml")
+          base = m.group(1).split("-")[0]
+          new_ver = f"{base}-nightly.{run}.{sha7}"
+          s2 = re.sub(r'(\\n\\[workspace\\.package\\]\\nversion\\s*=\\s*\")([^\"]+)(\")', lambda mm: mm.group(1)+new_ver+mm.group(3), s, count=1)
+          p.write_text(s2)
+          print("set workspace version to", new_ver)
+          PY
+      - name: Publish crates to crates.io (prerelease)
+        if: "${{ secrets.CARGO_REGISTRY_TOKEN != '' }}"
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          # prereleases must be unique; this publishes in dependency order
+          cargo publish -p rose-ztd-derive --allow-dirty
+          cargo publish -p rose-ztd --allow-dirty
+          cargo publish -p rose-crypto --allow-dirty
+          cargo publish -p rose-nockchain-types --allow-dirty
+          cargo publish -p rose-grpc-proto --allow-dirty
+          cargo publish -p rose-wasm --allow-dirty
+
+      - name: Setup Node.js (npm)
+        if: "${{ secrets.NPM_TOKEN != '' }}"
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install wasm-pack
+        if: "${{ secrets.NPM_TOKEN != '' }}"
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM package for npm (prerelease)
+        if: "${{ secrets.NPM_TOKEN != '' }}"
+        working-directory: crates/rose-wasm
+        run: wasm-pack build --target web --out-dir pkg --scope nockchain
+
+      - name: "Publish to npmjs (dist-tag: nightly)"
+        if: "${{ secrets.NPM_TOKEN != '' }}"
+        working-directory: crates/rose-wasm/pkg
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --tag nightly
+
+

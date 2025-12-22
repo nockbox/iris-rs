@@ -1,0 +1,26 @@
+[package]
+name = "rose-crypto"
+version.workspace = true
+edition.workspace = true
+keywords = ["nockchain", "rose", "wallet", "nock"]
+license = "MIT"
+repository = "https://github.com/nocktoshi/rose-rs"
+rust-version = "1.85.0"
+description = "Cryptographic primitives for Rose Nockchain Wallet"
+documentation = "https://docs.rs/rose-crypto"
+homepage = "https://nockchain.net"
+authors = ["Nockchain.net LLC <rust@nockchain.net>"]
+
+[dependencies]
+rose-ztd = { workspace = true }
+rose-ztd-derive = { workspace = true }
+ibig = { workspace = true }
+bip39 = { version = "2.0", default-features = false, features = ["alloc", "std"] }
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+hmac = "0.12"
+sha2 = "0.10"
+bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+hex = "0.4"

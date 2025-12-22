@@ -1,0 +1,62 @@
+name: Publish (crates.io + npm)
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.85.0
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Publish crates to crates.io (workspace)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Publish in dependency order.
+          cargo publish -p rose-ztd-derive --locked
+          cargo publish -p rose-ztd --locked
+          cargo publish -p rose-crypto --locked
+          cargo publish -p rose-nockchain-types --locked
+          cargo publish -p rose-grpc-proto --locked
+          cargo publish -p rose-wasm --locked
+
+      - name: Setup Node.js (npm)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build WASM package for npm
+        working-directory: crates/rose-wasm
+        run: wasm-pack build --target web --out-dir pkg --scope nockchain
+
+      - name: Publish to npmjs
+        working-directory: crates/rose-wasm/pkg
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+

@@ -5,6 +5,8 @@ use crate::common::{ConversionError, Required};
 use crate::pb::common::v1::{
     BlockHeight as PbBlockHeight, Hash as PbHash, Name as PbName, Nicks as PbNicks,
     NoteVersion as PbNoteVersion, Source as PbSource,
+    SchnorrSignature as PbSchnorrSignature, Signature as PbLegacySignature,
+    SignatureEntry as PbSignatureEntry,
     TimeLockRangeAbsolute as PbTimeLockRangeAbsolute,
     TimeLockRangeRelative as PbTimeLockRangeRelative,
 };
@@ -12,6 +14,7 @@ use crate::pb::common::v1::{Lock as PbLegacyLock, Note as PbLegacyNote, SchnorrP
 use crate::pb::common::v2::{
     lock_primitive, spend, Balance as PbBalance, BalanceEntry as PbBalanceEntry,
     BurnLock as PbBurnLock, HaxLock as PbHaxLock, HaxPreimage as PbHaxPreimage,
+    LegacySpend as PbLegacySpend,
     LockMerkleProof as PbLockMerkleProof, LockPrimitive as PbLockPrimitive, LockTim as PbLockTim,
     MerkleProof as PbMerkleProof, Note as PbNote, NoteData as PbNoteData,
     NoteDataEntry as PbNoteDataEntry, NoteV1 as PbNoteV1, PkhLock as PbPkhLock,
@@ -486,6 +489,215 @@ impl TryFrom<PbPkhSignature> for PkhSignature {
     }
 }
 
+fn public_key_to_pb(pubkey: iris_crypto::PublicKey) -> PbSchnorrPubkey {
+    PbSchnorrPubkey {
+        value: Some(crate::pb::common::v1::CheetahPoint {
+            x: Some(crate::pb::common::v1::SixBelt {
+                belt_1: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.x.0[0].0,
+                }),
+                belt_2: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.x.0[1].0,
+                }),
+                belt_3: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.x.0[2].0,
+                }),
+                belt_4: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.x.0[3].0,
+                }),
+                belt_5: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.x.0[4].0,
+                }),
+                belt_6: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.x.0[5].0,
+                }),
+            }),
+            y: Some(crate::pb::common::v1::SixBelt {
+                belt_1: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.y.0[0].0,
+                }),
+                belt_2: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.y.0[1].0,
+                }),
+                belt_3: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.y.0[2].0,
+                }),
+                belt_4: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.y.0[3].0,
+                }),
+                belt_5: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.y.0[4].0,
+                }),
+                belt_6: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.y.0[5].0,
+                }),
+            }),
+            inf: pubkey.0.inf,
+        }),
+    }
+}
+
+fn schnorr_sig_to_pb(sig: iris_crypto::Signature) -> PbSchnorrSignature {
+    use iris_ztd::Belt as ZBelt;
+
+    // Convert UBig to Belt arrays for c and s
+    let c_bytes = sig.c.to_le_bytes();
+    let s_bytes = sig.s.to_le_bytes();
+    let c_belts = ZBelt::from_bytes(&c_bytes);
+    let s_belts = ZBelt::from_bytes(&s_bytes);
+
+    // Pad to 8 belts
+    let mut chal = [0u64; 8];
+    for (i, belt) in c_belts.iter().take(8).enumerate() {
+        chal[i] = belt.0;
+    }
+    let mut sig_val = [0u64; 8];
+    for (i, belt) in s_belts.iter().take(8).enumerate() {
+        sig_val[i] = belt.0;
+    }
+
+    PbSchnorrSignature {
+        chal: Some(crate::pb::common::v1::EightBelt {
+            belt_1: Some(crate::pb::common::v1::Belt { value: chal[0] }),
+            belt_2: Some(crate::pb::common::v1::Belt { value: chal[1] }),
+            belt_3: Some(crate::pb::common::v1::Belt { value: chal[2] }),
+            belt_4: Some(crate::pb::common::v1::Belt { value: chal[3] }),
+            belt_5: Some(crate::pb::common::v1::Belt { value: chal[4] }),
+            belt_6: Some(crate::pb::common::v1::Belt { value: chal[5] }),
+            belt_7: Some(crate::pb::common::v1::Belt { value: chal[6] }),
+            belt_8: Some(crate::pb::common::v1::Belt { value: chal[7] }),
+        }),
+        sig: Some(crate::pb::common::v1::EightBelt {
+            belt_1: Some(crate::pb::common::v1::Belt {
+                value: sig_val[0],
+            }),
+            belt_2: Some(crate::pb::common::v1::Belt {
+                value: sig_val[1],
+            }),
+            belt_3: Some(crate::pb::common::v1::Belt {
+                value: sig_val[2],
+            }),
+            belt_4: Some(crate::pb::common::v1::Belt {
+                value: sig_val[3],
+            }),
+            belt_5: Some(crate::pb::common::v1::Belt {
+                value: sig_val[4],
+            }),
+            belt_6: Some(crate::pb::common::v1::Belt {
+                value: sig_val[5],
+            }),
+            belt_7: Some(crate::pb::common::v1::Belt {
+                value: sig_val[6],
+            }),
+            belt_8: Some(crate::pb::common::v1::Belt {
+                value: sig_val[7],
+            }),
+        }),
+    }
+}
+
+fn pb_schnorr_pubkey_to_public_key(pb: PbSchnorrPubkey) -> Result<iris_crypto::PublicKey, ConversionError> {
+    use iris_ztd::crypto::cheetah::{CheetahPoint, F6lt};
+    use iris_ztd::Belt as ZBelt;
+
+    let pt = pb.value.required("SchnorrPubkey", "value")?;
+    let x_pb = pt.x.required("CheetahPoint", "x")?;
+    let y_pb = pt.y.required("CheetahPoint", "y")?;
+
+    Ok(iris_crypto::PublicKey(CheetahPoint {
+        x: F6lt([
+            ZBelt(x_pb.belt_1.required("SixBelt", "belt_1")?.value),
+            ZBelt(x_pb.belt_2.required("SixBelt", "belt_2")?.value),
+            ZBelt(x_pb.belt_3.required("SixBelt", "belt_3")?.value),
+            ZBelt(x_pb.belt_4.required("SixBelt", "belt_4")?.value),
+            ZBelt(x_pb.belt_5.required("SixBelt", "belt_5")?.value),
+            ZBelt(x_pb.belt_6.required("SixBelt", "belt_6")?.value),
+        ]),
+        y: F6lt([
+            ZBelt(y_pb.belt_1.required("SixBelt", "belt_1")?.value),
+            ZBelt(y_pb.belt_2.required("SixBelt", "belt_2")?.value),
+            ZBelt(y_pb.belt_3.required("SixBelt", "belt_3")?.value),
+            ZBelt(y_pb.belt_4.required("SixBelt", "belt_4")?.value),
+            ZBelt(y_pb.belt_5.required("SixBelt", "belt_5")?.value),
+            ZBelt(y_pb.belt_6.required("SixBelt", "belt_6")?.value),
+        ]),
+        inf: pt.inf,
+    }))
+}
+
+fn pb_schnorr_sig_to_sig(pb: PbSchnorrSignature) -> Result<iris_crypto::Signature, ConversionError> {
+    use ibig::UBig;
+    use iris_ztd::Belt as ZBelt;
+
+    let chal_pb = pb.chal.required("SchnorrSignature", "chal")?;
+    let sig_val_pb = pb.sig.required("SchnorrSignature", "sig")?;
+
+    let chal_belts = [
+        chal_pb.belt_1.required("EightBelt", "belt_1")?.value,
+        chal_pb.belt_2.required("EightBelt", "belt_2")?.value,
+        chal_pb.belt_3.required("EightBelt", "belt_3")?.value,
+        chal_pb.belt_4.required("EightBelt", "belt_4")?.value,
+        chal_pb.belt_5.required("EightBelt", "belt_5")?.value,
+        chal_pb.belt_6.required("EightBelt", "belt_6")?.value,
+        chal_pb.belt_7.required("EightBelt", "belt_7")?.value,
+        chal_pb.belt_8.required("EightBelt", "belt_8")?.value,
+    ];
+    let sig_belts = [
+        sig_val_pb.belt_1.required("EightBelt", "belt_1")?.value,
+        sig_val_pb.belt_2.required("EightBelt", "belt_2")?.value,
+        sig_val_pb.belt_3.required("EightBelt", "belt_3")?.value,
+        sig_val_pb.belt_4.required("EightBelt", "belt_4")?.value,
+        sig_val_pb.belt_5.required("EightBelt", "belt_5")?.value,
+        sig_val_pb.belt_6.required("EightBelt", "belt_6")?.value,
+        sig_val_pb.belt_7.required("EightBelt", "belt_7")?.value,
+        sig_val_pb.belt_8.required("EightBelt", "belt_8")?.value,
+    ];
+
+    let c_vec: Vec<ZBelt> = chal_belts.iter().map(|v| ZBelt(*v)).collect();
+    let s_vec: Vec<ZBelt> = sig_belts.iter().map(|v| ZBelt(*v)).collect();
+
+    let c = UBig::from_le_bytes(&ZBelt::to_bytes(&c_vec));
+    let s = UBig::from_le_bytes(&ZBelt::to_bytes(&s_vec));
+
+    Ok(iris_crypto::Signature { c, s })
+}
+
+impl From<LegacySignature> for PbLegacySignature {
+    fn from(signature: LegacySignature) -> Self {
+        PbLegacySignature {
+            entries: signature
+                .0
+                .into_iter()
+                .map(|(pubkey, signature)| PbSignatureEntry {
+                    schnorr_pubkey: Some(public_key_to_pb(pubkey)),
+                    signature: Some(schnorr_sig_to_pb(signature)),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<PbLegacySignature> for LegacySignature {
+    type Error = ConversionError;
+
+    fn try_from(pb: PbLegacySignature) -> Result<Self, Self::Error> {
+        let entries = pb
+            .entries
+            .into_iter()
+            .map(|e| {
+                let pubkey = pb_schnorr_pubkey_to_public_key(
+                    e.schnorr_pubkey.required("SignatureEntry", "schnorr_pubkey")?,
+                )?;
+                let sig = pb_schnorr_sig_to_sig(
+                    e.signature.required("SignatureEntry", "signature")?,
+                )?;
+                Ok((pubkey, sig))
+            })
+            .collect::<Result<Vec<_>, ConversionError>>()?;
+        Ok(LegacySignature(entries))
+    }
+}
+
 impl From<Witness> for PbWitness {
     fn from(witness: Witness) -> Self {
         PbWitness {
@@ -498,12 +710,21 @@ impl From<Witness> for PbWitness {
 
 impl From<Spend> for PbSpend {
     fn from(spend: Spend) -> Self {
-        PbSpend {
-            spend_kind: Some(spend::SpendKind::Witness(PbWitnessSpend {
-                witness: Some(PbWitness::from(spend.witness)),
-                seeds: seeds_to_pb(spend.seeds),
-                fee: Some(PbNicks::from(spend.fee)),
-            })),
+        match spend {
+            Spend::Witness(ws) => PbSpend {
+                spend_kind: Some(spend::SpendKind::Witness(PbWitnessSpend {
+                    witness: Some(PbWitness::from(ws.witness)),
+                    seeds: seeds_to_pb(ws.seeds),
+                    fee: Some(PbNicks::from(ws.fee)),
+                })),
+            },
+            Spend::Legacy(ls) => PbSpend {
+                spend_kind: Some(spend::SpendKind::Legacy(PbLegacySpend {
+                    signature: Some(PbLegacySignature::from(ls.signature)),
+                    seeds: seeds_to_pb(ls.seeds),
+                    fee: Some(PbNicks::from(ls.fee)),
+                })),
+            },
         }
     }
 }
@@ -881,14 +1102,24 @@ impl TryFrom<PbRawTransaction> for RawTx {
                         let seeds: Result<Vec<Seed>, ConversionError> =
                             w.seeds.into_iter().map(|s| s.try_into()).collect();
 
-                        Spend {
+                        Spend::Witness(WitnessSpend {
                             witness,
                             seeds: Seeds(seeds?),
                             fee: w.fee.required("WitnessSpend", "fee")?.into(),
-                        }
+                        })
                     }
-                    spend::SpendKind::Legacy(_) => {
-                        return Err(ConversionError::Invalid("Legacy spends are not supported"));
+                    spend::SpendKind::Legacy(l) => {
+                        let signature: LegacySignature = l
+                            .signature
+                            .required("LegacySpend", "signature")?
+                            .try_into()?;
+                        let seeds: Result<Vec<Seed>, ConversionError> =
+                            l.seeds.into_iter().map(|s| s.try_into()).collect();
+                        Spend::Legacy(LegacySpend {
+                            signature,
+                            seeds: Seeds(seeds?),
+                            fee: l.fee.required("LegacySpend", "fee")?.into(),
+                        })
                     }
                 };
                 Ok((name, spend))

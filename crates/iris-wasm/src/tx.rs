@@ -1539,6 +1539,20 @@ impl WasmRawTx {
     pub fn to_nockchain_tx(&self) -> WasmNockchainTx {
         WasmNockchainTx::from_internal(&self.internal.to_nockchain_tx())
     }
+
+    /// Sign all spends in this raw transaction with a private key.
+    ///
+    /// This is useful for legacy (v0) spends, where the spend kind carries a Signature rather than
+    /// a Witness.
+    #[wasm_bindgen(js_name = signAll)]
+    pub fn sign_all(&mut self, signing_key_bytes: &[u8]) -> Result<(), JsValue> {
+        if signing_key_bytes.len() != 32 {
+            return Err(JsValue::from_str("Private key must be 32 bytes"));
+        }
+        let signing_key = PrivateKey(UBig::from_be_bytes(signing_key_bytes));
+        self.internal.sign_all(&signing_key);
+        Ok(())
+    }
 }
 
 #[wasm_bindgen(js_name = NockchainTx)]

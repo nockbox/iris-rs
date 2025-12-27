@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use hmac::{Hmac, Mac};
-use ibig::UBig;
-use iris_ztd::crypto::cheetah::{ch_add, ch_scal_big, g_order, A_GEN};
+use iris_ztd::crypto::cheetah::{ch_add, ch_scal_big, A_GEN, G_ORDER};
+use iris_ztd::U256;
 use sha2::Sha512;
 
 use crate::cheetah::{PrivateKey, PublicKey};
@@ -42,15 +42,15 @@ impl ExtendedKey {
         let mut result = hmac_sha512(&self.chain_code, &data);
 
         loop {
-            let left = UBig::from_be_bytes(&result[..32]);
+            let left = U256::from_be_slice(&result[..32]);
             let mut chain_code = [0u8; 32];
             chain_code.copy_from_slice(&result[32..]);
 
-            if &left < &g_order() {
+            if left < G_ORDER {
                 match self.private_key.as_ref() {
                     Some(pk) => {
-                        let s = (&left + &pk.0) % g_order();
-                        if s != UBig::from(0u64) {
+                        let s = left.add_mod(&pk.0, &G_ORDER);
+                        if s != U256::ZERO {
                             let private_key = PrivateKey(s);
                             let public_key = private_key.public_key();
                             return ExtendedKey {
@@ -87,10 +87,10 @@ pub fn derive_master_key(seed: &[u8]) -> ExtendedKey {
     const DOMAIN_SEPARATOR: &[u8] = b"Nockchain seed";
     let mut result = hmac_sha512(DOMAIN_SEPARATOR, seed);
     loop {
-        let s = UBig::from_be_bytes(&result[..32]);
+        let s = U256::from_be_slice(&result[..32]);
         let mut chain_code = [0u8; 32];
         chain_code.copy_from_slice(&result[32..]);
-        if &s < &g_order() && s != UBig::from(0u64) {
+        if s < G_ORDER && s != U256::ZERO {
             let private_key = PrivateKey(s);
             let public_key = private_key.public_key();
             return ExtendedKey {

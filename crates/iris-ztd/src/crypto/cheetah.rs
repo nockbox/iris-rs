@@ -2,51 +2,31 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use bs58;
-use ibig::UBig;
+use crypto_bigint::{MulMod, U256};
 
 use crate::belt::{bneg, Belt};
 use crate::belt::{bpegcd, bpscal};
 
-// Pre-computed constant values stored as little-endian byte arrays
-const G_ORDER_BYTES: &[u8] = &[
-    0xcf, 0xac, 0xd4, 0xae, 0x3e, 0x62, 0x43, 0xd4, 0x22, 0x77, 0x15, 0x30, 0x23, 0xa7, 0x7a, 0x32,
-    0xb5, 0x37, 0x0a, 0x99, 0x0f, 0xbf, 0x3f, 0x56, 0xd0, 0x22, 0x3f, 0x3b, 0x9b, 0x59, 0xf2, 0x7a,
-];
+// Pre-computed constants stored as big-endian byte arrays
+pub const G_ORDER: U256 = U256::from_be_slice(&[
+    0x7a, 0xf2, 0x59, 0x9b, 0x3b, 0x3f, 0x22, 0xd0, 0x56, 0x3f, 0xbf, 0x0f, 0x99, 0x0a, 0x37, 0xb5,
+    0x32, 0x7a, 0xa7, 0x23, 0x30, 0x15, 0x77, 0x22, 0xd4, 0x43, 0x62, 0x3e, 0xae, 0xd4, 0xac, 0xcf,
+]);
 
-const P_BIG_BYTES: &[u8] = &[0x01, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff];
+pub const P_BIG: U256 = U256::from_be_slice(&[
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01,
+]);
 
-const P_BIG_2_BYTES: &[u8] = &[
-    0x01, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff, 0xff, 0x02, 0x00, 0x00, 0x00, 0xfe, 0xff, 0xff, 0xff,
-];
+pub const P_BIG_2: U256 = U256::from_be_slice(&[
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xff, 0xff, 0xff, 0xfe, 0x00, 0x00, 0x00, 0x02, 0xff, 0xff, 0xff, 0xfe, 0x00, 0x00, 0x00, 0x01,
+]);
 
-const P_BIG_3_BYTES: &[u8] = &[
-    0x01, 0x00, 0x00, 0x00, 0xfd, 0xff, 0xff, 0xff, 0x05, 0x00, 0x00, 0x00, 0xf9, 0xff, 0xff, 0xff,
-    0x05, 0x00, 0x00, 0x00, 0xfd, 0xff, 0xff, 0xff,
-];
-
-/// Returns the curve order constant as a UBig
-#[inline]
-pub fn g_order() -> UBig {
-    UBig::from_le_bytes(G_ORDER_BYTES)
-}
-
-/// Returns PRIME as a UBig
-#[inline]
-pub fn p_big() -> UBig {
-    UBig::from_le_bytes(P_BIG_BYTES)
-}
-
-/// Returns PRIME^2 as a UBig
-#[inline]
-pub fn p_big_2() -> UBig {
-    UBig::from_le_bytes(P_BIG_2_BYTES)
-}
-
-/// Returns PRIME^3 as a UBig
-#[inline]
-pub fn p_big_3() -> UBig {
-    UBig::from_le_bytes(P_BIG_3_BYTES)
-}
+pub const P_BIG_3: U256 = U256::from_be_slice(&[
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xfd, 0x00, 0x00, 0x00, 0x05,
+    0xff, 0xff, 0xff, 0xf9, 0x00, 0x00, 0x00, 0x05, 0xff, 0xff, 0xff, 0xfd, 0x00, 0x00, 0x00, 0x01,
+]);
 
 pub const A_GEN: CheetahPoint = CheetahPoint {
     x: F6lt([
@@ -137,7 +117,7 @@ impl CheetahPoint {
         if *self == A_ID {
             return true;
         }
-        let scaled = ch_scal_big(&g_order(), self).unwrap();
+        let scaled = ch_scal_big(&G_ORDER, self).unwrap();
         scaled == A_ID
     }
 
@@ -349,28 +329,31 @@ pub fn ch_scal(n: u64, p: &CheetahPoint) -> Result<CheetahPoint, CheetahError> {
 }
 
 #[inline(always)]
-pub fn ch_scal_big(n: &UBig, p: &CheetahPoint) -> Result<CheetahPoint, CheetahError> {
-    let mut n_copy = n.clone();
-    let zero = UBig::from(0u64);
-    let mut p_copy = *p;
+pub fn ch_scal_big(n: &U256, p: &CheetahPoint) -> Result<CheetahPoint, CheetahError> {
+    if *n == U256::ZERO {
+        return Ok(A_ID);
+    }
     let mut acc = A_ID;
-
-    while n_copy > zero {
-        // Check if least significant bit is set
-        if n_copy.bit(0) {
-            acc = ch_add(&acc, &p_copy)?;
+    for byte in n.to_be_bytes() {
+        for bit in (0..8).rev() {
+            acc = ch_double(acc)?;
+            if (byte >> bit) & 1 == 1 {
+                acc = ch_add(&acc, p)?;
+            }
         }
-        p_copy = ch_double(p_copy)?;
-        n_copy >>= 1; // Right shift by 1 bit
     }
     Ok(acc)
 }
 
-pub fn trunc_g_order(a: &[u64]) -> UBig {
-    let mut result = UBig::from(a[0]);
-    result += p_big() * UBig::from(a[1]);
-    result += p_big_2() * UBig::from(a[2]);
-    result += p_big_3() * UBig::from(a[3]);
+pub fn trunc_g_order(a: &[u64]) -> U256 {
+    let mut result = U256::from_u64(a[0]);
 
-    result % g_order()
+    let term1 = MulMod::mul_mod(&P_BIG, &U256::from_u64(a[1]), &G_ORDER);
+    result = result.add_mod(&term1, &G_ORDER);
+
+    let term2 = MulMod::mul_mod(&P_BIG_2, &U256::from_u64(a[2]), &G_ORDER);
+    result = result.add_mod(&term2, &G_ORDER);
+
+    let term3 = MulMod::mul_mod(&P_BIG_3, &U256::from_u64(a[3]), &G_ORDER);
+    result.add_mod(&term3, &G_ORDER)
 }

@@ -1,11 +1,10 @@
 use alloc::vec::Vec;
-use ibig::UBig;
 use iris_ztd::{
     crypto::cheetah::{
-        ch_add, ch_neg, ch_scal_big, g_order, trunc_g_order, CheetahPoint, F6lt, A_GEN,
+        ch_add, ch_neg, ch_scal_big, trunc_g_order, CheetahPoint, F6lt, A_GEN, G_ORDER,
     },
     tip5::hash::hash_varlen,
-    Belt, Digest, Hashable, Noun, NounDecode, NounEncode,
+    Belt, Digest, Hashable, MulMod, Noun, NounDecode, NounEncode, U256,
 };
 use iris_ztd_derive::{NounDecode, NounEncode};
 
@@ -14,11 +13,7 @@ pub struct PublicKey(pub CheetahPoint);
 
 impl PublicKey {
     pub fn verify(&self, m: &Digest, sig: &Signature) -> bool {
-        if sig.c == UBig::from(0u64)
-            || &sig.c >= &g_order()
-            || sig.s == UBig::from(0u64)
-            || &sig.s >= &g_order()
-        {
+        if sig.c == U256::ZERO || sig.c >= G_ORDER || sig.s == U256::ZERO || sig.s >= G_ORDER {
             return false;
         }
 
@@ -159,20 +154,20 @@ impl Hashable for PublicKey {
 
 #[derive(Debug, Clone)]
 pub struct Signature {
-    pub c: UBig, // challenge
-    pub s: UBig, // signature scalar
+    pub c: U256, // challenge
+    pub s: U256, // signature scalar
 }
 
 // Aggregate signature of the same challenge
 impl core::iter::Sum<Signature> for Option<Signature> {
     fn sum<I: Iterator<Item = Signature>>(mut iter: I) -> Self {
         let mut c = None;
-        let s = iter.try_fold(UBig::from(0u64), |acc, x| {
+        let s = iter.try_fold(U256::ZERO, |acc, x| {
             if c.is_some() && c.as_ref() != Some(&x.c) {
                 return None;
             }
             c = Some(x.c);
-            Some((acc + x.s) % &*G_ORDER)
+            Some(acc.add_mod(&x.s, &G_ORDER))
         });
         Some(Signature { c: c?, s: s? })
     }
@@ -196,8 +191,8 @@ impl NounDecode for Signature {
         let s = Belt::to_bytes(&s);
 
         Some(Signature {
-            c: UBig::from_le_bytes(&c),
-            s: UBig::from_le_bytes(&s),
+            c: U256::from_le_slice(&c),
+            s: U256::from_le_slice(&s),
         })
     }
 }
@@ -209,7 +204,7 @@ impl Hashable for Signature {
 }
 
 #[derive(Debug, Clone)]
-pub struct PrivateKey(pub UBig);
+pub struct PrivateKey(pub U256);
 
 impl PrivateKey {
     pub fn public_key(&self) -> PublicKey {
@@ -220,7 +215,7 @@ impl PrivateKey {
         self.sign_multi(m, &self.nonce_for(m), &self.public_key())
     }
 
-    pub fn nonce_for(&self, m: &Digest) -> UBig {
+    pub fn nonce_for(&self, m: &Digest) -> U256 {
         let pubkey = self.public_key().0;
         let nonce = {
             let mut transcript = Vec::new();
@@ -237,8 +232,10 @@ impl PrivateKey {
         nonce
     }
 
-    pub fn combine_nonces(nonces: &[UBig]) -> UBig {
-        nonces.iter().fold(UBig::from(0u64), |acc, x| &acc + x) % &*G_ORDER
+    pub fn combine_nonces(nonces: &[U256]) -> U256 {
+        nonces
+            .iter()
+            .fold(U256::ZERO, |acc, x| acc.add_mod(x, &G_ORDER))
     }
 
     /// Perform a multiparty sign
@@ -254,11 +251,10 @@ impl PrivateKey {
     /// # Example
     ///
     /// ```
-    /// # use iris_ztd::{Digest, Belt};
+    /// # use iris_ztd::{Digest, Belt, U256};
     /// # use iris_crypto::cheetah::*;
-    /// # use ibig::UBig;
-    /// let pk1 = PrivateKey(UBig::from(123u64));
-    /// let pk2 = PrivateKey(UBig::from(456u64));
+    /// let pk1 = PrivateKey(U256::from_u64(123));
+    /// let pk2 = PrivateKey(U256::from_u64(456));
     /// let m = Digest([Belt(8), Belt(9), Belt(10), Belt(11), Belt(12)]);
     /// let nonce1 = pk1.nonce_for(&m);
     /// let nonce2 = pk2.nonce_for(&m);
@@ -272,7 +268,7 @@ impl PrivateKey {
     pub fn sign_multi(
         &self,
         m: &Digest,
-        shared_nonce: &UBig,
+        shared_nonce: &U256,
         combined_pubkey: &PublicKey,
     ) -> Signature {
         let chal = {
@@ -287,15 +283,13 @@ impl PrivateKey {
             trunc_g_order(&hash_varlen(&mut transcript))
         };
         let nonce = self.nonce_for(m);
-        let sig = (&nonce + &chal * &self.0) % g_order();
+        let chal_mul = MulMod::mul_mod(&chal, &self.0, &G_ORDER);
+        let sig = nonce.add_mod(&chal_mul, &G_ORDER);
         Signature { c: chal, s: sig }
     }
 
     pub fn to_be_bytes(&self) -> [u8; 32] {
-        let bytes = self.0.to_be_bytes();
-        let mut arr = [0u8; 32];
-        arr[32 - bytes.len()..].copy_from_slice(&bytes);
-        arr
+        self.0.to_be_bytes()
     }
 }
 
@@ -303,7 +297,7 @@ impl core::ops::Add for &PrivateKey {
     type Output = PrivateKey;
 
     fn add(self, other: &PrivateKey) -> PrivateKey {
-        PrivateKey((&self.0 + &other.0) % &*G_ORDER)
+        PrivateKey(self.0.add_mod(&other.0, &G_ORDER))
     }
 }
 
@@ -311,7 +305,7 @@ impl core::ops::Add for PrivateKey {
     type Output = PrivateKey;
 
     fn add(self, other: PrivateKey) -> PrivateKey {
-        PrivateKey((&self.0 + &other.0) % &*G_ORDER)
+        PrivateKey(self.0.add_mod(&other.0, &G_ORDER))
     }
 }
 
@@ -325,7 +319,7 @@ impl core::ops::Sub for &PrivateKey {
     type Output = PrivateKey;
 
     fn sub(self, other: &PrivateKey) -> PrivateKey {
-        PrivateKey((&self.0 - &other.0) % &*G_ORDER)
+        PrivateKey(self.0.sub_mod(&other.0, &G_ORDER))
     }
 }
 
@@ -337,26 +331,27 @@ impl core::ops::SubAssign for PrivateKey {
 
 impl core::iter::Sum<PrivateKey> for PrivateKey {
     fn sum<I: Iterator<Item = PrivateKey>>(iter: I) -> Self {
-        iter.fold(PrivateKey(UBig::from(0u64)), |acc, x| &acc + &x)
+        iter.fold(PrivateKey(U256::ZERO), |acc, x| &acc + &x)
     }
 }
 
 impl<'a> core::iter::Sum<&'a PrivateKey> for PrivateKey {
     fn sum<I: Iterator<Item = &'a PrivateKey>>(iter: I) -> Self {
-        iter.fold(PrivateKey(UBig::from(0u64)), |acc, x| &acc + x)
+        iter.fold(PrivateKey(U256::ZERO), |acc, x| &acc + x)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn mupk_test() {
         let privs = [
-            UBig::from(123u64),
-            UBig::from(124u64),
-            &*G_ORDER - &UBig::from(1u64),
+            U256::from_u64(123),
+            U256::from_u64(124),
+            G_ORDER.sub_mod(&U256::ONE, &G_ORDER),
         ]
         .map(PrivateKey);
         let pubs = privs.clone().map(|p| p.public_key());
@@ -369,9 +364,9 @@ mod tests {
     #[test]
     fn musig_test() {
         let privs = [
-            UBig::from(123u64),
-            UBig::from(124u64),
-            &*G_ORDER - &UBig::from(1u64),
+            U256::from_u64(123),
+            U256::from_u64(124),
+            G_ORDER.sub_mod(&U256::ONE, &G_ORDER),
         ]
         .map(PrivateKey);
         let pubs = privs.clone().map(|p| p.public_key());
@@ -401,7 +396,7 @@ mod tests {
 
     #[test]
     fn test_sign_and_verify() {
-        let priv_key = PrivateKey(UBig::from(123u64));
+        let priv_key = PrivateKey(U256::from_u64(123));
         let digest = Digest([Belt(1), Belt(2), Belt(3), Belt(4), Belt(5)]);
         let signature = priv_key.sign(&digest);
         let pubkey = priv_key.public_key();
@@ -418,7 +413,7 @@ mod tests {
             "Should reject wrong digest"
         );
         let mut wrong_sig = signature.clone();
-        wrong_sig.s += UBig::from(1u64);
+        wrong_sig.s += U256::from_u64(1);
         assert!(
             !pubkey.verify(&digest, &wrong_sig),
             "Should reject wrong signature"
@@ -457,8 +452,8 @@ mod tests {
         let c_hex = "6f3cd43cd8709f4368aed04cd84292ab1c380cb645aaa7d010669d70375cbe88";
         let s_hex = "5197ab182e307a350b5cf3606d6e99a6f35b0d382c8330dde6e51fb6ef8ebb8c";
         let signature = Signature {
-            c: UBig::from_str_radix(c_hex, 16).unwrap(),
-            s: UBig::from_str_radix(s_hex, 16).unwrap(),
+            c: U256::from_str_radix_vartime(c_hex, 16).unwrap(),
+            s: U256::from_str_radix_vartime(s_hex, 16).unwrap(),
         };
         assert!(pubkey.verify(&digest, &signature));
     }

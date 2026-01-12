@@ -437,16 +437,7 @@ impl TxBuilder {
             spends.0.push((name.clone(), spend.spend.clone()));
         }
 
-        // If any spend is legacy, treat the transaction as legacy.
-        let version = if spends
-            .0
-            .iter()
-            .any(|(_, s)| matches!(s, Spend::Legacy(_)))
-        {
-            Version::V0
-        } else {
-            Version::V1
-        };
+        let version = Version::V1;
         let id = (&version, &spends).hash();
         let (spends, witness_data) = spends.split_witness();
 

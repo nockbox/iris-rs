@@ -700,16 +700,7 @@ pub struct RawTx {
 
 impl RawTx {
     pub fn new(spends: Spends) -> Self {
-        // If any spend is legacy, consider this a legacy transaction.
-        let version = if spends
-            .0
-            .iter()
-            .any(|(_, s)| matches!(s, Spend::Legacy(_)))
-        {
-            Version::V0
-        } else {
-            Version::V1
-        };
+        let version = Version::V1;
         let id = (&version, &spends).hash();
         Self {
             version,

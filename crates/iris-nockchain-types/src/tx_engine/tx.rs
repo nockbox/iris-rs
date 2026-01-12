@@ -673,9 +673,13 @@ impl NounEncode for NockchainTx {
 
 impl NounDecode for NockchainTx {
     fn from_noun(noun: &Noun) -> Option<Self> {
-        let (Version::V1, id, spends, display, witness_data) = NounDecode::from_noun(noun)? else {
+        let (Version::V1, name, spends, display, witness_data): (_, String, _, _, _) =
+            NounDecode::from_noun(noun)?
+        else {
             return None;
         };
+
+        let id = TxId::try_from(&*name).ok()?;
 
         Some(Self {
             version: Version::V1,

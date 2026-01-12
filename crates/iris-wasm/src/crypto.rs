@@ -1,4 +1,4 @@
-use ibig::UBig;
+use iris_ztd::U256;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -33,15 +33,15 @@ impl WasmSignature {
 
     fn from_internal(sig: &Signature) -> Self {
         Self {
-            c: sig.c.to_be_bytes(),
-            s: sig.s.to_be_bytes(),
+            c: sig.c.to_be_bytes().to_vec(),
+            s: sig.s.to_be_bytes().to_vec(),
         }
     }
 
     fn to_internal(&self) -> Signature {
         Signature {
-            c: UBig::from_be_bytes(&self.c),
-            s: UBig::from_be_bytes(&self.s),
+            c: U256::from_be_slice(&self.c),
+            s: U256::from_be_slice(&self.s),
         }
     }
 }
@@ -88,7 +88,7 @@ impl WasmExtendedKey {
             if pk_bytes.len() != 32 {
                 return Err("Private key must be 32 bytes".to_string());
             }
-            Some(PrivateKey(UBig::from_be_bytes(pk_bytes)))
+            Some(PrivateKey(U256::from_be_slice(pk_bytes)))
         } else {
             None
         };
@@ -185,7 +185,7 @@ pub fn sign_message(private_key_bytes: &[u8], message: &str) -> Result<WasmSigna
     if private_key_bytes.len() != 32 {
         return Err(JsValue::from_str("Private key must be 32 bytes"));
     }
-    let private_key = PrivateKey(UBig::from_be_bytes(private_key_bytes));
+    let private_key = PrivateKey(U256::from_be_slice(private_key_bytes));
     let digest = Belt::from_bytes(message.as_bytes()).to_noun().hash();
     Ok(WasmSignature::from_internal(&private_key.sign(&digest)))
 }

@@ -3,7 +3,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use ibig::UBig;
 use iris_crypto::PrivateKey;
 use iris_grpc_proto::pb::common::v1 as pb_v1;
 use iris_grpc_proto::pb::common::v2 as pb;
@@ -14,6 +13,7 @@ use iris_nockchain_types::{
     Nicks,
 };
 use iris_nockchain_types::{Hax, LockTim, MissingUnlocks, Source, SpendBuilder};
+use iris_ztd::U256;
 use iris_ztd::{cue, jam, Digest, Hashable as HashableTrait, NounDecode, NounEncode};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -1202,7 +1202,7 @@ impl WasmTxBuilder {
         if signing_key_bytes.len() != 32 {
             return Err(JsValue::from_str("Private key must be 32 bytes"));
         }
-        let signing_key = PrivateKey(UBig::from_be_bytes(signing_key_bytes));
+        let signing_key = PrivateKey(U256::from_be_slice(signing_key_bytes));
 
         self.builder.sign(&signing_key);
 
@@ -1398,7 +1398,7 @@ impl WasmSpendBuilder {
         if signing_key_bytes.len() != 32 {
             return Err(JsValue::from_str("Private key must be 32 bytes"));
         }
-        let signing_key = PrivateKey(UBig::from_be_bytes(signing_key_bytes));
+        let signing_key = PrivateKey(U256::from_be_slice(signing_key_bytes));
         Ok(self.builder.sign(&signing_key))
     }
 

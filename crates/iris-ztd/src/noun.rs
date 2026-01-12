@@ -649,7 +649,7 @@ pub fn cue_bitslice(buffer: &BitSlice<u8, Lsb0>) -> Option<Noun> {
             // Need an indirect atom
             let wordsize = (size + 63) >> 6;
             let mut bytes = vec![0u8; wordsize * 8];
-            BitSlice::from_slice_mut(&mut bytes).copy_from_bitslice(bits);
+            BitSlice::from_slice_mut(&mut bytes)[0..bits.len()].copy_from_bitslice(bits);
             Some(UBig::from_le_bytes(&bytes))
         }
     }

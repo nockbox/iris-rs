@@ -11,6 +11,7 @@ mod noun;
 mod zmap;
 mod zset;
 pub use belt::Belt;
+pub use crypto_bigint::{MulMod, U256};
 pub use hash::*;
 pub use noun::*;
 pub use zmap::*;

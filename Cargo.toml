@@ -15,16 +15,28 @@ edition = "2021"
 
 [workspace.dependencies.iris-ztd]
 path = "crates/iris-ztd"
+version = "0.1"
+
+[workspace.dependencies.iris-ztd-derive]
+path = "crates/iris-ztd-derive"
+version = "0.1"
 
 [workspace.dependencies.iris-crypto]
 path = "crates/iris-crypto"
+version = "0.1"
 
 
 [workspace.dependencies.iris-nockchain-types]
 path = "crates/iris-nockchain-types"
+version = "0.1"
 
 [workspace.dependencies.iris-wasm]
 path = "crates/iris-wasm"
+version = "0.1"
+
+[workspace.dependencies.iris-grpc-proto]
+path = "crates/iris-grpc-proto"
+version = "0.1"
 
 [workspace.dependencies]
 nockvm = { git = "https://github.com/zorp-corp/nockchain.git" }

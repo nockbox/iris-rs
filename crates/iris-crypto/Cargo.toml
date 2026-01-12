@@ -13,7 +13,7 @@ authors = ["NockBox inc. <tech@nockbox.org>"]
 
 [dependencies]
 iris-ztd = { workspace = true }
-iris-ztd-derive = { path = "../iris-ztd-derive" }
+iris-ztd-derive = { workspace = true }
 ibig = { workspace = true }
 bip39 = { version = "2.0", default-features = false, features = ["alloc", "std"] }
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }

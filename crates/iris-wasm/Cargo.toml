@@ -18,7 +18,7 @@ crate-type = ["cdylib", "rlib"]
 iris-crypto = { workspace = true }
 iris-nockchain-types = { workspace = true }
 iris-ztd = { workspace = true }
-iris-grpc-proto = { path = "../iris-grpc-proto" }
+iris-grpc-proto = { workspace = true }
 ibig = { workspace = true }
 bip39 = { version = "2.0", default-features = false, features = ["alloc", "std"] }
 serde = { version = "1.0", features = ["derive"] }

@@ -64,7 +64,7 @@ static_resources:
         - endpoint:
             address:
               socket_address:
-                address: https://nockchain-api.zorp.io # Change this to your public URL
+                address: nockchain-api.zorp.io # Change this to your public URL
                 port_value: 443   # Use 443 for HTTPS, or the appropriate port
     # Uncomment these lines if using HTTPS
     transport_socket:

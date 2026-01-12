@@ -400,10 +400,9 @@ impl TryFrom<PbPkhSignature> for PkhSignature {
     type Error = ConversionError;
 
     fn try_from(pb: PbPkhSignature) -> Result<Self, Self::Error> {
-        use ibig::UBig;
         use iris_crypto::{PublicKey, Signature};
         use iris_ztd::crypto::cheetah::{CheetahPoint, F6lt};
-        use iris_ztd::Belt as ZBelt;
+        use iris_ztd::{Belt as ZBelt, U256};
 
         let entries = pb
             .entries
@@ -469,12 +468,12 @@ impl TryFrom<PbPkhSignature> for PkhSignature {
                     sig_val_pb.belt_8.required("EightBelt", "belt_8")?.value,
                 ];
 
-                // Convert belt arrays to UBig
+                // Convert belt arrays to U256
                 let c_vec: Vec<ZBelt> = chal_belts.iter().map(|v| ZBelt(*v)).collect();
                 let s_vec: Vec<ZBelt> = sig_belts.iter().map(|v| ZBelt(*v)).collect();
 
-                let c = UBig::from_le_bytes(&ZBelt::to_bytes(&c_vec));
-                let s = UBig::from_le_bytes(&ZBelt::to_bytes(&s_vec));
+                let c = U256::from_le_slice(&ZBelt::to_bytes(&c_vec));
+                let s = U256::from_le_slice(&ZBelt::to_bytes(&s_vec));
 
                 let signature = Signature { c, s };
 

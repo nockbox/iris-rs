@@ -2,23 +2,31 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use bs58;
-use ibig::UBig;
-use once_cell::sync::Lazy;
+use crypto_bigint::{MulMod, U256};
 
-use crate::belt::{bneg, Belt, PRIME};
+use crate::belt::{bneg, Belt};
 use crate::belt::{bpegcd, bpscal};
 
-pub static G_ORDER: Lazy<UBig> = Lazy::new(|| {
-    UBig::from_str_radix(
-        "7af2599b3b3f22d0563fbf0f990a37b5327aa72330157722d443623eaed4accf",
-        16,
-    )
-    .unwrap()
-});
+// Pre-computed constants stored as big-endian byte arrays
+pub const G_ORDER: U256 = U256::from_be_slice(&[
+    0x7a, 0xf2, 0x59, 0x9b, 0x3b, 0x3f, 0x22, 0xd0, 0x56, 0x3f, 0xbf, 0x0f, 0x99, 0x0a, 0x37, 0xb5,
+    0x32, 0x7a, 0xa7, 0x23, 0x30, 0x15, 0x77, 0x22, 0xd4, 0x43, 0x62, 0x3e, 0xae, 0xd4, 0xac, 0xcf,
+]);
 
-pub static P_BIG: Lazy<UBig> = Lazy::new(|| UBig::from(PRIME));
-pub static P_BIG_2: Lazy<UBig> = Lazy::new(|| &*P_BIG * &*P_BIG);
-pub static P_BIG_3: Lazy<UBig> = Lazy::new(|| &*P_BIG_2 * &*P_BIG);
+pub const P_BIG: U256 = U256::from_be_slice(&[
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01,
+]);
+
+pub const P_BIG_2: U256 = U256::from_be_slice(&[
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xff, 0xff, 0xff, 0xfe, 0x00, 0x00, 0x00, 0x02, 0xff, 0xff, 0xff, 0xfe, 0x00, 0x00, 0x00, 0x01,
+]);
+
+pub const P_BIG_3: U256 = U256::from_be_slice(&[
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xfd, 0x00, 0x00, 0x00, 0x05,
+    0xff, 0xff, 0xff, 0xf9, 0x00, 0x00, 0x00, 0x05, 0xff, 0xff, 0xff, 0xfd, 0x00, 0x00, 0x00, 0x01,
+]);
 
 pub const A_GEN: CheetahPoint = CheetahPoint {
     x: F6lt([
@@ -321,28 +329,31 @@ pub fn ch_scal(n: u64, p: &CheetahPoint) -> Result<CheetahPoint, CheetahError> {
 }
 
 #[inline(always)]
-pub fn ch_scal_big(n: &UBig, p: &CheetahPoint) -> Result<CheetahPoint, CheetahError> {
-    let mut n_copy = n.clone();
-    let zero = UBig::from(0u64);
-    let mut p_copy = *p;
+pub fn ch_scal_big(n: &U256, p: &CheetahPoint) -> Result<CheetahPoint, CheetahError> {
+    if *n == U256::ZERO {
+        return Ok(A_ID);
+    }
     let mut acc = A_ID;
-
-    while n_copy > zero {
-        // Check if least significant bit is set
-        if n_copy.bit(0) {
-            acc = ch_add(&acc, &p_copy)?;
+    for byte in n.to_be_bytes() {
+        for bit in (0..8).rev() {
+            acc = ch_double(acc)?;
+            if (byte >> bit) & 1 == 1 {
+                acc = ch_add(&acc, p)?;
+            }
         }
-        p_copy = ch_double(p_copy)?;
-        n_copy >>= 1; // Right shift by 1 bit
     }
     Ok(acc)
 }
 
-pub fn trunc_g_order(a: &[u64]) -> UBig {
-    let mut result = UBig::from(a[0]);
-    result += &*P_BIG * UBig::from(a[1]);
-    result += &*P_BIG_2 * UBig::from(a[2]);
-    result += &*P_BIG_3 * UBig::from(a[3]);
+pub fn trunc_g_order(a: &[u64]) -> U256 {
+    let mut result = U256::from_u64(a[0]);
 
-    result % &*G_ORDER
+    let term1 = MulMod::mul_mod(&P_BIG, &U256::from_u64(a[1]), &G_ORDER);
+    result = result.add_mod(&term1, &G_ORDER);
+
+    let term2 = MulMod::mul_mod(&P_BIG_2, &U256::from_u64(a[2]), &G_ORDER);
+    result = result.add_mod(&term2, &G_ORDER);
+
+    let term3 = MulMod::mul_mod(&P_BIG_3, &U256::from_u64(a[3]), &G_ORDER);
+    result.add_mod(&term3, &G_ORDER)
 }

@@ -245,6 +245,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto-bigint"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96272c2ff28b807e09250b180ad1fb7889a3258f7455759b5c3c58b719467130"
+dependencies = [
+ "num-traits",
+ "subtle",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -582,7 +592,6 @@ checksum = "d1fcc7f316b2c079dde77564a1360639c1a956a23fa96122732e416cb10717bb"
 dependencies = [
  "cfg-if",
  "num-traits",
- "rand",
  "static_assertions",
 ]
 
@@ -685,9 +694,9 @@ dependencies = [
  "arrayref",
  "bitvec",
  "bs58",
+ "crypto-bigint",
  "ibig",
  "num-traits",
- "once_cell",
  "serde",
 ]
 

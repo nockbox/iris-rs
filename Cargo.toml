@@ -5,6 +5,7 @@ members = [
   "crates/iris-nockchain-types",
   "crates/iris-grpc-proto",
   "crates/iris-wasm",
+  "crates/iris-ztd-derive",
 ]
 
 resolver = "2"
@@ -41,4 +42,6 @@ version = "0.1"
 [workspace.dependencies]
 nockvm = { git = "https://github.com/zorp-corp/nockchain.git" }
 nockchain-math = { git = "https://github.com/zorp-corp/nockchain.git" }
-ibig = "0.3"
+ibig = { version = "0.3", default-features = false, features = ["num-traits"] }
+crypto-bigint = { version = "0.6", default-features = false }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }

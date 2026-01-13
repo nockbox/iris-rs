@@ -77,11 +77,15 @@ impl Seed {
         gift: Nicks,
         parent_hash: Digest,
         include_lock_data: bool,
+        memo: Option<Noun>,
     ) -> Self {
         let lock_root = LockRoot::Lock(SpendCondition::new_pkh(Pkh::single(pkh)));
         let mut note_data = NoteData::empty();
         if include_lock_data {
             note_data.push_pkh(Pkh::single(pkh));
+        }
+        if let Some(memo) = memo {
+            note_data.push_memo(memo);
         }
         Self {
             output_source: None,
@@ -794,6 +798,7 @@ mod tests {
                 .try_into()
                 .unwrap(),
             true,
+            None,
         );
 
         check_hash(

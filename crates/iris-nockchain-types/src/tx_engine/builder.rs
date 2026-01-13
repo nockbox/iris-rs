@@ -3,7 +3,7 @@ use alloc::collections::btree_set::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
 use iris_crypto::PrivateKey;
-use iris_ztd::{noun_deserialize, noun_serialize, Digest, Hashable as HashableTrait, Noun};
+use iris_ztd::{noun_deserialize, noun_serialize, Digest, Hashable as HashableTrait, Noun, ZSet};
 use serde::{Deserialize, Serialize};
 
 use super::note::Note;
@@ -94,7 +94,23 @@ impl SpendBuilder {
             self.invalidate_sigs();
             let rl = self.refund_lock.clone().unwrap();
             let lock_root = LockRoot::Lock(rl.clone());
-            // Remove the previous refund
+            // If the previous refund seed had memo note-data, preserve it across refund
+            // recomputation (fee changes rebuild the refund seed).
+            let preserved_memo: Option<Noun> = self
+                .spend
+                .seeds
+                .0
+                .iter()
+                .find(|v| v.lock_root.hash() == lock_root.hash())
+                .and_then(|seed| {
+                    seed.note_data
+                        .entries
+                        .iter()
+                        .find(|e| e.key == crate::MEMO_KEY)
+                        .map(|e| e.val.clone())
+                });
+
+            // Remove the previous refund.
             self.spend
                 .seeds
                 .0
@@ -103,7 +119,10 @@ impl SpendBuilder {
                 - self.spend.fee
                 - self.spend.seeds.0.iter().map(|v| v.gift).sum::<u64>();
             if refund > 0 {
-                let seed = self.build_seed(rl, refund, include_lock_data);
+                let mut seed = self.build_seed(rl, refund, include_lock_data);
+                if let Some(memo) = preserved_memo {
+                    seed.note_data.push_memo(memo);
+                }
                 // NOTE: by convention, the refund seed is always first
                 self.spend.seeds.0.insert(0, seed);
             }
@@ -314,6 +333,7 @@ impl TxBuilder {
         gift: Nicks,
         refund_pkh: Digest,
         include_lock_data: bool,
+        memo: Option<Noun>,
     ) -> Result<&mut Self, BuildError> {
         if gift == 0 {
             return Err(BuildError::ZeroGift);
@@ -350,7 +370,90 @@ impl TxBuilder {
             return Err(BuildError::InsufficientFunds);
         }
 
+        if let Some(memo) = memo {
+            self.apply_memo_to_last_seed_of_best_lock(memo);
+        }
+
         Ok(self)
+    }
+
+    // Match CLI/hoon behavior: memo note-data must be on the *last* seed of the lock-root
+    // that has the highest total gift. This is because tx engine preserves note-data from the
+    // last seed for each lock-root during merge.
+    fn apply_memo_to_last_seed_of_best_lock(&mut self, memo: Noun) {
+        let mut totals: BTreeMap<Digest, Nicks> = BTreeMap::new();
+        for (_, spend) in self.spends.iter() {
+            for seed in spend.spend.seeds.0.iter() {
+                *totals.entry(seed.lock_root.hash()).or_default() += seed.gift;
+            }
+        }
+
+        let mut best_lock: Option<Digest> = None;
+        let mut best_total: Nicks = 0;
+        for (lock, total) in totals {
+            if best_lock.is_none() || total > best_total {
+                best_lock = Some(lock);
+                best_total = total;
+            }
+        }
+        let Some(best_lock) = best_lock else {
+            return;
+        };
+
+        // IMPORTANT:
+        // Outputs pick note-data from the *last seed in the tap order of the z-set* of seeds for
+        // a given lock-root (see `RawTx::outputs`). That ordering is NOT the same as the builder's
+        // insertion order, and adding memo changes the seed hash (and thus its z-set position).
+        //
+        // To match CLI/hoon behavior robustly, we choose a seed within the best lock-root such
+        // that, *after memo is applied to that seed only*, it becomes the last seed in the z-set
+        // iteration order for that lock-root.
+        fn seed_has_memo(seed: &Seed) -> bool {
+            seed.note_data
+                .entries
+                .iter()
+                .any(|e| e.key == crate::MEMO_KEY)
+        }
+
+        // Collect all seeds for this lock-root in the exact order they will be inserted into the
+        // z-set during output computation (spends order, then seeds vector order).
+        let mut seeds_for_lock: Vec<(Name, usize, Seed)> = Vec::new();
+        for (name, spend) in self.spends.iter() {
+            for (i, seed) in spend.spend.seeds.0.iter().enumerate() {
+                if seed.lock_root.hash() == best_lock {
+                    seeds_for_lock.push((name.clone(), i, seed.clone()));
+                }
+            }
+        }
+        if seeds_for_lock.is_empty() {
+            return;
+        }
+
+        let mut chosen: Option<(Name, usize)> = None;
+        for (cand_name, cand_idx, _) in seeds_for_lock.iter() {
+            let mut set: ZSet<Seed> = ZSet::new();
+            for (name, idx, seed) in seeds_for_lock.iter() {
+                let mut s = seed.clone();
+                if name == cand_name && idx == cand_idx {
+                    s.note_data.push_memo(memo.clone());
+                }
+                set.insert(s);
+            }
+            let ordered: Vec<Seed> = set.into_iter().collect();
+            if ordered.last().is_some_and(seed_has_memo) {
+                chosen = Some((cand_name.clone(), *cand_idx));
+            }
+        }
+
+        let Some((name, idx)) = chosen else {
+            // Should not happen, but if it does, fail gracefully by doing nothing.
+            return;
+        };
+        if let Some(spend) = self.spends.get_mut(&name) {
+            if let Some(seed) = spend.spend.seeds.0.get_mut(idx) {
+                seed.note_data.push_memo(memo);
+            }
+        }
     }
 
     pub fn simple_spend(
@@ -360,8 +463,9 @@ impl TxBuilder {
         gift: Nicks,
         refund_pkh: Digest,
         include_lock_data: bool,
+        memo: Option<Noun>,
     ) -> Result<&mut Self, BuildError> {
-        self.simple_spend_base(notes, recipient, gift, refund_pkh, include_lock_data)?
+        self.simple_spend_base(notes, recipient, gift, refund_pkh, include_lock_data, memo)?
             .recalc_and_set_fee(include_lock_data)?;
 
         Ok(self)
@@ -650,7 +754,7 @@ impl core::fmt::Display for BuildError {
             BuildError::MissingUnlocks(unlocks) => {
                 write!(
                     f,
-                    "The note is note fully unlocked. The following unlocks are missing:"
+                    "The note is not fully unlocked. The following unlocks are missing:"
                 )?;
                 for u in unlocks {
                     write!(f, "{u:?}")?;
@@ -714,6 +818,7 @@ mod tests {
                 gift,
                 refund_pkh,
                 true,
+                None,
             )
             .unwrap()
             .set_fee_and_balance_refund(fee, false, true)
@@ -736,6 +841,7 @@ mod tests {
             gift,
             refund_pkh,
             true,
+            None,
         )
         .unwrap()
         .set_fee_and_balance_refund(fee, false, true)
@@ -754,6 +860,7 @@ mod tests {
                 gift,
                 refund_pkh,
                 false,
+                None,
             )
             .unwrap();
 
@@ -832,7 +939,7 @@ mod tests {
         let mut builder = TxBuilder::new(8);
 
         builder
-            .simple_spend_base(notes, recipient, gift, refund_pkh, false)
+            .simple_spend_base(notes, recipient, gift, refund_pkh, false, None)
             .unwrap();
 
         // By default, fee is just 504, because we are using one note, and one note only.
@@ -867,6 +974,306 @@ mod tests {
 
         // And the transaction should validate.
         builder.validate().unwrap();
+    }
+
+    #[test]
+    fn test_memo_increases_fee() {
+        let (private_key, _) = keys();
+        let note = Note {
+            version: Version::V1,
+            origin_page: 13,
+            name: Name::new(
+                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                    .try_into()
+                    .unwrap(),
+                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+                    .try_into()
+                    .unwrap(),
+            ),
+            note_data: NoteData::empty(),
+            assets: 10_000,
+        };
+        let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
+            .try_into()
+            .unwrap();
+        let gift = 2_000;
+        let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
+            .try_into()
+            .unwrap();
+        let spend_condition = SpendCondition(vec![
+            LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+            LockPrimitive::Tim(LockTim::coinbase()),
+        ]);
+        let notes = vec![(note.clone(), spend_condition.clone())];
+        let fee_per_word = 1 << 10;
+
+        let mut builder_without_memo = TxBuilder::new(fee_per_word);
+        builder_without_memo
+            .simple_spend_base(
+                notes.clone(),
+                recipient,
+                gift,
+                refund_pkh,
+                /* include_lock_data */ false,
+                None,
+            )
+            .unwrap();
+        let base_fee = builder_without_memo.calc_fee();
+
+        let memo = 7u64.to_noun();
+        let mut builder_with_memo = TxBuilder::new(fee_per_word);
+        builder_with_memo
+            .simple_spend_base(
+                notes,
+                recipient,
+                gift,
+                refund_pkh,
+                /* include_lock_data */ false,
+                Some(memo),
+            )
+            .unwrap();
+        let memo_fee = builder_with_memo.calc_fee();
+
+        assert!(memo_fee > base_fee);
+    }
+
+    fn seed_has_memo(seed: &Seed) -> bool {
+        seed.note_data
+            .entries
+            .iter()
+            .any(|e| e.key == crate::MEMO_KEY)
+    }
+
+    #[test]
+    fn test_memo_applied_to_last_seed_of_best_lock() {
+        // This test targets the CLI/hoon rule:
+        // - group all seeds by lock-root
+        // - pick the lock-root with the highest total gift
+        // - ensure memo is preserved by landing on the *last seed in z-set order* for that lock-root
+        //
+        // It also ensures we handle multiple spends, each with multiple seeds.
+
+        let (private_key, public_key) = keys();
+
+        let refund_pkh: Digest = public_key.hash();
+        let refund_lock = SpendCondition::new_pkh(Pkh::single(refund_pkh));
+
+        // Use three distinct recipient PKHs (lock-roots).
+        let pkh_a: Digest = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
+            .try_into()
+            .unwrap();
+        let pkh_b: Digest = "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+            .try_into()
+            .unwrap();
+        let pkh_c: Digest = "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+            .try_into()
+            .unwrap();
+
+        let lock_a = SpendCondition::new_pkh(Pkh::single(pkh_a));
+        let lock_b = SpendCondition::new_pkh(Pkh::single(pkh_b));
+        let lock_c = SpendCondition::new_pkh(Pkh::single(pkh_c));
+
+        // Total gifts by lock-root (across BOTH spends):
+        // - A: 2 + 5 = 7
+        // - B: 5 + 6 = 11  (best)
+        // - C: 1 + 2 = 3
+        let memo = 7u64.to_noun();
+
+        let spend_condition = SpendCondition(vec![
+            LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+            LockPrimitive::Tim(LockTim::coinbase()),
+        ]);
+
+        // Spend 1: three seeds, ordered [A, B, C] so B is in the *middle* of the seeds array.
+        let note1 = Note {
+            version: Version::V1,
+            origin_page: 13,
+            name: Name::new(
+                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                    .try_into()
+                    .unwrap(),
+                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvD"
+                    .try_into()
+                    .unwrap(),
+            ),
+            note_data: NoteData::empty(),
+            assets: 8,
+        };
+        let mut spend1 =
+            SpendBuilder::new(note1, spend_condition.clone(), Some(refund_lock.clone()));
+        spend1.seed(spend1.build_seed(lock_a.clone(), 2, false)); // idx 0
+        spend1.seed(spend1.build_seed(lock_b.clone(), 5, false)); // idx 1 (middle)  <-- candidate
+        spend1.seed(spend1.build_seed(lock_c.clone(), 1, false)); // idx 2
+        spend1.compute_refund(false);
+        assert!(spend1.is_balanced());
+
+        // Spend 2: three seeds, ordered [A, B, C] so B is again in the *middle* of the array.
+        let note2 = Note {
+            version: Version::V1,
+            origin_page: 14,
+            name: Name::new(
+                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                    .try_into()
+                    .unwrap(),
+                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvA"
+                    .try_into()
+                    .unwrap(),
+            ),
+            note_data: NoteData::empty(),
+            assets: 13,
+        };
+        let mut spend2 = SpendBuilder::new(note2, spend_condition, Some(refund_lock));
+        spend2.seed(spend2.build_seed(lock_a.clone(), 5, false)); // idx 0
+        spend2.seed(spend2.build_seed(lock_b.clone(), 6, false)); // idx 1 (middle)  <-- candidate
+        spend2.seed(spend2.build_seed(lock_c.clone(), 2, false)); // idx 2
+        spend2.compute_refund(false);
+        assert!(spend2.is_balanced());
+
+        let mut builder = TxBuilder::new(1);
+        builder.spend(spend1);
+        builder.spend(spend2);
+
+        // Apply memo using the same logic the CLI/hoon expects.
+        builder.apply_memo_to_last_seed_of_best_lock(memo);
+
+        let best_lock = lock_b.hash();
+
+        // Memo must be applied to exactly one seed in the whole tx.
+        let mut memo_seed_count = 0usize;
+        let mut memo_seed_is_middle = false;
+        for (_name, spend) in builder.spends.iter() {
+            for (i, seed) in spend.spend.seeds.0.iter().enumerate() {
+                if seed_has_memo(seed) {
+                    memo_seed_count += 1;
+                    memo_seed_is_middle = i == 1;
+                }
+            }
+        }
+        assert_eq!(
+            memo_seed_count, 1,
+            "memo must be applied to exactly one seed"
+        );
+        assert!(
+            memo_seed_is_middle,
+            "memo must be applied to a seed in the middle of its spend's seeds array (idx=1)"
+        );
+
+        // Memo must land on the last seed in z-set order for the best lock-root.
+        let mut set: ZSet<Seed> = ZSet::new();
+        for (_name, spend) in builder.spends.iter() {
+            for seed in spend.spend.seeds.0.iter() {
+                if seed.lock_root.hash() == best_lock {
+                    set.insert(seed.clone());
+                }
+            }
+        }
+        let ordered: Vec<Seed> = set.into_iter().collect();
+        assert!(
+            ordered.last().is_some_and(seed_has_memo),
+            "memo must end up on the last seed for the best lock-root in z-set order"
+        );
+
+        // And it must survive into outputs (only B output keeps memo).
+        let outputs = builder.build().outputs();
+        let out_a = outputs
+            .iter()
+            .find(|n| n.assets == 7)
+            .expect("expected lock A output");
+        let out_b = outputs
+            .iter()
+            .find(|n| n.assets == 11)
+            .expect("expected lock B output");
+        let out_c = outputs
+            .iter()
+            .find(|n| n.assets == 3)
+            .expect("expected lock C output");
+
+        assert!(!out_a
+            .note_data
+            .entries
+            .iter()
+            .any(|e| e.key == crate::MEMO_KEY));
+        assert!(out_b
+            .note_data
+            .entries
+            .iter()
+            .any(|e| e.key == crate::MEMO_KEY));
+        assert!(!out_c
+            .note_data
+            .entries
+            .iter()
+            .any(|e| e.key == crate::MEMO_KEY));
+    }
+
+    #[test]
+    fn test_memo_survives_fee_recalc_and_refund_recompute() {
+        // This test exercises the real wasm flow:
+        // `simple_spend` calls `simple_spend_base` then `recalc_and_set_fee`, which recomputes
+        // refunds (rebuilding the refund seed). If memo was placed onto the refund seed (because
+        // refund lock-root is best), it must survive that rebuild.
+        let (private_key, public_key) = keys();
+
+        let note1 = Note {
+            version: Version::V1,
+            origin_page: 13,
+            name: Name::new(
+                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                    .try_into()
+                    .unwrap(),
+                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+                    .try_into()
+                    .unwrap(),
+            ),
+            note_data: NoteData::empty(),
+            assets: 1_000_000,
+        };
+
+        let recipient: Digest = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
+            .try_into()
+            .unwrap();
+        let refund_pkh: Digest = public_key.hash();
+        let gift: Nicks = 1_000;
+
+        let spend_condition = SpendCondition(vec![
+            LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+            LockPrimitive::Tim(LockTim::coinbase()),
+        ]);
+
+        // Use a non-trivial fee_per_word so that `recalc_and_set_fee` adjusts fee/refund, but
+        // keep it small enough that we have sufficient funds.
+        let mut builder = TxBuilder::new(1 << 10);
+        builder
+            .simple_spend(
+                vec![(note1, spend_condition)],
+                recipient,
+                gift,
+                refund_pkh,
+                /* include_lock_data */ false,
+                Some(7u64.to_noun()),
+            )
+            .unwrap();
+
+        // Refund output should be the best lock-root (it is much larger than gift).
+        let outputs = builder.build().outputs();
+        let out_recipient = outputs.iter().find(|n| n.assets == gift).unwrap();
+        let out_refund = outputs.iter().find(|n| n.assets > gift).unwrap();
+
+        assert!(
+            out_refund
+                .note_data
+                .entries
+                .iter()
+                .any(|e| e.key == crate::MEMO_KEY),
+            "memo should survive refund recomputation and land on refund output note-data"
+        );
+        assert!(
+            !out_recipient
+                .note_data
+                .entries
+                .iter()
+                .any(|e| e.key == crate::MEMO_KEY),
+            "memo should not be on recipient output for this case"
+        );
     }
 
     #[test]
@@ -955,6 +1362,7 @@ mod tests {
                 gift,
                 refund_pkh,
                 false,
+                None,
             )
             .unwrap()
             .recalc_and_set_fee(false)
@@ -1038,6 +1446,7 @@ mod tests {
                 gift,
                 refund_pkh,
                 true,
+                None,
             )
             .unwrap()
             .set_fee_and_balance_refund(fee, false, true)
@@ -1107,6 +1516,7 @@ mod tests {
                 gift,
                 refund_pkh,
                 true,
+                None,
             )
             .unwrap()
             .set_fee_and_balance_refund(fee, false, true)
@@ -1167,6 +1577,7 @@ mod tests {
                 gift,
                 refund_pkh,
                 true,
+                None,
             )
             .unwrap()
             .set_fee_and_balance_refund(fee, false, true)

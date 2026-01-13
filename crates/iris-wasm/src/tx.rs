@@ -18,6 +18,8 @@ use iris_ztd::{cue, jam, Digest, Hashable as HashableTrait, NounDecode, NounEnco
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
+use crate::memo::memo_from_js;
+
 // ============================================================================
 // Wasm Types - Core Types
 // ============================================================================
@@ -338,13 +340,13 @@ impl WasmNoteData {
     fn to_internal(&self) -> Result<NoteData, String> {
         let entries: Result<Vec<NoteDataEntry>, String> =
             self.entries.iter().map(|e| e.to_internal()).collect();
-        Ok(NoteData(entries?))
+        Ok(NoteData { entries: entries? })
     }
 
     fn from_internal(note_data: &NoteData) -> Self {
         Self {
             entries: note_data
-                .0
+                .entries
                 .iter()
                 .map(WasmNoteDataEntry::from_internal)
                 .collect(),
@@ -913,12 +915,15 @@ impl WasmSeed {
         gift: Nicks,
         parent_hash: WasmDigest,
         include_lock_data: bool,
+        memo: Option<JsValue>,
     ) -> Result<Self, JsValue> {
+        let memo = memo_from_js(memo)?;
         let seed = Seed::new_single_pkh(
             pkh.to_internal()?,
             gift,
             parent_hash.to_internal()?,
             include_lock_data,
+            memo,
         );
         Ok(seed.into())
     }
@@ -1096,14 +1101,6 @@ impl WasmTxBuilder {
     /// `include_lock_data` can be used to include `%lock` key in note-data, with the
     /// `SpendCondition` used. However, note-data costs 1 << 15 nicks, which means, it can get
     /// expensive.
-    ///
-    /// Optional parameter `remove_unused_notes`, if set to false, will keep the notes in the
-    /// transaction builder. This is meant to be used whenever additional operations are performed
-    /// on the builder, such as additional spends, or `addPreimage` calls. All of these increase
-    /// the required fee (which can be checked with `calcFee`), and unused notes can then be used
-    /// to adjust fees with `setFeeAndBalanceRefund` or `recalcAndSetFee`. Once all operations are
-    /// done, one should call `removeUnusedNotes` to ensure these notes are not used within the
-    /// transaction.
     #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = simpleSpend)]
     pub fn simple_spend(
@@ -1115,6 +1112,7 @@ impl WasmTxBuilder {
         fee_override: Option<Nicks>,
         refund_pkh: WasmDigest,
         include_lock_data: bool,
+        memo: Option<JsValue>,
     ) -> Result<(), JsValue> {
         if notes.len() != spend_conditions.len() {
             return Err(JsValue::from_str(
@@ -1128,6 +1126,7 @@ impl WasmTxBuilder {
             .map(|(n, sc)| Ok((n.to_internal()?, sc.to_internal()?)))
             .collect();
         let internal_notes = internal_notes.map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let memo = memo_from_js(memo)?;
 
         self.builder
             .simple_spend_base(
@@ -1136,6 +1135,7 @@ impl WasmTxBuilder {
                 gift,
                 refund_pkh.to_internal()?,
                 include_lock_data,
+                memo,
             )
             .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
 

@@ -1,8 +1,10 @@
 extern crate alloc;
 use alloc::vec::Vec;
+use core::fmt;
 
 use bs58;
 use crypto_bigint::{MulMod, U256};
+use serde::{Deserialize, Serialize};
 
 use crate::belt::{bneg, Belt};
 use crate::belt::{bpegcd, bpscal};
@@ -57,13 +59,25 @@ pub enum CheetahError {
     DivisionByZero,
 }
 
+impl fmt::Display for CheetahError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CheetahError::Base58(e) => write!(f, "Base58: {}", e),
+            CheetahError::InvalidLength(len) => write!(f, "Invalid length: {}", len),
+            CheetahError::ArrayConversion => write!(f, "Array conversion failed"),
+            CheetahError::NotOnCurve => write!(f, "Point is not on the curve"),
+            CheetahError::DivisionByZero => write!(f, "Division by zero"),
+        }
+    }
+}
+
 impl From<bs58::decode::Error> for CheetahError {
     fn from(e: bs58::decode::Error) -> Self {
         CheetahError::Base58(e)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct CheetahPoint {
     pub x: F6lt,
     pub y: F6lt,
@@ -126,7 +140,7 @@ impl CheetahPoint {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct F6lt(pub [Belt; 6]);
 
 #[inline(always)]

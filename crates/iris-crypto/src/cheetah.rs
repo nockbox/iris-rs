@@ -7,8 +7,21 @@ use iris_ztd::{
     Belt, Digest, Hashable, MulMod, Noun, NounDecode, NounEncode, U256,
 };
 use iris_ztd_derive::{NounDecode, NounEncode};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, NounEncode, NounDecode)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    NounEncode,
+    NounDecode,
+    Serialize,
+    Deserialize,
+)]
 pub struct PublicKey(pub CheetahPoint);
 
 impl PublicKey {
@@ -152,7 +165,7 @@ impl Hashable for PublicKey {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Signature {
     pub c: U256, // challenge
     pub s: U256, // signature scalar

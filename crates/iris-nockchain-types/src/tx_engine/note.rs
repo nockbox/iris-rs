@@ -5,149 +5,76 @@ use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode, ZSet};
 use iris_ztd_derive::{Hashable, NounDecode, NounEncode};
 use serde::{Deserialize, Serialize};
 
-use super::SpendCondition;
+pub type Nicks = u64;
 
-#[derive(Debug, Clone)]
-pub struct Pkh {
-    pub m: u64,
-    pub hashes: Vec<Digest>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Note {
+    V0(super::v0::Note),
+    V1(super::v1::Note),
 }
 
-impl Pkh {
-    pub fn new(m: u64, hashes: Vec<Digest>) -> Self {
-        Self { m, hashes }
+impl Note {
+    pub fn version(&self) -> Version {
+        match self {
+            Note::V0(_) => Version::V0,
+            Note::V1(_) => Version::V1,
+        }
     }
 
-    pub fn single(hash: Digest) -> Self {
-        Self {
-            m: 1,
-            hashes: vec![hash],
+    pub fn name(&self) -> Name {
+        match self {
+            Note::V0(n) => n.name,
+            Note::V1(n) => n.name,
+        }
+    }
+
+    pub fn assets(&self) -> Nicks {
+        match self {
+            Note::V0(n) => n.assets,
+            Note::V1(n) => n.assets,
+        }
+    }
+
+    pub fn origin_page(&self) -> BlockHeight {
+        match self {
+            Note::V0(n) => n.inner.origin_page,
+            Note::V1(n) => n.origin_page,
         }
     }
 }
 
-impl Hashable for Pkh {
+impl Hashable for Note {
     fn hash(&self) -> Digest {
-        (self.m, ZSet::from_iter(&self.hashes)).hash()
+        match self {
+            Note::V0(n) => n.hash(),
+            Note::V1(n) => n.hash(),
+        }
     }
 }
 
-impl NounEncode for Pkh {
-    fn to_noun(&self) -> Noun {
-        (self.m, ZSet::from_iter(&self.hashes)).to_noun()
-    }
-}
-
-impl NounDecode for Pkh {
+impl NounDecode for Note {
     fn from_noun(noun: &Noun) -> Option<Self> {
-        let (m, hashes): (u64, ZSet<Digest>) = NounDecode::from_noun(noun)?;
+        if let Some(n) = super::v0::Note::from_noun(noun) {
+            return Some(Note::V0(n));
+        }
 
-        Some(Pkh {
-            m,
-            hashes: hashes.into_iter().collect(),
+        let v: u32 = NounDecode::from_noun(noun)?;
+
+        Some(match v {
+            1 => Note::V1(super::v1::Note::from_noun(noun)?),
+            _ => return None,
         })
     }
 }
 
-#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
-pub struct NoteDataEntry {
-    pub key: String,
-    pub val: Noun,
-}
-
-impl Hashable for NoteDataEntry {
-    fn hash(&self) -> Digest {
-        fn hash_noun(noun: &Noun) -> Digest {
-            match noun {
-                Noun::Atom(a) => {
-                    let u: u64 = a.try_into().unwrap();
-                    u.hash()
-                }
-                Noun::Cell(left, right) => (hash_noun(left), hash_noun(right)).hash(),
-            }
-        }
-        (self.key.as_str(), hash_noun(&self.val)).hash()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NoteData(pub Vec<NoteDataEntry>);
-
-impl NoteData {
-    pub fn empty() -> Self {
-        Self(Vec::new())
-    }
-
-    pub fn push_pkh(&mut self, pkh: Pkh) {
-        self.0.push(NoteDataEntry {
-            key: "lock".to_string(),
-            val: (0, ("pkh", &pkh), 0).to_noun(),
-        });
-    }
-
-    // TODO: support 2,4,8,16-way spend conditions.
-    pub fn push_lock(&mut self, spend_condition: SpendCondition) {
-        self.0.push(NoteDataEntry {
-            key: "lock".to_string(),
-            val: (0, spend_condition).to_noun(),
-        });
-    }
-
-    pub fn from_pkh(pkh: Pkh) -> Self {
-        let mut ret = Self::empty();
-        ret.push_pkh(pkh);
-        ret
-    }
-}
-
-impl NounEncode for NoteData {
+impl NounEncode for Note {
     fn to_noun(&self) -> Noun {
-        ZSet::from_iter(&self.0).to_noun()
-    }
-}
-
-impl NounDecode for NoteData {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let set = ZSet::<NoteDataEntry>::from_noun(noun)?;
-        let entries = set.into();
-        Some(Self(entries))
-    }
-}
-
-impl Hashable for NoteData {
-    fn hash(&self) -> Digest {
-        ZSet::from_iter(&self.0).hash()
-    }
-}
-
-#[derive(Debug, Clone, Hashable, Serialize, Deserialize)]
-pub struct Note {
-    pub version: Version,
-    pub origin_page: BlockHeight,
-    pub name: Name,
-    pub note_data: NoteData,
-    pub assets: Nicks,
-}
-
-impl Note {
-    pub fn new(
-        version: Version,
-        origin_page: BlockHeight,
-        name: Name,
-        note_data: NoteData,
-        assets: Nicks,
-    ) -> Self {
-        Self {
-            version,
-            origin_page,
-            name,
-            note_data,
-            assets,
+        match self {
+            Note::V0(n) => n.to_noun(),
+            Note::V1(n) => n.to_noun(),
         }
     }
 }
-
-pub type Nicks = u64;
 
 #[derive(Debug, Clone)]
 pub struct Balance(pub Vec<(Name, Note)>);
@@ -221,6 +148,7 @@ impl From<u32> for Version {
 
 #[derive(
     Clone,
+    Copy,
     Debug,
     Hashable,
     NounEncode,
@@ -252,16 +180,26 @@ impl Name {
         let last = (true, source.hash(), 0).hash();
         Self::new(first, last)
     }
+
+    pub fn new_v0(
+        owners: super::v0::Sig,
+        source: Source,
+        timelock: super::v0::TimelockIntent,
+    ) -> Self {
+        let first = (true, timelock.tim.is_some(), &owners, 0).hash();
+        let last = (true, &source, &timelock, 0).hash();
+        Self::new(first, last)
+    }
 }
 
-#[derive(Debug, Clone, Hashable, NounEncode, NounDecode)]
+#[derive(Debug, Clone, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Source {
     pub hash: Digest,
     pub is_coinbase: bool,
 }
 
 /// Timelock range (for both absolute and relative constraints)
-#[derive(Debug, Clone, Hashable, NounEncode, NounDecode)]
+#[derive(Debug, Clone, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TimelockRange {
     pub min: Option<BlockHeight>,
     pub max: Option<BlockHeight>,

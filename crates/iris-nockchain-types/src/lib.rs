@@ -2,6 +2,6 @@
 
 extern crate alloc;
 
-mod tx_engine;
+pub mod tx_engine;
 
 pub use tx_engine::*;

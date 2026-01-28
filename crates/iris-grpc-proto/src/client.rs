@@ -125,9 +125,9 @@ impl PublicNockchainGrpcClient {
     }
 
     pub async fn wallet_send_transaction(&mut self, raw_tx: &RawTx) -> Result<TxId> {
-        let tx_id = raw_tx.id;
+        let tx_id = raw_tx.id();
         let pb_tx_id = pb_common_v1::Hash::from(tx_id);
-        let pb_raw_tx = pb_common_v2::RawTransaction::from(raw_tx.clone());
+        let pb_raw_tx = pb_common_v2::RawTransaction::try_from(raw_tx.clone())?;
 
         let request = WalletSendTransactionRequest {
             tx_id: Some(pb_tx_id),

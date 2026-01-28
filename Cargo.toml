@@ -43,5 +43,5 @@ version = "0.1"
 nockvm = { git = "https://github.com/zorp-corp/nockchain.git" }
 nockchain-math = { git = "https://github.com/zorp-corp/nockchain.git" }
 ibig = { version = "0.3", default-features = false, features = ["num-traits"] }
-crypto-bigint = { version = "0.6", default-features = false }
+crypto-bigint = { version = "0.6", default-features = false, features = ["serde"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }

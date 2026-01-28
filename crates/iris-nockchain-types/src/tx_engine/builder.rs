@@ -2,16 +2,17 @@ use alloc::collections::btree_map::BTreeMap;
 use alloc::collections::btree_set::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
-use iris_crypto::PrivateKey;
-use iris_ztd::{noun_deserialize, noun_serialize, Digest, Hashable as HashableTrait, Noun};
+use iris_crypto::{PrivateKey, PublicKey};
+use iris_ztd::{noun_deserialize, noun_serialize, Digest, Hashable as HashableTrait, Noun, ZMap};
 use serde::{Deserialize, Serialize};
 
 use super::note::Note;
-use super::tx::{
-    LockRoot, NockchainTx, Seed, Seeds, Spend, SpendCondition, Spends, TransactionDisplay, Witness,
+use super::v1::{
+    self, InputDisplay, LockRoot, NockchainTx, NoteData, Pkh, Seed, Seeds, Spend, SpendCondition,
+    Spends, TransactionDisplay, Witness,
 };
-use super::{Name, NoteData, Version};
-use crate::{Nicks, Pkh, RawTx};
+use super::{Name, Version};
+use crate::{Nicks, RawTx};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MissingUnlocks {
@@ -23,6 +24,10 @@ pub enum MissingUnlocks {
         preimages_for: BTreeSet<Digest>,
     },
     Brn,
+    Sig {
+        num_sigs: u64,
+        sig_of: BTreeSet<PublicKey>,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -37,53 +42,46 @@ pub struct SpendBuilder {
         serialize_with = "noun_serialize",
         deserialize_with = "noun_deserialize"
     )]
-    spend_condition: SpendCondition,
-    #[serde(
-        serialize_with = "noun_serialize",
-        deserialize_with = "noun_deserialize"
-    )]
     refund_lock: Option<SpendCondition>,
 }
 
 impl SpendBuilder {
     pub fn new(
         note: Note,
-        spend_condition: SpendCondition,
+        spend_condition: Option<SpendCondition>,
         refund_lock: Option<SpendCondition>,
-    ) -> Self {
-        let spend = if note.version == Version::V0 {
+    ) -> Result<Self, BuildError> {
+        let spend = if note.version() == Version::V0 {
             Spend::new_legacy(Seeds(Default::default()), 0)
         } else {
-            Spend::new_witness(Witness::new(spend_condition.clone()), Seeds(Default::default()), 0)
+            let spend_condition = spend_condition.ok_or(BuildError::MissingSpendCondition)?;
+            Spend::new_witness(
+                Witness::new(spend_condition.clone()),
+                Seeds(Default::default()),
+                0,
+            )
         };
-        Self {
+        Ok(Self {
             note,
             spend,
-            spend_condition,
             refund_lock,
-        }
+        })
     }
 
     pub fn from_spend(
         spend: Spend,
         note: Note,
-        spend_condition: SpendCondition,
         refund_lock: Option<SpendCondition>,
     ) -> Option<Self> {
-        // Only witness spends can be validated against a merkle proof.
-        if note.version != Version::V0 {
-            let Spend::Witness(ws) = &spend else {
-                return None;
-            };
-            if ws.witness.lock_merkle_proof.proof.root != spend_condition.hash() {
-                return None;
-            }
+        match (note.version(), &spend) {
+            (Version::V0, Spend::S0(_)) => (),
+            (Version::V1, Spend::S1(_)) => (),
+            _ => return None,
         }
 
         Some(Self {
             note,
             spend,
-            spend_condition,
             refund_lock,
         })
     }
@@ -106,7 +104,7 @@ impl SpendBuilder {
                 .seeds_mut()
                 .0
                 .retain(|v| v.lock_root.hash() != lock_root.hash());
-            let refund = self.note.assets
+            let refund = self.note.assets()
                 - self.spend.fee()
                 - self.spend.seeds().0.iter().map(|v| v.gift).sum::<u64>();
             if refund > 0 {
@@ -130,7 +128,7 @@ impl SpendBuilder {
 
     pub fn is_balanced(&self) -> bool {
         let spend_sum: Nicks = self.spend.seeds().0.iter().map(|v| v.gift).sum();
-        self.note.assets == spend_sum + self.spend.fee()
+        self.note.assets() == spend_sum + self.spend.fee()
     }
 
     pub fn build_seed(&self, lock: SpendCondition, gift: Nicks, include_lock_data: bool) -> Seed {
@@ -163,68 +161,91 @@ impl SpendBuilder {
     pub fn missing_unlocks(&self) -> Vec<MissingUnlocks> {
         let mut missing_unlocks = vec![];
 
-        let present_sigs: BTreeSet<Digest> = match &self.spend {
-            Spend::Legacy(ls) => ls.signature.signer_hashes().collect(),
-            Spend::Witness(ws) => ws
-                .witness
-                .pkh_signature
-                .0
-                .iter()
-                .map(|(pkh, _, _)| *pkh)
-                .collect(),
-        };
+        match &self.spend {
+            Spend::S0(spend) => {
+                let Note::V0(note) = &self.note else {
+                    panic!("Note is not V0");
+                };
+                let sig = &spend.signature;
+                let present_pks: BTreeSet<PublicKey> = sig.0.iter().map(|(pk, _)| *pk).collect();
+                let valid_pk = note.sig.pubkeys.iter().cloned().collect::<BTreeSet<_>>();
 
-        for p in self.spend_condition.pkh() {
-            let valid_pkh = p.hashes.iter().cloned().collect::<BTreeSet<_>>();
-            let checked_pkh: BTreeSet<Digest> =
-                present_sigs.intersection(&valid_pkh).cloned().collect();
+                let checked_pk: BTreeSet<PublicKey> =
+                    present_pks.intersection(&valid_pk).cloned().collect();
 
-            if (checked_pkh.len() as u64) < p.m {
-                let sig_of = &valid_pkh ^ &checked_pkh;
-                missing_unlocks.push(MissingUnlocks::Pkh {
-                    num_sigs: p.m - checked_pkh.len() as u64,
-                    sig_of,
-                })
+                if (checked_pk.len() as u64) < note.sig.m {
+                    let sig_of = &valid_pk ^ &checked_pk;
+                    missing_unlocks.push(MissingUnlocks::Sig {
+                        num_sigs: note.sig.m - checked_pk.len() as u64,
+                        sig_of,
+                    })
+                }
             }
-        }
-
-        for h in self.spend_condition.hax() {
-            let valid_hax = h.0.iter().cloned().collect::<BTreeSet<_>>();
-
-            let current_hax = match &self.spend {
-                Spend::Witness(ws) => ws
+            Spend::S1(spend) => {
+                let present_sigs: BTreeSet<Digest> = spend
                     .witness
-                    .hax_map
-                    .clone()
-                    .into_iter()
-                    .map(|v| v.0)
-                    .collect::<BTreeSet<_>>(),
-                Spend::Legacy(_) => BTreeSet::new(),
-            };
+                    .pkh_signature
+                    .0
+                    .iter()
+                    .map(|(pkh, _, _)| *pkh)
+                    .collect();
 
-            let checked_hax = &current_hax & &valid_hax;
+                let sc = &spend.witness.lock_merkle_proof.spend_condition;
 
-            let preimages_for = &valid_hax ^ &checked_hax;
-            if !preimages_for.is_empty() {
-                missing_unlocks.push(MissingUnlocks::Hax { preimages_for });
+                for p in sc.pkh() {
+                    let valid_pkh = p.hashes.iter().cloned().collect::<BTreeSet<_>>();
+                    let checked_pkh: BTreeSet<Digest> =
+                        present_sigs.intersection(&valid_pkh).cloned().collect();
+
+                    if (checked_pkh.len() as u64) < p.m {
+                        let sig_of = &valid_pkh ^ &checked_pkh;
+                        missing_unlocks.push(MissingUnlocks::Pkh {
+                            num_sigs: p.m - checked_pkh.len() as u64,
+                            sig_of,
+                        })
+                    }
+                }
+
+                for h in sc.hax() {
+                    let valid_hax = h.0.iter().cloned().collect::<BTreeSet<_>>();
+
+                    let current_hax = match &self.spend {
+                        Spend::S1(ws) => ws
+                            .witness
+                            .hax_map
+                            .clone()
+                            .into_iter()
+                            .map(|v| v.0)
+                            .collect::<BTreeSet<_>>(),
+                        Spend::S0(_) => BTreeSet::new(),
+                    };
+
+                    let checked_hax = &current_hax & &valid_hax;
+
+                    let preimages_for = &valid_hax ^ &checked_hax;
+                    if !preimages_for.is_empty() {
+                        missing_unlocks.push(MissingUnlocks::Hax { preimages_for });
+                    }
+                }
+
+                if sc.brn() {
+                    missing_unlocks.push(MissingUnlocks::Brn);
+                }
             }
-        }
-
-        if self.spend_condition.brn() {
-            missing_unlocks.push(MissingUnlocks::Brn);
         }
 
         missing_unlocks
     }
 
     pub fn add_preimage(&mut self, preimage: Noun) -> Option<Digest> {
+        let Spend::S1(ws) = &mut self.spend else {
+            return None;
+        };
+
         let digest = preimage.hash();
 
-        for h in self.spend_condition.hax() {
+        for h in ws.witness.lock_merkle_proof.spend_condition.hax() {
             if h.0.contains(&digest) {
-                let Spend::Witness(ws) = &mut self.spend else {
-                    return None;
-                };
                 ws.witness.hax_map.insert(digest, preimage);
                 return Some(digest);
             }
@@ -234,15 +255,31 @@ impl SpendBuilder {
     }
 
     pub fn sign(&mut self, signing_key: &PrivateKey) -> bool {
-        let pkpkh = signing_key.public_key().hash();
+        match &mut self.spend {
+            Spend::S1(ws) => {
+                let pkpkh = signing_key.public_key().hash();
 
-        for p in self.spend_condition.pkh() {
-            if p.hashes.contains(&pkpkh) {
-                self.spend.add_signature(
-                    signing_key.public_key(),
-                    signing_key.sign(&self.spend.sig_hash()),
-                );
-                return true;
+                for p in ws.witness.lock_merkle_proof.spend_condition.pkh() {
+                    if p.hashes.contains(&pkpkh) {
+                        ws.witness.pkh_signature.0.push((
+                            signing_key.public_key().hash(),
+                            signing_key.public_key(),
+                            signing_key.sign(&ws.sig_hash()),
+                        ));
+                        return true;
+                    }
+                }
+            }
+            Spend::S0(ls) => {
+                let Note::V0(note) = &self.note else {
+                    panic!("Note is not V0");
+                };
+                if note.sig.pubkeys.contains(&signing_key.public_key()) {
+                    ls.signature
+                        .0
+                        .push((signing_key.public_key(), signing_key.sign(&ls.sig_hash())));
+                    return true;
+                }
             }
         }
 
@@ -287,11 +324,11 @@ impl TxBuilder {
 
     pub fn from_tx(
         tx: RawTx,
-        mut notes: BTreeMap<Name, (Note, SpendCondition)>,
+        mut notes: BTreeMap<Name, (Note, Option<SpendCondition>)>,
     ) -> Result<Self, BuildError> {
-        if tx.version != Version::V1 {
+        let RawTx::V1(tx) = tx else {
             return Err(BuildError::InvalidVersion);
-        }
+        };
 
         Ok(Self {
             spends: tx
@@ -304,7 +341,7 @@ impl TxBuilder {
                         .ok_or_else(|| BuildError::NoteNotFound(n.clone()))?;
                     Ok((
                         n,
-                        SpendBuilder::from_spend(s, note, sc, None)
+                        SpendBuilder::from_spend(s, note, sc)
                             .ok_or(BuildError::InvalidSpendCondition)?,
                     ))
                 })
@@ -316,13 +353,13 @@ impl TxBuilder {
 
     /// Append a `SpendBuilder` to this transaction
     pub fn spend(&mut self, spend: SpendBuilder) -> Option<SpendBuilder> {
-        let name = spend.note.name.clone();
+        let name = spend.note.name();
         self.spends.insert(name, spend)
     }
 
     pub fn simple_spend_base(
         &mut self,
-        notes: Vec<(Note, SpendCondition)>,
+        notes: Vec<(Note, Option<SpendCondition>)>,
         recipient: Digest,
         gift: Nicks,
         refund_pkh: Digest,
@@ -337,11 +374,11 @@ impl TxBuilder {
         let mut remaining_gift = gift;
 
         for (note, spend_condition) in notes {
-            let gift_portion = remaining_gift.min(note.assets);
+            let gift_portion = remaining_gift.min(note.assets());
 
             remaining_gift -= gift_portion;
 
-            let mut spend = SpendBuilder::new(note, spend_condition, Some(refund_lock.clone()));
+            let mut spend = SpendBuilder::new(note, spend_condition, Some(refund_lock.clone()))?;
             if gift_portion > 0 {
                 let seed = spend.build_seed(
                     SpendCondition::new_pkh(Pkh::single(recipient)),
@@ -368,7 +405,7 @@ impl TxBuilder {
 
     pub fn simple_spend(
         &mut self,
-        notes: Vec<(Note, SpendCondition)>,
+        notes: Vec<(Note, Option<SpendCondition>)>,
         recipient: Digest,
         gift: Nicks,
         refund_pkh: Digest,
@@ -426,27 +463,29 @@ impl TxBuilder {
         let mut spends = Spends(Vec::new());
 
         for (name, spend) in &self.spends {
-            display
-                .inputs
-                .insert(name.clone(), spend.spend_condition.clone());
+            match (&spend.spend, &spend.note, &mut display.inputs) {
+                (Spend::S0(ls), Note::V0(n), InputDisplay::V0(map)) => {
+                    map.insert(*name, n.sig.clone());
+                }
+                (Spend::S1(ws), _, InputDisplay::V0(_)) => {
+                    let mut map = ZMap::new();
+                    map.insert(*name, ws.witness.lock_merkle_proof.spend_condition.clone());
+                    display.inputs = InputDisplay::V1(map);
+                }
+                (Spend::S1(ws), _, InputDisplay::V1(map)) => {
+                    map.insert(*name, ws.witness.lock_merkle_proof.spend_condition.clone());
+                }
+                _ => (),
+            }
             for seed in spend.spend.seeds().0.iter() {
                 if let LockRoot::Lock(lock) = &seed.lock_root {
                     display.outputs.insert(lock.hash(), lock.clone().into());
                 }
             }
-            spends.0.push((name.clone(), spend.spend.clone()));
+            spends.0.push((*name, spend.spend.clone()));
         }
 
-        // If any spend is legacy, treat the transaction as legacy.
-        let version = if spends
-            .0
-            .iter()
-            .any(|(_, s)| matches!(s, Spend::Legacy(_)))
-        {
-            Version::V0
-        } else {
-            Version::V1
-        };
+        let version = Version::V1;
         let id = (&version, &spends).hash();
         let (spends, witness_data) = spends.split_witness();
 
@@ -459,10 +498,17 @@ impl TxBuilder {
         }
     }
 
-    pub fn all_notes(&self) -> BTreeMap<Name, (Note, SpendCondition)> {
+    pub fn all_notes(&self) -> BTreeMap<Name, (Note, Option<SpendCondition>)> {
         self.spends
             .iter()
-            .map(|(a, b)| (a.clone(), (b.note.clone(), b.spend_condition.clone())))
+            .map(|(a, b)| {
+                let sp = if let Spend::S1(ws) = &b.spend {
+                    Some(ws.witness.lock_merkle_proof.spend_condition.clone())
+                } else {
+                    None
+                };
+                (a.clone(), (b.note.clone(), sp))
+            })
             .collect()
     }
 
@@ -506,8 +552,8 @@ impl TxBuilder {
 
             // Sort by non-refund assets, so that we prioritize refunds from used-up notes
             spends.sort_by(|a, b| {
-                let anra = a.note.assets - a.cur_refund().map(|v| v.gift).unwrap_or(0);
-                let bnra = b.note.assets - b.cur_refund().map(|v| v.gift).unwrap_or(0);
+                let anra = a.note.assets() - a.cur_refund().map(|v| v.gift).unwrap_or(0);
+                let bnra = b.note.assets() - b.cur_refund().map(|v| v.gift).unwrap_or(0);
                 if anra != bnra {
                     // By default, put the greatest non-refund transfers first
                     bnra.cmp(&anra)
@@ -516,7 +562,7 @@ impl TxBuilder {
                     b.spend.fee().cmp(&a.spend.fee())
                 } else {
                     // Otherwise, sort by name
-                    b.note.name.cmp(&a.note.name)
+                    b.note.name().cmp(&a.note.name())
                 }
             });
 
@@ -540,7 +586,7 @@ impl TxBuilder {
 
             // Pop entries from the fee pool, so that we can cover any excess fees. These shall be
             // sorted by assets.
-            self.fee_pool.sort_by_key(|v| v.note.assets);
+            self.fee_pool.sort_by_key(|v| v.note.assets());
             while fee_left > 0 {
                 let Some(mut r) = self.fee_pool.pop() else {
                     break;
@@ -571,8 +617,8 @@ impl TxBuilder {
             // Sort by smallest fee, so that we can return as many low-fee notes to fee pool as
             // possible.
             spends.sort_by(|a, b| {
-                let anra = a.note.assets - a.cur_refund().map(|v| v.gift).unwrap_or(0);
-                let bnra = b.note.assets - b.cur_refund().map(|v| v.gift).unwrap_or(0);
+                let anra = a.note.assets() - a.cur_refund().map(|v| v.gift).unwrap_or(0);
+                let bnra = b.note.assets() - b.cur_refund().map(|v| v.gift).unwrap_or(0);
                 let aor = a.spend.seeds().0.len() == 1 && a.cur_refund().is_some();
                 let bor = b.spend.seeds().0.len() == 1 && b.cur_refund().is_some();
                 if aor != bor {
@@ -587,7 +633,7 @@ impl TxBuilder {
                     anra.cmp(&bnra)
                 } else {
                     // Otherwise, sort by name
-                    b.note.name.cmp(&a.note.name)
+                    b.note.name().cmp(&a.note.name())
                 }
             });
 
@@ -605,7 +651,7 @@ impl TxBuilder {
                     }
 
                     if s.spend.fee() == add_refund {
-                        return_to_pool.push(s.note.name.clone());
+                        return_to_pool.push(s.note.name());
                         // We are returning this note to pool (making it unused), all its required
                         // fee shall disappear. The only case we don't handle here is whenever we
                         // reach the MIN_FEE (256 nicks). Hence, TODO: handle MIN_FEE case. This is
@@ -641,6 +687,7 @@ pub enum BuildError {
     InvalidVersion,
     InvalidSpendCondition,
     UnbalancedSpends,
+    MissingSpendCondition,
     MissingUnlocks(Vec<MissingUnlocks>),
 }
 
@@ -669,6 +716,9 @@ impl core::fmt::Display for BuildError {
                 f,
                 "Some spends are not balanced (forgot to compute refunds?)"
             ),
+            BuildError::MissingSpendCondition => {
+                write!(f, "Spend condition is missing for this input note")
+            }
             BuildError::MissingUnlocks(unlocks) => {
                 write!(
                     f,
@@ -686,7 +736,7 @@ impl core::fmt::Display for BuildError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LockPrimitive, LockTim, Name, NoteData, Pkh, Version};
+    use crate::v1::{LockPrimitive, LockTim};
     use alloc::{string::ToString, vec};
     use bip39::Mnemonic;
     use iris_crypto::{derive_master_key, PublicKey};
@@ -702,7 +752,7 @@ mod tests {
     fn test_builder() {
         let (private_key, _) = keys();
 
-        let note = Note {
+        let note = Note::V1(super::v1::Note {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
@@ -715,7 +765,7 @@ mod tests {
             ),
             note_data: NoteData::empty(),
             assets: 4294967296,
-        };
+        });
 
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
@@ -731,7 +781,7 @@ mod tests {
         ]);
         let tx = TxBuilder::new(1)
             .simple_spend_base(
-                vec![(note.clone(), spend_condition.clone())],
+                vec![(note.clone(), Some(spend_condition.clone()))],
                 recipient,
                 gift,
                 refund_pkh,
@@ -753,7 +803,7 @@ mod tests {
         let mut tx = TxBuilder::new(1 << 17);
 
         tx.simple_spend_base(
-            vec![(note.clone(), spend_condition.clone())],
+            vec![(note.clone(), Some(spend_condition.clone()))],
             recipient,
             gift,
             refund_pkh,
@@ -771,7 +821,7 @@ mod tests {
 
         builder
             .simple_spend(
-                vec![(note, spend_condition)],
+                vec![(note, Some(spend_condition))],
                 recipient,
                 gift,
                 refund_pkh,
@@ -792,7 +842,7 @@ mod tests {
         let (private_key, _) = keys();
 
         let notes = [
-            Note {
+            v1::Note {
                 version: Version::V1,
                 origin_page: 13,
                 name: Name::new(
@@ -806,7 +856,7 @@ mod tests {
                 note_data: NoteData::empty(),
                 assets: 3000,
             },
-            Note {
+            v1::Note {
                 version: Version::V1,
                 origin_page: 14,
                 name: Name::new(
@@ -820,7 +870,7 @@ mod tests {
                 note_data: NoteData::empty(),
                 assets: 3000,
             },
-            Note {
+            v1::Note {
                 version: Version::V1,
                 origin_page: 15,
                 name: Name::new(
@@ -834,7 +884,8 @@ mod tests {
                 note_data: NoteData::empty(),
                 assets: 3000,
             },
-        ];
+        ]
+        .map(Note::V1);
 
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
@@ -849,7 +900,7 @@ mod tests {
         ]);
         let notes = notes
             .into_iter()
-            .map(|v| (v, spend_condition.clone()))
+            .map(|v| (v, Some(spend_condition.clone())))
             .collect::<Vec<_>>();
         let mut builder = TxBuilder::new(8);
 
@@ -909,7 +960,7 @@ mod tests {
     fn test_multiseed_outputs() {
         let (private_key, public_key) = keys();
         let notes = [
-            Note {
+            v1::Note {
                 version: Version::V1,
                 origin_page: 13,
                 name: Name::new(
@@ -923,7 +974,7 @@ mod tests {
                 note_data: NoteData::empty(),
                 assets: 4294967296,
             },
-            Note {
+            v1::Note {
                 version: Version::V1,
                 origin_page: 14,
                 name: Name::new(
@@ -937,7 +988,7 @@ mod tests {
                 note_data: NoteData::empty(),
                 assets: 4294967296,
             },
-            Note {
+            v1::Note {
                 version: Version::V1,
                 origin_page: 15,
                 name: Name::new(
@@ -951,7 +1002,8 @@ mod tests {
                 note_data: NoteData::empty(),
                 assets: 4294967296,
             },
-        ];
+        ]
+        .map(Note::V1);
 
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
@@ -966,10 +1018,10 @@ mod tests {
                     .map(|note| {
                         (
                             note,
-                            SpendCondition(vec![
+                            Some(SpendCondition(vec![
                                 LockPrimitive::Pkh(Pkh::single(public_key.hash())),
                                 LockPrimitive::Tim(LockTim::coinbase()),
-                            ]),
+                            ])),
                         )
                     })
                     .collect(),
@@ -1025,7 +1077,7 @@ mod tests {
     #[test]
     fn test_missing_unlock() {
         let (private_key, _) = keys();
-        let note = Note {
+        let note = Note::V1(super::v1::Note {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
@@ -1038,7 +1090,7 @@ mod tests {
             ),
             note_data: NoteData::empty(),
             assets: 4294967296,
-        };
+        });
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
@@ -1055,7 +1107,7 @@ mod tests {
 
         builder
             .simple_spend_base(
-                vec![(note.clone(), spend_condition.clone())],
+                vec![(note.clone(), Some(spend_condition.clone()))],
                 recipient,
                 gift,
                 refund_pkh,
@@ -1082,9 +1134,9 @@ mod tests {
 
     #[test]
     fn test_missing_unlock_hax() {
-        use crate::Hax;
+        use crate::v1::Hax;
         use iris_ztd::Belt;
-        let note = Note {
+        let note = Note::V1(v1::Note {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
@@ -1097,7 +1149,7 @@ mod tests {
             ),
             note_data: NoteData::empty(),
             assets: 4294967296,
-        };
+        });
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
@@ -1124,7 +1176,7 @@ mod tests {
 
         builder
             .simple_spend_base(
-                vec![(note.clone(), spend_condition.clone())],
+                vec![(note.clone(), Some(spend_condition.clone()))],
                 recipient,
                 gift,
                 refund_pkh,
@@ -1156,7 +1208,7 @@ mod tests {
     #[test]
     fn test_jam_vector() {
         let (private_key, _) = keys();
-        let note = Note {
+        let note = Note::V1(super::v1::Note {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
@@ -1169,7 +1221,7 @@ mod tests {
             ),
             note_data: NoteData::empty(),
             assets: 4294967296,
-        };
+        });
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
@@ -1184,7 +1236,7 @@ mod tests {
         ]);
         let tx = TxBuilder::new(1)
             .simple_spend_base(
-                vec![(note.clone(), spend_condition.clone())],
+                vec![(note.clone(), Some(spend_condition.clone()))],
                 recipient,
                 gift,
                 refund_pkh,

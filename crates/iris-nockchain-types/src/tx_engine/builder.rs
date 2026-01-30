@@ -734,7 +734,7 @@ impl core::fmt::Display for BuildError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::v1::{LockPrimitive, LockTim};
+    use crate::v1::{self, LockPrimitive, LockTim};
     use alloc::{string::ToString, vec};
     use bip39::Mnemonic;
     use iris_crypto::{derive_master_key, PublicKey};
@@ -750,7 +750,7 @@ mod tests {
     fn test_builder() {
         let (private_key, _) = keys();
 
-        let note = Note::V1(super::v1::Note {
+        let note = Note::V1(v1::Note {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
@@ -1075,7 +1075,7 @@ mod tests {
     #[test]
     fn test_missing_unlock() {
         let (private_key, _) = keys();
-        let note = Note::V1(super::v1::Note {
+        let note = Note::V1(v1::Note {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
@@ -1206,7 +1206,7 @@ mod tests {
     #[test]
     fn test_jam_vector() {
         let (private_key, _) = keys();
-        let note = Note::V1(super::v1::Note {
+        let note = Note::V1(v1::Note {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(

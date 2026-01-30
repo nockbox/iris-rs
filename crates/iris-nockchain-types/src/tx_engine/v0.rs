@@ -354,9 +354,8 @@ impl NounDecode for Seeds {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
-    use bip39::Mnemonic;
-    use iris_crypto::derive_master_key;
+    use alloc::string::ToString;
+
     use iris_ztd::Hashable;
 
     fn check_hash(name: &str, h: &impl Hashable, exp: &str) {
@@ -378,7 +377,7 @@ mod tests {
     fn check_tx_id() {
         let noun = iris_ztd::cue(TX1).unwrap();
 
-        let (a, b, c, d): (Noun, Noun, Noun, Noun) = NounDecode::from_noun(&noun).unwrap();
+        let (_a, _b, _c, _d): (Noun, Noun, Noun, Noun) = NounDecode::from_noun(&noun).unwrap();
 
         let tx = RawTx::from_noun(&noun).unwrap();
         check_hash(

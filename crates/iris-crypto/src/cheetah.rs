@@ -425,13 +425,13 @@ mod tests {
             !pubkey.verify(&wrong_digest, &signature),
             "Should reject wrong digest"
         );
-        let mut wrong_sig = signature.clone();
+        let mut wrong_sig = signature;
         wrong_sig.s += U256::from_u64(1);
         assert!(
             !pubkey.verify(&digest, &wrong_sig),
             "Should reject wrong signature"
         );
-        let mut wrong_pubkey = pubkey.clone();
+        let mut wrong_pubkey = pubkey;
         wrong_pubkey.0.x.0[0].0 += 1;
         assert!(
             !wrong_pubkey.verify(&digest, &signature),

@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use super::note::Note;
 use super::v1::{
-    self, InputDisplay, LockRoot, NockchainTx, NoteData, Pkh, Seed, Seeds, Spend, SpendCondition,
-    Spends, TransactionDisplay, Witness,
+    InputDisplay, LockRoot, NockchainTx, NoteData, Pkh, Seed, Seeds, Spend, SpendCondition, Spends,
+    TransactionDisplay, Witness,
 };
 use super::{Name, Version};
 use crate::{Nicks, RawTx};
@@ -336,9 +336,7 @@ impl TxBuilder {
                 .0
                 .into_iter()
                 .map(|(n, s)| {
-                    let (note, sc) = notes
-                        .remove(&n)
-                        .ok_or_else(|| BuildError::NoteNotFound(n.clone()))?;
+                    let (note, sc) = notes.remove(&n).ok_or(BuildError::NoteNotFound(n))?;
                     Ok((
                         n,
                         SpendBuilder::from_spend(s, note, sc)
@@ -464,7 +462,7 @@ impl TxBuilder {
 
         for (name, spend) in &self.spends {
             match (&spend.spend, &spend.note, &mut display.inputs) {
-                (Spend::S0(ls), Note::V0(n), InputDisplay::V0(map)) => {
+                (Spend::S0(_), Note::V0(n), InputDisplay::V0(map)) => {
                     map.insert(*name, n.sig.clone());
                 }
                 (Spend::S1(ws), _, InputDisplay::V0(_)) => {
@@ -507,7 +505,7 @@ impl TxBuilder {
                 } else {
                     None
                 };
-                (a.clone(), (b.note.clone(), sp))
+                (*a, (b.note.clone(), sp))
             })
             .collect()
     }

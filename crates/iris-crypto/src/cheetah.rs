@@ -102,7 +102,7 @@ impl PublicKey {
     }
 
     /// SLIP-10 compatible serialization (legacy 65-byte format for compatibility)
-    pub(crate) fn to_slip10_bytes(&self) -> Vec<u8> {
+    pub(crate) fn as_slip10_bytes(&self) -> Vec<u8> {
         let mut data = Vec::new();
         for belt in self.0.y.0.iter().rev().chain(self.0.x.0.iter().rev()) {
             data.extend_from_slice(&belt.0.to_be_bytes());
@@ -123,13 +123,13 @@ impl core::ops::Add for PublicKey {
     type Output = PublicKey;
 
     fn add(self, other: PublicKey) -> PublicKey {
-        &self + &other
+        (&self as &PublicKey) + (&other as &PublicKey)
     }
 }
 
 impl core::ops::AddAssign for PublicKey {
     fn add_assign(&mut self, other: PublicKey) {
-        *self = &*self + &other;
+        *self = *self + other;
     }
 }
 
@@ -149,7 +149,7 @@ impl core::ops::SubAssign for PublicKey {
 
 impl core::iter::Sum<PublicKey> for PublicKey {
     fn sum<I: Iterator<Item = PublicKey>>(iter: I) -> Self {
-        iter.fold(PublicKey(CheetahPoint::identity()), |acc, x| &acc + &x)
+        iter.fold(PublicKey(CheetahPoint::identity()), |acc, x| acc + x)
     }
 }
 

@@ -1,8 +1,7 @@
 use alloc::collections::BTreeMap;
-use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
-use iris_crypto::{PrivateKey, PublicKey, Signature};
+use iris_crypto::{PublicKey, Signature};
 use iris_ztd::{Digest, Hashable as HashableTrait, Noun, NounDecode, NounEncode, ZMap, ZSet};
 use iris_ztd_derive::{Hashable, NounDecode, NounEncode};
 use serde::{Deserialize, Serialize};
@@ -52,14 +51,8 @@ impl Note {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LegacySignature(pub Vec<(PublicKey, Signature)>);
-
-impl Default for LegacySignature {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
 
 impl HashableTrait for LegacySignature {
     fn hash(&self) -> Digest {
@@ -161,7 +154,7 @@ impl RawTx {
 
         let mut output_base: BTreeMap<Sig, (TimelockIntent, Nicks, ZSet<Seed>)> = BTreeMap::new();
 
-        for (name, input) in inps {
+        for (_, input) in inps {
             for seed in input.spend.seeds.0 {
                 // NOTE: we are not checking if we're adding duplicate seed or not. Not necessary when processing valid txs.
                 let sig = seed.recipient.clone();

@@ -36,7 +36,7 @@ impl ExtendedKey {
             data.extend_from_slice(&index.to_be_bytes());
         } else {
             data.push(0x01);
-            data.extend_from_slice(&self.public_key.to_slip10_bytes());
+            data.extend_from_slice(&self.public_key.as_slip10_bytes());
             data.extend_from_slice(&index.to_be_bytes());
         }
         let mut result = hmac_sha512(&self.chain_code, &data);

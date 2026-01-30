@@ -1,13 +1,6 @@
 use super::note::{Note, Version};
-use alloc::collections::BTreeMap;
-use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
-use iris_crypto::{PrivateKey, PublicKey, Signature};
-use iris_ztd::{Digest, Hashable as HashableTrait, Noun, NounDecode, NounEncode, ZMap, ZSet};
-use iris_ztd_derive::{Hashable, NounDecode, NounEncode};
-
-use crate::Nicks;
+use iris_ztd::{Digest, Noun, NounDecode, NounEncode};
 
 pub type TxId = Digest;
 

@@ -2,13 +2,13 @@ use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
-use iris_crypto::{PrivateKey, PublicKey, Signature};
+use iris_crypto::{PublicKey, Signature};
 use iris_ztd::{Digest, Hashable as HashableTrait, Noun, NounDecode, NounEncode, ZMap, ZSet};
 use iris_ztd_derive::{Hashable, NounDecode, NounEncode};
 use serde::{Deserialize, Serialize};
 
-use super::note::{BlockHeight, Name, Source, TimelockRange, Version};
-use super::v0::{self, LegacySignature};
+use super::note::{BlockHeight, Name, Source, Version};
+use super::v0::LegacySignature;
 use super::TxId;
 use crate::Nicks;
 
@@ -731,11 +731,11 @@ impl Spends {
             match &mut spend {
                 Spend::S1(ws) => {
                     let witness = ws.witness.take_data();
-                    spends.0.push((name.clone(), spend));
-                    witness_data.data.insert(name.clone(), witness);
+                    spends.0.push((*name, spend));
+                    witness_data.data.insert(*name, witness);
                 }
                 Spend::S0(_) => {
-                    spends.0.push((name.clone(), spend));
+                    spends.0.push((*name, spend));
                 }
             }
         }
@@ -752,7 +752,7 @@ impl Spends {
                     ws.witness = witness.clone();
                 }
             }
-            spends.0.push((name.clone(), spend));
+            spends.0.push((*name, spend));
         }
         spends
     }

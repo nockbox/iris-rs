@@ -254,13 +254,6 @@ impl WasmTimelock {
             abs: self.abs.to_internal(),
         }
     }
-
-    fn from_internal(internal: v0::Timelock) -> WasmTimelock {
-        WasmTimelock {
-            rel: WasmTimelockRange::from_internal(internal.rel),
-            abs: WasmTimelockRange::from_internal(internal.abs),
-        }
-    }
 }
 
 #[wasm_bindgen(js_name = Source)]

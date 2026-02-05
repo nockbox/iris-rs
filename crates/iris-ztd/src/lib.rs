@@ -8,6 +8,7 @@ pub mod tip5;
 mod belt;
 mod hash;
 mod noun;
+mod zbase;
 mod zmap;
 mod zset;
 pub use belt::Belt;
@@ -16,3 +17,5 @@ pub use hash::*;
 pub use noun::*;
 pub use zmap::*;
 pub use zset::*;
+
+pub use ::iris_ztd_derive::*;

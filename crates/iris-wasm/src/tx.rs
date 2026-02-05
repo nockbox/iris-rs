@@ -15,13 +15,15 @@ use iris_nockchain_types::{
 use iris_nockchain_types::{
     v0,
     v1::{
-        self, Hax, LockPrimitive, LockRoot, LockTim, NockchainTx, NoteData, NoteDataEntry, Pkh,
-        Seed, SpendCondition,
+        self, Hax, LockPrimitive, LockRoot, LockTim, NockchainTx, NoteData, Pkh, Seed,
+        SpendCondition,
     },
     MissingUnlocks, Source, SpendBuilder,
 };
 use iris_ztd::U256;
-use iris_ztd::{cue, jam, Digest, Hashable as HashableTrait, NounDecode, NounEncode};
+use iris_ztd::{
+    cue, jam, Digest, Hashable as HashableTrait, Noun, NounDecode, NounEncode, ZMap, ZSet,
+};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -322,37 +324,35 @@ impl WasmNoteDataEntry {
         self.blob.clone()
     }
 
-    fn to_internal(&self) -> Result<NoteDataEntry, String> {
+    fn to_internal(&self) -> Result<(String, Noun), String> {
         let val = cue(&self.blob).ok_or_else(|| "Failed to deserialize noun".to_string())?;
-        Ok(NoteDataEntry {
-            key: self.key.clone(),
-            val,
-        })
+        Ok((self.key.clone(), val))
     }
 
-    fn from_internal(entry: &NoteDataEntry) -> Self {
+    fn from_internal(key: &str, val: &Noun) -> Self {
         Self {
-            key: entry.key.clone(),
-            blob: jam(entry.val.clone()),
+            key: key.to_string(),
+            blob: jam(val.clone()),
         }
     }
 
     #[wasm_bindgen(js_name = toProtobuf)]
     pub fn to_protobuf(&self) -> Result<JsValue, JsValue> {
-        let entry = self
+        let (key, val) = self
             .to_internal()
             .map_err(|e: String| JsValue::from_str(&e))?;
-        let pb = pb::NoteDataEntry::from(entry);
+        let pb = pb::NoteDataEntry {
+            key,
+            blob: jam(val),
+        };
         serde_wasm_bindgen::to_value(&pb).map_err(|e| e.into())
     }
 
     #[wasm_bindgen(js_name = fromProtobuf)]
     pub fn from_protobuf(value: JsValue) -> Result<WasmNoteDataEntry, JsValue> {
         let pb: pb::NoteDataEntry = serde_wasm_bindgen::from_value(value)?;
-        let entry: NoteDataEntry = pb
-            .try_into()
-            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
-        Ok(WasmNoteDataEntry::from_internal(&entry))
+        let val = cue(&pb.blob).ok_or_else(|| "Failed to deserialize noun".to_string())?;
+        Ok(WasmNoteDataEntry::from_internal(&pb.key, &val))
     }
 }
 
@@ -389,7 +389,7 @@ impl WasmNoteData {
     }
 
     fn to_internal(&self) -> Result<NoteData, String> {
-        let entries: Result<Vec<NoteDataEntry>, String> =
+        let entries: Result<ZMap<String, Noun>, String> =
             self.entries.iter().map(|e| e.to_internal()).collect();
         Ok(NoteData(entries?))
     }
@@ -399,7 +399,7 @@ impl WasmNoteData {
             entries: note_data
                 .0
                 .iter()
-                .map(WasmNoteDataEntry::from_internal)
+                .map(|(k, v)| WasmNoteDataEntry::from_internal(k, v))
                 .collect(),
         }
     }
@@ -473,7 +473,7 @@ impl WasmNote {
         use iris_crypto::PublicKey;
 
         // Parse public keys from byte arrays
-        let pubkeys: Result<Vec<PublicKey>, JsValue> = sig_pubkeys
+        let pubkeys: Result<ZSet<PublicKey>, JsValue> = sig_pubkeys
             .iter()
             .map(|arr| {
                 let bytes = arr.to_vec();
@@ -753,7 +753,7 @@ impl WasmHax {
             .digests
             .iter()
             .map(WasmDigest::to_internal)
-            .collect::<Result<Vec<_>, _>>()?))
+            .collect::<Result<ZSet<_>, _>>()?))
     }
 
     fn from_internal(internal: Hax) -> Self {

@@ -3,8 +3,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use iris_crypto::{PublicKey, Signature};
-use iris_ztd::{Digest, Hashable as HashableTrait, Noun, NounDecode, NounEncode, ZMap, ZSet};
-use iris_ztd_derive::{Hashable, NounDecode, NounEncode};
+use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode, ZMap, ZSet};
 use serde::{Deserialize, Serialize};
 
 use super::note::{BlockHeight, Name, Source, Version};
@@ -19,55 +18,32 @@ fn noun_words(n: &Noun) -> u64 {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hashable, NounDecode, NounEncode)]
 pub struct Pkh {
     pub m: u64,
-    pub hashes: Vec<Digest>,
+    pub hashes: ZSet<Digest>,
 }
 
 impl Pkh {
     pub fn new(m: u64, hashes: Vec<Digest>) -> Self {
-        Self { m, hashes }
+        Self {
+            m,
+            hashes: hashes.into(),
+        }
     }
 
     pub fn single(hash: Digest) -> Self {
         Self {
             m: 1,
-            hashes: vec![hash],
+            hashes: [hash].into(),
         }
     }
 }
 
-impl HashableTrait for Pkh {
-    fn hash(&self) -> Digest {
-        (self.m, ZSet::from_iter(&self.hashes)).hash()
-    }
-}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, NounDecode, NounEncode)]
+pub struct NoteData(pub ZMap<String, Noun>);
 
-impl NounEncode for Pkh {
-    fn to_noun(&self) -> Noun {
-        (self.m, ZSet::from_iter(&self.hashes)).to_noun()
-    }
-}
-
-impl NounDecode for Pkh {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let (m, hashes): (u64, ZSet<Digest>) = NounDecode::from_noun(noun)?;
-
-        Some(Pkh {
-            m,
-            hashes: hashes.into_iter().collect(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NoteDataEntry {
-    pub key: String,
-    pub val: Noun,
-}
-
-impl HashableTrait for NoteDataEntry {
+impl Hashable for NoteData {
     fn hash(&self) -> Digest {
         fn hash_noun(noun: &Noun) -> Digest {
             match noun {
@@ -78,57 +54,34 @@ impl HashableTrait for NoteDataEntry {
                 Noun::Cell(left, right) => (hash_noun(left), hash_noun(right)).hash(),
             }
         }
-        (self.key.as_str(), hash_noun(&self.val)).hash()
+        self.0
+            .iter()
+            .map(|(k, v)| (k, hash_noun(v)))
+            .collect::<ZMap<_, _>>()
+            .hash()
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NoteData(pub Vec<NoteDataEntry>);
-
 impl NoteData {
     pub fn empty() -> Self {
-        Self(Vec::new())
+        Self(ZMap::new())
     }
 
     pub fn push_pkh(&mut self, pkh: Pkh) {
-        self.0.push(NoteDataEntry {
-            key: "lock".to_string(),
-            val: (0, ("pkh", &pkh), 0).to_noun(),
-        });
+        self.0
+            .insert("lock".to_string(), (0, ("pkh", &pkh), 0).to_noun());
     }
 
     // TODO: support 2,4,8,16-way spend conditions.
     pub fn push_lock(&mut self, spend_condition: SpendCondition) {
-        self.0.push(NoteDataEntry {
-            key: "lock".to_string(),
-            val: (0, spend_condition).to_noun(),
-        });
+        self.0
+            .insert("lock".to_string(), (0, spend_condition).to_noun());
     }
 
     pub fn from_pkh(pkh: Pkh) -> Self {
         let mut ret = Self::empty();
         ret.push_pkh(pkh);
         ret
-    }
-}
-
-impl NounEncode for NoteData {
-    fn to_noun(&self) -> Noun {
-        ZSet::from_iter(&self.0).to_noun()
-    }
-}
-
-impl NounDecode for NoteData {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let set = ZSet::<NoteDataEntry>::from_noun(noun)?;
-        let entries = set.into();
-        Some(Self(entries))
-    }
-}
-
-impl HashableTrait for NoteData {
-    fn hash(&self) -> Digest {
-        ZSet::from_iter(&self.0).hash()
     }
 }
 
@@ -196,7 +149,7 @@ impl From<LockRoot> for Digest {
     }
 }
 
-impl HashableTrait for LockRoot {
+impl Hashable for LockRoot {
     fn hash(&self) -> Digest {
         match self {
             LockRoot::Hash(d) => *d,
@@ -240,7 +193,7 @@ impl Seed {
     }
 }
 
-impl HashableTrait for Seed {
+impl Hashable for Seed {
     fn hash(&self) -> Digest {
         // output source is omitted
         (
@@ -256,7 +209,7 @@ impl HashableTrait for Seed {
 #[derive(Debug, Clone)]
 pub struct SigHashSeed<'a>(&'a Seed);
 
-impl<'a> HashableTrait for SigHashSeed<'a> {
+impl<'a> Hashable for SigHashSeed<'a> {
     fn hash(&self) -> Digest {
         // output source is included
         (
@@ -276,32 +229,20 @@ impl<'a> NounEncode for SigHashSeed<'a> {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Seeds(pub Vec<Seed>);
+#[derive(Debug, Clone, Hashable, NounDecode, NounEncode)]
+pub struct Seeds(pub ZSet<Seed>);
 
 impl Seeds {
     pub fn sig_hash(&self) -> Digest {
         ZSet::from_iter(self.0.iter().map(SigHashSeed)).hash()
     }
-}
 
-impl HashableTrait for Seeds {
-    fn hash(&self) -> Digest {
-        ZSet::from_iter(&self.0).hash()
-    }
-}
-
-impl NounEncode for Seeds {
-    fn to_noun(&self) -> Noun {
-        ZSet::from_iter(&self.0).to_noun()
-    }
-}
-
-impl NounDecode for Seeds {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        Some(Seeds(
-            ZSet::from_noun(noun)?.into_iter().collect::<Vec<_>>(),
-        ))
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&Seed) -> bool,
+    {
+        let new_set: ZSet<Seed> = self.0.iter().filter(|s| f(s)).cloned().collect();
+        self.0 = new_set;
     }
 }
 
@@ -467,7 +408,10 @@ impl Spend {
                 s.signature.add_entry(key, signature);
             }
             Spend::S1(s) => {
-                s.witness.pkh_signature.0.push((key.hash(), key, signature));
+                s.witness
+                    .pkh_signature
+                    .0
+                    .insert(key.hash(), (key, signature));
             }
         }
     }
@@ -494,7 +438,7 @@ impl Spend {
     }
 }
 
-impl HashableTrait for Spend {
+impl Hashable for Spend {
     fn hash(&self) -> Digest {
         match self {
             Spend::S0(s) => (Version::V0, &s.signature, &s.seeds, &s.fee).hash(),
@@ -503,45 +447,8 @@ impl HashableTrait for Spend {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct PkhSignature(pub Vec<(Digest, PublicKey, Signature)>);
-
-impl HashableTrait for PkhSignature {
-    fn hash(&self) -> Digest {
-        ZMap::from_iter(
-            self.0
-                .iter()
-                .cloned()
-                .map(|(digest, pk, sig)| (digest, (pk, sig)))
-                .collect::<Vec<_>>(),
-        )
-        .hash()
-    }
-}
-
-impl NounEncode for PkhSignature {
-    fn to_noun(&self) -> Noun {
-        ZMap::from_iter(
-            self.0
-                .iter()
-                .cloned()
-                .map(|(digest, pk, sig)| (digest, (pk, sig)))
-                .collect::<Vec<_>>(),
-        )
-        .to_noun()
-    }
-}
-
-impl NounDecode for PkhSignature {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        Some(Self(
-            ZMap::from_noun(noun)?
-                .into_iter()
-                .map(|(digest, (pk, sig))| (digest, pk, sig))
-                .collect::<Vec<_>>(),
-        ))
-    }
-}
+#[derive(Debug, Clone, Default, Hashable, NounDecode, NounEncode)]
+pub struct PkhSignature(pub ZMap<Digest, (PublicKey, Signature)>);
 
 #[derive(Debug, Clone, Hashable, NounEncode, NounDecode)]
 pub struct Witness {
@@ -560,7 +467,7 @@ impl Witness {
                 axis: 1,
                 proof: MerkleProof { root, path: vec![] },
             },
-            pkh_signature: PkhSignature(vec![]),
+            pkh_signature: PkhSignature(ZMap::new()),
             hax_map: ZMap::new(),
             tim: (),
         }
@@ -585,7 +492,7 @@ pub struct LockMerkleProof {
     pub proof: MerkleProof,
 }
 
-impl HashableTrait for LockMerkleProof {
+impl Hashable for LockMerkleProof {
     fn hash(&self) -> Digest {
         // NOTE: lmao
         let axis_mold_hash: Digest = "6mhCSwJQDvbkbiPAUNjetJtVoo1VLtEhmEYoU4hmdGd6ep1F6ayaV4A"
@@ -606,7 +513,7 @@ pub struct SpendCondition(pub Vec<LockPrimitive>);
 
 impl SpendCondition {
     pub fn new_pkh(pkh: Pkh) -> Self {
-        SpendCondition(vec![LockPrimitive::Pkh(pkh)])
+        SpendCondition([LockPrimitive::Pkh(pkh)].into())
     }
 
     pub fn first_name(&self) -> Digest {
@@ -680,7 +587,7 @@ impl NounDecode for LockPrimitive {
     }
 }
 
-impl HashableTrait for LockPrimitive {
+impl Hashable for LockPrimitive {
     fn hash(&self) -> Digest {
         match self {
             LockPrimitive::Pkh(pkh) => ("pkh", pkh).hash(),
@@ -693,49 +600,30 @@ impl HashableTrait for LockPrimitive {
 
 pub type LockTim = super::v0::Timelock;
 
-#[derive(Debug, Clone)]
-pub struct Hax(pub Vec<Digest>);
+#[derive(Debug, Clone, Hashable, NounDecode, NounEncode)]
+pub struct Hax(pub ZSet<Digest>);
 
-impl NounEncode for Hax {
-    fn to_noun(&self) -> Noun {
-        ZSet::from_iter(&self.0).to_noun()
-    }
-}
-
-impl HashableTrait for Hax {
-    fn hash(&self) -> Digest {
-        ZSet::from_iter(&self.0).hash()
-    }
-}
-
-impl NounDecode for Hax {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let v: ZSet<Digest> = NounDecode::from_noun(noun)?;
-        Some(Self(v.into_iter().collect::<Vec<_>>()))
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Spends(pub Vec<(Name, Spend)>);
+#[derive(Debug, Clone, Default, Hashable, NounDecode, NounEncode)]
+pub struct Spends(pub ZMap<Name, Spend>);
 
 impl Spends {
     pub fn fee(&self, per_word: Nicks) -> Nicks {
-        Spend::fee_for_many(self.0.iter().map(|v| &v.1), per_word)
+        Spend::fee_for_many(self.0.iter().map(|(_k, v)| v), per_word)
     }
 
     pub fn split_witness(&self) -> (Spends, WitnessData) {
-        let mut spends = Spends(Vec::new());
+        let mut spends = Spends(ZMap::new());
         let mut witness_data = WitnessData::default();
         for (name, spend) in &self.0 {
             let mut spend = spend.clone();
             match &mut spend {
                 Spend::S1(ws) => {
                     let witness = ws.witness.take_data();
-                    spends.0.push((*name, spend));
+                    spends.0.insert(*name, spend);
                     witness_data.data.insert(*name, witness);
                 }
                 Spend::S0(_) => {
-                    spends.0.push((*name, spend));
+                    spends.0.insert(*name, spend);
                 }
             }
         }
@@ -752,28 +640,9 @@ impl Spends {
                     ws.witness = witness.clone();
                 }
             }
-            spends.0.push((*name, spend));
+            spends.0.insert(*name, spend);
         }
         spends
-    }
-}
-
-impl NounEncode for Spends {
-    fn to_noun(&self) -> Noun {
-        ZMap::from_iter(self.0.iter().cloned()).to_noun()
-    }
-}
-
-impl NounDecode for Spends {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let v: ZMap<Name, Spend> = NounDecode::from_noun(noun)?;
-        Some(Self(v.into_iter().collect::<Vec<_>>()))
-    }
-}
-
-impl HashableTrait for Spends {
-    fn hash(&self) -> Digest {
-        ZMap::from_iter(self.0.iter().cloned()).hash()
     }
 }
 
@@ -813,8 +682,8 @@ impl RawTx {
     ///
     /// This function combines seeds across multiple spends into one output note per-lock-root.
     pub fn outputs(&self) -> Vec<Note> {
-        // We must convert to ZMap to preserve the order of the spends.
-        let spends = ZMap::from_iter(self.spends.0.iter().cloned());
+        // Already a ZMap, no conversion needed
+        let spends = &self.spends.0;
 
         let mut seeds_by_lock: BTreeMap<Digest, ZSet<Seed>> = BTreeMap::new();
         for (_, spend) in spends {
@@ -1026,7 +895,6 @@ pub struct TransactionDisplay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use bip39::Mnemonic;
     use iris_crypto::derive_master_key;
     use iris_ztd::Hashable;
@@ -1116,11 +984,14 @@ mod tests {
         seed2.gift = 1234567;
 
         let mut spend = Spend::new_witness(
-            Witness::new(SpendCondition(vec![
-                LockPrimitive::Pkh(Pkh::single(pkh)),
-                LockPrimitive::Tim(LockTim::coinbase()),
-            ])),
-            Seeds(vec![seed1.clone(), seed2.clone()]),
+            Witness::new(SpendCondition(
+                [
+                    LockPrimitive::Pkh(Pkh::single(pkh)),
+                    LockPrimitive::Tim(LockTim::coinbase()),
+                ]
+                .into(),
+            )),
+            Seeds([seed1.clone(), seed2.clone()].into()),
             2850816,
         );
 
@@ -1215,7 +1086,7 @@ mod tests {
             "7Zuskz3WibckR2anDXDuPcMUk45A2iJnrdPsFALj4Rc5NTufyca39gY",
         );
 
-        let spends = Spends(vec![(name, spend)]);
+        let spends = Spends([(name, spend)].into());
         check_hash(
             "spends",
             &spends,

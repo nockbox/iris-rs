@@ -102,7 +102,6 @@ impl SpendBuilder {
             // Remove the previous refund
             self.spend
                 .seeds_mut()
-                .0
                 .retain(|v| v.lock_root.hash() != lock_root.hash());
             let refund = self.note.assets()
                 - self.spend.fee()
@@ -110,7 +109,7 @@ impl SpendBuilder {
             if refund > 0 {
                 let seed = self.build_seed(rl, refund, include_lock_data);
                 // NOTE: by convention, the refund seed is always first
-                self.spend.seeds_mut().0.insert(0, seed);
+                self.spend.seeds_mut().0.insert(seed);
             }
         }
         self
@@ -149,7 +148,7 @@ impl SpendBuilder {
 
     pub fn seed(&mut self, seed: Seed) -> &mut Self {
         self.invalidate_sigs();
-        self.spend.seeds_mut().0.push(seed);
+        self.spend.seeds_mut().0.insert(seed);
         self
     }
 
@@ -187,7 +186,7 @@ impl SpendBuilder {
                     .pkh_signature
                     .0
                     .iter()
-                    .map(|(pkh, _, _)| *pkh)
+                    .map(|(pkh, (_, _))| *pkh)
                     .collect();
 
                 let sc = &spend.witness.lock_merkle_proof.spend_condition;
@@ -215,7 +214,7 @@ impl SpendBuilder {
                             .hax_map
                             .clone()
                             .into_iter()
-                            .map(|v| v.0)
+                            .map(|(k, _)| k)
                             .collect::<BTreeSet<_>>(),
                         Spend::S0(_) => BTreeSet::new(),
                     };
@@ -261,11 +260,10 @@ impl SpendBuilder {
 
                 for p in ws.witness.lock_merkle_proof.spend_condition.pkh() {
                     if p.hashes.contains(&pkpkh) {
-                        ws.witness.pkh_signature.0.push((
+                        ws.witness.pkh_signature.0.insert(
                             signing_key.public_key().hash(),
-                            signing_key.public_key(),
-                            signing_key.sign(&ws.sig_hash()),
-                        ));
+                            (signing_key.public_key(), signing_key.sign(&ws.sig_hash())),
+                        );
                         return true;
                     }
                 }
@@ -277,7 +275,7 @@ impl SpendBuilder {
                 if note.sig.pubkeys.contains(&signing_key.public_key()) {
                     ls.signature
                         .0
-                        .push((signing_key.public_key(), signing_key.sign(&ls.sig_hash())));
+                        .insert(signing_key.public_key(), signing_key.sign(&ls.sig_hash()));
                     return true;
                 }
             }
@@ -458,7 +456,7 @@ impl TxBuilder {
 
     pub fn build(&self) -> NockchainTx {
         let mut display = TransactionDisplay::default();
-        let mut spends = Spends(Vec::new());
+        let mut spends = Spends(ZMap::new());
 
         for (name, spend) in &self.spends {
             match (&spend.spend, &spend.note, &mut display.inputs) {
@@ -480,7 +478,7 @@ impl TxBuilder {
                     display.outputs.insert(lock.hash(), lock.clone().into());
                 }
             }
-            spends.0.push((*name, spend.spend.clone()));
+            spends.0.insert(*name, spend.spend.clone());
         }
 
         let version = Version::V1;
@@ -773,10 +771,13 @@ mod tests {
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
-        let spend_condition = SpendCondition(vec![
-            LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
-            LockPrimitive::Tim(LockTim::coinbase()),
-        ]);
+        let spend_condition = SpendCondition(
+            [
+                LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+                LockPrimitive::Tim(LockTim::coinbase()),
+            ]
+            .into(),
+        );
         let tx = TxBuilder::new(1)
             .simple_spend_base(
                 vec![(note.clone(), Some(spend_condition.clone()))],
@@ -892,10 +893,13 @@ mod tests {
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
-        let spend_condition = SpendCondition(vec![
-            LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
-            LockPrimitive::Tim(LockTim::coinbase()),
-        ]);
+        let spend_condition = SpendCondition(
+            [
+                LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+                LockPrimitive::Tim(LockTim::coinbase()),
+            ]
+            .into(),
+        );
         let notes = notes
             .into_iter()
             .map(|v| (v, Some(spend_condition.clone())))
@@ -944,10 +948,13 @@ mod tests {
     fn test_first_name() {
         let (_, public_key) = keys();
 
-        let sc = SpendCondition(vec![
-            LockPrimitive::Pkh(Pkh::single(public_key.hash())),
-            LockPrimitive::Tim(LockTim::coinbase()),
-        ]);
+        let sc = SpendCondition(
+            [
+                LockPrimitive::Pkh(Pkh::single(public_key.hash())),
+                LockPrimitive::Tim(LockTim::coinbase()),
+            ]
+            .into(),
+        );
         assert_eq!(
             sc.first_name().to_string(),
             "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH",
@@ -1016,10 +1023,13 @@ mod tests {
                     .map(|note| {
                         (
                             note,
-                            Some(SpendCondition(vec![
-                                LockPrimitive::Pkh(Pkh::single(public_key.hash())),
-                                LockPrimitive::Tim(LockTim::coinbase()),
-                            ])),
+                            Some(SpendCondition(
+                                [
+                                    LockPrimitive::Pkh(Pkh::single(public_key.hash())),
+                                    LockPrimitive::Tim(LockTim::coinbase()),
+                                ]
+                                .into(),
+                            )),
                         )
                     })
                     .collect(),
@@ -1097,10 +1107,13 @@ mod tests {
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
-        let spend_condition = SpendCondition(vec![
-            LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
-            LockPrimitive::Tim(LockTim::coinbase()),
-        ]);
+        let spend_condition = SpendCondition(
+            [
+                LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+                LockPrimitive::Tim(LockTim::coinbase()),
+            ]
+            .into(),
+        );
         let mut builder = TxBuilder::new(1);
 
         builder
@@ -1156,20 +1169,24 @@ mod tests {
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
-        let spend_condition = SpendCondition(vec![
-            LockPrimitive::Pkh(Pkh::single(
-                "9zpwNfGdcPT1QUKw2Fnw2zvftzpAYEjzZfTqGW8KLnf3NmEJ7yR5t2Y"
-                    .try_into()
-                    .unwrap(),
-            )),
-            LockPrimitive::Hax(Hax(vec![Digest([
-                Belt(1730770831742798981),
-                Belt(2676322185709933211),
-                Belt(8329210750824781744),
-                Belt(16756092452590401876),
-                Belt(3547445316740171466),
-            ])])),
-        ]);
+        let spend_condition = SpendCondition(
+            [
+                LockPrimitive::Pkh(Pkh::single(
+                    "9zpwNfGdcPT1QUKw2Fnw2zvftzpAYEjzZfTqGW8KLnf3NmEJ7yR5t2Y"
+                        .try_into()
+                        .unwrap(),
+                )),
+                LockPrimitive::Hax(Hax([Digest([
+                    Belt(1730770831742798981),
+                    Belt(2676322185709933211),
+                    Belt(8329210750824781744),
+                    Belt(16756092452590401876),
+                    Belt(3547445316740171466),
+                ])]
+                .into())),
+            ]
+            .into(),
+        );
         let mut builder = TxBuilder::new(1);
 
         builder
@@ -1228,10 +1245,13 @@ mod tests {
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
-        let spend_condition = SpendCondition(vec![
-            LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
-            LockPrimitive::Tim(LockTim::coinbase()),
-        ]);
+        let spend_condition = SpendCondition(
+            [
+                LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+                LockPrimitive::Tim(LockTim::coinbase()),
+            ]
+            .into(),
+        );
         let tx = TxBuilder::new(1)
             .simple_spend_base(
                 vec![(note.clone(), Some(spend_condition.clone()))],

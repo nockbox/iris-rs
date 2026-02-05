@@ -186,7 +186,7 @@ impl Hashable for Digest {
     }
 }
 
-impl<T: Hashable> Hashable for &T {
+impl<T: Hashable + ?Sized> Hashable for &T {
     fn hash(&self) -> Digest {
         (**self).hash()
     }

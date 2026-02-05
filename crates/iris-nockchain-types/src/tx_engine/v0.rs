@@ -2,8 +2,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use iris_crypto::{PublicKey, Signature};
-use iris_ztd::{Digest, Hashable as HashableTrait, Noun, NounDecode, NounEncode, ZMap, ZSet};
-use iris_ztd_derive::{Hashable, NounDecode, NounEncode};
+use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode, ZMap, ZSet};
 use serde::{Deserialize, Serialize};
 
 use super::note::{BlockHeight, Name, Source, TimelockRange, Version};
@@ -51,27 +50,8 @@ impl Note {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct LegacySignature(pub Vec<(PublicKey, Signature)>);
-
-impl HashableTrait for LegacySignature {
-    fn hash(&self) -> Digest {
-        ZMap::from_iter(self.0.iter().cloned()).hash()
-    }
-}
-
-impl NounEncode for LegacySignature {
-    fn to_noun(&self) -> Noun {
-        ZMap::from_iter(self.0.iter().cloned()).to_noun()
-    }
-}
-
-impl NounDecode for LegacySignature {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let m: ZMap<PublicKey, Signature> = NounDecode::from_noun(noun)?;
-        Some(Self(m.into_iter().collect::<Vec<_>>()))
-    }
-}
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Hashable, NounDecode, NounEncode)]
+pub struct LegacySignature(pub ZMap<PublicKey, Signature>);
 
 impl LegacySignature {
     pub fn clear(&mut self) {
@@ -79,44 +59,34 @@ impl LegacySignature {
     }
 
     pub fn add_entry(&mut self, pubkey: PublicKey, signature: Signature) {
-        self.0.push((pubkey, signature));
+        self.0.insert(pubkey, signature);
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(
+    Debug,
+    Clone,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+    Ord,
+    PartialOrd,
+    Hashable,
+    NounDecode,
+    NounEncode,
+)]
 pub struct Sig {
     pub m: u64,
-    pub pubkeys: Vec<PublicKey>,
+    pub pubkeys: ZSet<PublicKey>,
 }
 
 impl Sig {
     pub fn new_single_pk(pk: PublicKey) -> Self {
         Self {
             m: 1,
-            pubkeys: vec![pk],
+            pubkeys: ZSet::from([pk]),
         }
-    }
-}
-
-impl NounEncode for Sig {
-    fn to_noun(&self) -> Noun {
-        (self.m, self.pubkeys.iter().collect::<ZSet<_>>()).to_noun()
-    }
-}
-
-impl NounDecode for Sig {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let (m, pubkeys): (u64, ZSet<PublicKey>) = NounDecode::from_noun(noun)?;
-        Some(Self {
-            m,
-            pubkeys: pubkeys.into_iter().collect(),
-        })
-    }
-}
-
-impl HashableTrait for Sig {
-    fn hash(&self) -> Digest {
-        (self.m, self.pubkeys.iter().collect::<ZSet<_>>()).hash()
     }
 }
 
@@ -150,12 +120,12 @@ impl RawTx {
     ///
     /// This function combines seeds across multiple inputs into one output note per-recipient-sig.
     pub fn outputs(&self) -> Vec<Note> {
-        let inps = self.inputs.0.iter().cloned().collect::<ZMap<_, _>>();
+        let inps = &self.inputs.0;
 
         let mut output_base: BTreeMap<Sig, (TimelockIntent, Nicks, ZSet<Seed>)> = BTreeMap::new();
 
         for (_, input) in inps {
-            for seed in input.spend.seeds.0 {
+            for seed in &input.spend.seeds.0 {
                 // NOTE: we are not checking if we're adding duplicate seed or not. Not necessary when processing valid txs.
                 let sig = seed.recipient.clone();
                 let child = output_base
@@ -178,7 +148,7 @@ impl RawTx {
                     child.0.tim = Some(tl);
                 }
                 child.1 += seed.gift;
-                child.2.insert(seed);
+                child.2.insert(seed.clone());
             }
         }
 
@@ -210,27 +180,8 @@ impl RawTx {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Inputs(pub Vec<(Name, Input)>);
-
-impl NounEncode for Inputs {
-    fn to_noun(&self) -> Noun {
-        self.0.iter().cloned().collect::<ZMap<_, _>>().to_noun()
-    }
-}
-
-impl NounDecode for Inputs {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let inputs: ZMap<Name, Input> = NounDecode::from_noun(noun)?;
-        Some(Self(inputs.into_iter().collect()))
-    }
-}
-
-impl HashableTrait for Inputs {
-    fn hash(&self) -> Digest {
-        self.0.iter().cloned().collect::<ZMap<_, _>>().hash()
-    }
-}
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
+pub struct Inputs(pub ZMap<Name, Input>);
 
 #[derive(Debug, Clone, NounEncode, Hashable, NounDecode, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Timelock {
@@ -286,7 +237,7 @@ impl Seed {
     }
 }
 
-impl HashableTrait for Seed {
+impl Hashable for Seed {
     fn hash(&self) -> Digest {
         // output source is omitted
         (
@@ -302,7 +253,7 @@ impl HashableTrait for Seed {
 #[derive(Debug, Clone)]
 pub struct SigHashSeed<'a>(&'a Seed);
 
-impl<'a> HashableTrait for SigHashSeed<'a> {
+impl<'a> Hashable for SigHashSeed<'a> {
     fn hash(&self) -> Digest {
         // output source is included
         (
@@ -322,32 +273,12 @@ impl<'a> NounEncode for SigHashSeed<'a> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Seeds(pub Vec<Seed>);
+#[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
+pub struct Seeds(pub ZSet<Seed>);
 
 impl Seeds {
     pub fn sig_hash(&self) -> Digest {
         ZSet::from_iter(self.0.iter().map(SigHashSeed)).hash()
-    }
-}
-
-impl HashableTrait for Seeds {
-    fn hash(&self) -> Digest {
-        ZSet::from_iter(&self.0).hash()
-    }
-}
-
-impl NounEncode for Seeds {
-    fn to_noun(&self) -> Noun {
-        ZSet::from_iter(&self.0).to_noun()
-    }
-}
-
-impl NounDecode for Seeds {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        Some(Seeds(
-            ZSet::from_noun(noun)?.into_iter().collect::<Vec<_>>(),
-        ))
     }
 }
 

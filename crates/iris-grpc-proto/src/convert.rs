@@ -5,7 +5,7 @@ use iris_nockchain_types::v1::{
     Seeds, Spend, Spend0, Spend1, SpendCondition, Witness,
 };
 use iris_nockchain_types::*;
-use iris_ztd::{jam, Belt, Digest, Noun, U256};
+use iris_ztd::{jam, Belt, Digest, Noun, ZMap, ZSet, U256};
 
 use crate::common::{ConversionError, Required};
 use crate::pb::common::v1::{
@@ -223,19 +223,17 @@ pub fn seeds_to_pb(seeds: Seeds) -> Vec<PbSeed> {
     seeds.0.into_iter().map(PbSeed::from).collect()
 }
 
-impl From<iris_nockchain_types::v1::NoteDataEntry> for PbNoteDataEntry {
-    fn from(data: iris_nockchain_types::v1::NoteDataEntry) -> Self {
-        Self {
-            key: data.key,
-            blob: jam(data.val),
-        }
-    }
-}
-
 impl From<iris_nockchain_types::v1::NoteData> for PbNoteData {
     fn from(data: iris_nockchain_types::v1::NoteData) -> Self {
         Self {
-            entries: data.0.into_iter().map(Into::into).collect(),
+            entries: data
+                .0
+                .into_iter()
+                .map(|(k, v)| PbNoteDataEntry {
+                    key: k,
+                    blob: jam(v),
+                })
+                .collect(),
         }
     }
 }
@@ -320,7 +318,7 @@ impl From<PkhSignature> for PbPkhSignature {
             entries: signature
                 .0
                 .into_iter()
-                .map(|(pkh, pubkey, sig)| {
+                .map(|(pkh, (pubkey, sig))| {
                     // Convert UBig to Belt arrays for c and s
                     let c_bytes = sig.c.to_le_bytes();
                     let s_bytes = sig.s.to_le_bytes();
@@ -421,7 +419,7 @@ impl TryFrom<PbPkhSignature> for PkhSignature {
         use iris_ztd::crypto::cheetah::{CheetahPoint, F6lt};
         use iris_ztd::{Belt as ZBelt, U256};
 
-        let entries = pb
+        let entries: Vec<(Digest, (iris_crypto::PublicKey, iris_crypto::Signature))> = pb
             .entries
             .into_iter()
             .map(|entry| {
@@ -494,11 +492,11 @@ impl TryFrom<PbPkhSignature> for PkhSignature {
 
                 let signature = Signature { c, s };
 
-                Ok((pkh, pubkey, signature))
+                Ok((pkh, (pubkey, signature)))
             })
             .collect::<Result<Vec<_>, ConversionError>>()?;
 
-        Ok(PkhSignature(entries))
+        Ok(PkhSignature(entries.into()))
     }
 }
 
@@ -693,7 +691,7 @@ impl TryFrom<PbLegacySignature> for LegacySignature {
                     pb_schnorr_sig_to_sig(e.signature.required("SignatureEntry", "signature")?)?;
                 Ok((pubkey, sig))
             })
-            .collect::<Result<Vec<_>, ConversionError>>()?;
+            .collect::<Result<ZMap<_, _>, ConversionError>>()?;
         Ok(LegacySignature(entries))
     }
 }
@@ -847,7 +845,7 @@ impl TryFrom<PbLegacyLock> for v0::Sig {
             .schnorr_pubkeys
             .into_iter()
             .map(pb_schnorr_pubkey_to_public_key)
-            .collect::<Result<Vec<iris_crypto::PublicKey>, ConversionError>>()?;
+            .collect::<Result<ZSet<iris_crypto::PublicKey>, ConversionError>>()?;
 
         Ok(v0::Sig {
             m: lock.keys_required as u64,
@@ -971,28 +969,20 @@ impl From<BalanceUpdate> for PbBalance {
 
 // Reverse conversions: protobuf -> native types
 
-impl TryFrom<PbNoteDataEntry> for iris_nockchain_types::v1::NoteDataEntry {
-    type Error = ConversionError;
-
-    fn try_from(entry: PbNoteDataEntry) -> Result<Self, Self::Error> {
-        Ok(iris_nockchain_types::v1::NoteDataEntry {
-            key: entry.key,
-            val: iris_ztd::cue(&entry.blob).ok_or(Self::Error::Invalid("cue failed"))?,
-        })
-    }
-}
-
 impl TryFrom<PbNoteData> for iris_nockchain_types::v1::NoteData {
     type Error = ConversionError;
 
     fn try_from(pb_data: PbNoteData) -> Result<Self, Self::Error> {
-        let entries: Result<Vec<iris_nockchain_types::v1::NoteDataEntry>, ConversionError> =
-            pb_data
-                .entries
-                .into_iter()
-                .map(PbNoteDataEntry::try_into)
-                .collect();
-        Ok(iris_nockchain_types::v1::NoteData(entries?))
+        let entries: Result<Vec<(String, Noun)>, ConversionError> = pb_data
+            .entries
+            .into_iter()
+            .map(|e| {
+                let key = e.key;
+                let val = iris_ztd::cue(&e.blob).ok_or(ConversionError::Invalid("cue failed"))?;
+                Ok((key, val))
+            })
+            .collect();
+        Ok(iris_nockchain_types::v1::NoteData(entries?.into()))
     }
 }
 
@@ -1096,7 +1086,7 @@ impl TryFrom<PbLockPrimitive> for LockPrimitive {
             lock_primitive::Primitive::Pkh(pkh) => Ok(LockPrimitive::Pkh(pkh.try_into()?)),
             lock_primitive::Primitive::Tim(tim) => Ok(LockPrimitive::Tim(tim.try_into()?)),
             lock_primitive::Primitive::Hax(hax) => {
-                let hashes: Result<Vec<Digest>, ConversionError> =
+                let hashes: Result<ZSet<Digest>, ConversionError> =
                     hax.hashes.into_iter().map(|h| h.try_into()).collect();
                 Ok(LockPrimitive::Hax(Hax(hashes?)))
             }
@@ -1138,7 +1128,7 @@ impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
     fn try_from(tx: PbRawTransaction) -> Result<Self, Self::Error> {
         let version: Version = tx.version.required("RawTransaction", "version")?.into();
         let id: Digest = tx.id.required("RawTransaction", "id")?.try_into()?;
-        let spends: Result<Vec<(Name, Spend)>, ConversionError> = tx
+        let spends: Result<ZMap<Name, Spend>, ConversionError> = tx
             .spends
             .into_iter()
             .map(|entry| {
@@ -1191,7 +1181,7 @@ impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
                             tim: (),
                         };
 
-                        let seeds: Result<Vec<Seed>, ConversionError> =
+                        let seeds: Result<ZSet<Seed>, ConversionError> =
                             w.seeds.into_iter().map(|s| s.try_into()).collect();
 
                         Spend::S1(Spend1 {
@@ -1205,7 +1195,7 @@ impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
                             .signature
                             .required("LegacySpend", "signature")?
                             .try_into()?;
-                        let seeds: Result<Vec<Seed>, ConversionError> =
+                        let seeds: Result<ZSet<Seed>, ConversionError> =
                             l.seeds.into_iter().map(|s| s.try_into()).collect();
                         Spend::S0(Spend0 {
                             signature,
@@ -1293,7 +1283,7 @@ impl TryFrom<PbSpendV0> for v0::Spend {
         } else {
             None
         };
-        let seeds: Result<Vec<v0::Seed>, ConversionError> =
+        let seeds: Result<ZSet<v0::Seed>, ConversionError> =
             spend.seeds.into_iter().map(|s| s.try_into()).collect();
         Ok(v0::Spend {
             signature,
@@ -1355,7 +1345,7 @@ impl TryFrom<PbRawTransactionV0> for v0::RawTx {
 
     fn try_from(tx: PbRawTransactionV0) -> Result<Self, Self::Error> {
         let id: Digest = tx.id.required("RawTransaction", "id")?.try_into()?;
-        let inputs: Result<Vec<(Name, v0::Input)>, ConversionError> = tx
+        let inputs: Result<ZMap<Name, v0::Input>, ConversionError> = tx
             .named_inputs
             .into_iter()
             .map(|ni| {

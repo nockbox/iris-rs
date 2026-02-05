@@ -1,6 +1,5 @@
 use alloc::vec::Vec;
 use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode};
-use iris_ztd_derive::{Hashable, NounDecode, NounEncode};
 use serde::{Deserialize, Serialize};
 
 pub type Nicks = u64;

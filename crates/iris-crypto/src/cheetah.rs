@@ -6,7 +6,6 @@ use iris_ztd::{
     tip5::hash::hash_varlen,
     Belt, Digest, Hashable, MulMod, Noun, NounDecode, NounEncode, U256,
 };
-use iris_ztd_derive::{NounDecode, NounEncode};
 use serde::{Deserialize, Serialize};
 
 #[derive(

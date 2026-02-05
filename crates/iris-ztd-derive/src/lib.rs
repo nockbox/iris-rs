@@ -1,6 +1,42 @@
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{parse_macro_input, Data, DeriveInput, Fields};
+use proc_macro2::Ident;
+use proc_macro_crate::FoundCrate;
+use quote::{format_ident, quote};
+use syn::{parse_macro_input, token::PathSep, Data, DeriveInput, Fields};
+
+fn get_crate_path() -> proc_macro2::TokenStream {
+    let (col, ident) = crate_path_ident();
+    quote!(#col #ident)
+}
+
+fn crate_path_ident() -> (Option<PathSep>, Ident) {
+    match crate_path_fixed() {
+        Some(FoundCrate::Itself) => (None, format_ident!("crate")),
+        Some(FoundCrate::Name(name)) => (Some(Default::default()), format_ident!("{}", name)),
+        None => (None, format_ident!("iris_ztd")),
+    }
+}
+
+fn crate_path_fixed() -> Option<FoundCrate> {
+    let found_crate = proc_macro_crate::crate_name("iris-ztd").ok()?;
+
+    let ret = match found_crate {
+        FoundCrate::Itself => {
+            let has_doc_env = std::env::vars().any(|(k, _)| {
+                k == "UNSTABLE_RUSTDOC_TEST_LINE" || k == "UNSTABLE_RUSTDOC_TEST_PATH"
+            });
+
+            if has_doc_env {
+                FoundCrate::Name("iris_ztd".to_string())
+            } else {
+                FoundCrate::Itself
+            }
+        }
+        x => x,
+    };
+
+    Some(ret)
+}
 
 /// Derive macro for implementing the Hashable trait.
 ///
@@ -31,41 +67,54 @@ use syn::{parse_macro_input, Data, DeriveInput, Fields};
 pub fn derive_hashable(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
+    let crate_path = get_crate_path();
+
+    let mut generics = input.generics.clone();
+    let where_clause = generics.make_where_clause();
 
     let hash_expr = match &input.data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => {
-                let field_names: Vec<_> = fields.named.iter().map(|f| &f.ident).collect();
+        Data::Struct(data) => {
+            for field in &data.fields {
+                let ty = &field.ty;
+                where_clause
+                    .predicates
+                    .push(syn::parse_quote!(#ty: #crate_path::Hashable));
+            }
 
-                if field_names.is_empty() {
-                    // Empty struct hashes as unit
+            match &data.fields {
+                Fields::Named(fields) => {
+                    let field_names: Vec<_> = fields.named.iter().map(|f| &f.ident).collect();
+
+                    if field_names.is_empty() {
+                        // Empty struct hashes as unit
+                        quote! { ().hash() }
+                    } else if field_names.len() == 1 {
+                        // Single field: just hash the field directly
+                        let field = &field_names[0];
+                        quote! { self.#field.hash() }
+                    } else {
+                        // Multiple fields: create nested tuples
+                        build_nested_tuple(&field_names)
+                    }
+                }
+                Fields::Unnamed(fields) => {
+                    let field_count = fields.unnamed.len();
+
+                    if field_count == 0 {
+                        quote! { ().hash() }
+                    } else if field_count == 1 {
+                        quote! { self.0.hash() }
+                    } else {
+                        // Build nested tuples for tuple structs using indices
+                        let indices: Vec<_> = (0..field_count).map(syn::Index::from).collect();
+                        build_nested_tuple_indexed(&indices)
+                    }
+                }
+                Fields::Unit => {
                     quote! { ().hash() }
-                } else if field_names.len() == 1 {
-                    // Single field: just hash the field directly
-                    let field = &field_names[0];
-                    quote! { self.#field.hash() }
-                } else {
-                    // Multiple fields: create nested tuples
-                    build_nested_tuple(&field_names)
                 }
             }
-            Fields::Unnamed(fields) => {
-                let field_count = fields.unnamed.len();
-
-                if field_count == 0 {
-                    quote! { ().hash() }
-                } else if field_count == 1 {
-                    quote! { self.0.hash() }
-                } else {
-                    // Build nested tuples for tuple structs using indices
-                    let indices: Vec<_> = (0..field_count).map(syn::Index::from).collect();
-                    build_nested_tuple_indexed(&indices)
-                }
-            }
-            Fields::Unit => {
-                quote! { ().hash() }
-            }
-        },
+        }
         Data::Enum(_) => {
             return syn::Error::new_spanned(
                 &input,
@@ -84,9 +133,11 @@ pub fn derive_hashable(input: TokenStream) -> TokenStream {
         }
     };
 
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
     TokenStream::from(quote! {
-        impl iris_ztd::Hashable for #name {
-            fn hash(&self) -> iris_ztd::Digest {
+        impl #impl_generics #crate_path::Hashable for #name #ty_generics #where_clause {
+            fn hash(&self) -> #crate_path::Digest {
                 #hash_expr
             }
         }
@@ -126,37 +177,50 @@ fn build_nested_tuple_indexed(indices: &[syn::Index]) -> proc_macro2::TokenStrea
 pub fn derive_noun_encode(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
+    let crate_path = get_crate_path();
+
+    let mut generics = input.generics.clone();
+    let where_clause = generics.make_where_clause();
 
     let impl_body = match &input.data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => {
-                let field_names: Vec<_> = fields.named.iter().map(|f| &f.ident).collect();
-
-                if field_names.is_empty() {
-                    quote! { iris_ztd::NounEncode::to_noun(&0u64) }
-                } else if field_names.len() == 1 {
-                    let field = &field_names[0];
-                    quote! { iris_ztd::NounEncode::to_noun(&self.#field) }
-                } else {
-                    let tuple_expr = build_nested_tuple_refs(&field_names);
-                    quote! { iris_ztd::NounEncode::to_noun(&#tuple_expr) }
-                }
+        Data::Struct(data) => {
+            for field in &data.fields {
+                let ty = &field.ty;
+                where_clause
+                    .predicates
+                    .push(syn::parse_quote!(#ty: #crate_path::NounEncode));
             }
-            Fields::Unnamed(fields) => {
-                let field_count = fields.unnamed.len();
 
-                if field_count == 0 {
-                    quote! { iris_ztd::NounEncode::to_noun(&0u64) }
-                } else if field_count == 1 {
-                    quote! { iris_ztd::NounEncode::to_noun(&self.0) }
-                } else {
-                    let indices: Vec<_> = (0..field_count).map(syn::Index::from).collect();
-                    let tuple_expr = build_nested_tuple_refs_indexed(&indices);
-                    quote! { iris_ztd::NounEncode::to_noun(&#tuple_expr) }
+            match &data.fields {
+                Fields::Named(fields) => {
+                    let field_names: Vec<_> = fields.named.iter().map(|f| &f.ident).collect();
+
+                    if field_names.is_empty() {
+                        quote! { #crate_path::NounEncode::to_noun(&0u64) }
+                    } else if field_names.len() == 1 {
+                        let field = &field_names[0];
+                        quote! { #crate_path::NounEncode::to_noun(&self.#field) }
+                    } else {
+                        let tuple_expr = build_nested_tuple_refs(&field_names);
+                        quote! { #crate_path::NounEncode::to_noun(&#tuple_expr) }
+                    }
                 }
+                Fields::Unnamed(fields) => {
+                    let field_count = fields.unnamed.len();
+
+                    if field_count == 0 {
+                        quote! { #crate_path::NounEncode::to_noun(&0u64) }
+                    } else if field_count == 1 {
+                        quote! { #crate_path::NounEncode::to_noun(&self.0) }
+                    } else {
+                        let indices: Vec<_> = (0..field_count).map(syn::Index::from).collect();
+                        let tuple_expr = build_nested_tuple_refs_indexed(&indices);
+                        quote! { #crate_path::NounEncode::to_noun(&#tuple_expr) }
+                    }
+                }
+                Fields::Unit => quote! { #crate_path::NounEncode::to_noun(&0u64) },
             }
-            Fields::Unit => quote! { iris_ztd::NounEncode::to_noun(&0u64) },
-        },
+        }
         Data::Enum(_) => {
             return syn::Error::new_spanned(
                 &input,
@@ -175,9 +239,11 @@ pub fn derive_noun_encode(input: TokenStream) -> TokenStream {
         }
     };
 
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
     TokenStream::from(quote! {
-        impl iris_ztd::NounEncode for #name {
-            fn to_noun(&self) -> iris_ztd::Noun {
+        impl #impl_generics #crate_path::NounEncode for #name #ty_generics #where_clause {
+            fn to_noun(&self) -> #crate_path::Noun {
                 #impl_body
             }
         }
@@ -189,60 +255,73 @@ pub fn derive_noun_encode(input: TokenStream) -> TokenStream {
 pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
+    let crate_path = get_crate_path();
+
+    let mut generics = input.generics.clone();
+    let where_clause = generics.make_where_clause();
 
     let impl_body = match &input.data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => {
-                let field_names: Vec<_> = fields.named.iter().map(|f| &f.ident).collect();
+        Data::Struct(data) => {
+            for field in &data.fields {
+                let ty = &field.ty;
+                where_clause
+                    .predicates
+                    .push(syn::parse_quote!(#ty: #crate_path::NounDecode));
+            }
 
-                if field_names.is_empty() {
-                    quote! {
-                        if noun == iris_ztd::noun::atom(0) {
-                            Some(Self)
-                        } else {
-                            None
+            match &data.fields {
+                Fields::Named(fields) => {
+                    let field_names: Vec<_> = fields.named.iter().map(|f| &f.ident).collect();
+
+                    if field_names.is_empty() {
+                        quote! {
+                            if noun == #crate_path::noun::atom(0) {
+                                Some(Self)
+                            } else {
+                                None
+                            }
+                        }
+                    } else {
+                        quote! {
+                            let (#( #field_names ),* ) = #crate_path::NounDecode::from_noun(noun)?;
+                            Some(Self {
+                                #( #field_names ),*
+                            })
                         }
                     }
-                } else {
-                    quote! {
-                        let (#( #field_names ),* ) = iris_ztd::NounDecode::from_noun(noun)?;
-                        Some(Self {
-                            #( #field_names ),*
-                        })
-                    }
                 }
-            }
-            Fields::Unnamed(fields) => {
-                let field_count = fields.unnamed.len();
+                Fields::Unnamed(fields) => {
+                    let field_count = fields.unnamed.len();
 
-                if field_count == 0 {
-                    quote! {
-                        if noun == iris_ztd::noun::atom(0) {
-                            Some(Self)
-                        } else {
-                            None
+                    if field_count == 0 {
+                        quote! {
+                            if noun == #crate_path::noun::atom(0) {
+                                Some(Self)
+                            } else {
+                                None
+                            }
+                        }
+                    } else if field_count == 1 {
+                        quote! { Some(Self(#crate_path::NounDecode::from_noun(noun)?)) }
+                    } else {
+                        let indices: Vec<_> = (0..field_count).map(syn::Index::from).collect();
+                        quote! {
+                            let tup = #crate_path::NounDecode::from_noun(noun)?;
+                            Some(Self(
+                                #( tup.#indices ),*
+                            ))
                         }
                     }
-                } else if field_count == 1 {
-                    quote! { Some(Self(iris_ztd::NounDecode::from_noun(noun)?)) }
-                } else {
-                    let indices: Vec<_> = (0..field_count).map(syn::Index::from).collect();
-                    quote! {
-                        let tup = iris_ztd::NounDecode::from_noun(noun)?;
-                        Some(Self(
-                            #( tup.#indices ),*
-                        ))
+                }
+                Fields::Unit => quote! {
+                    if noun == #crate_path::noun::atom(0) {
+                        Some(Self)
+                    } else {
+                        None
                     }
-                }
+                },
             }
-            Fields::Unit => quote! {
-                if noun == iris_ztd::noun::atom(0) {
-                    Some(Self)
-                } else {
-                    None
-                }
-            },
-        },
+        }
         Data::Enum(_) => {
             return syn::Error::new_spanned(
                 &input,
@@ -261,9 +340,11 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
         }
     };
 
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+
     TokenStream::from(quote! {
-        impl iris_ztd::NounDecode for #name {
-            fn from_noun(noun: &iris_ztd::Noun) -> Option<Self> {
+        impl #impl_generics #crate_path::NounDecode for #name #ty_generics #where_clause {
+            fn from_noun(noun: &#crate_path::Noun) -> Option<Self> {
                 #impl_body
             }
         }

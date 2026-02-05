@@ -218,6 +218,15 @@ impl Hashable for Signature {
 #[derive(Debug, Clone)]
 pub struct PrivateKey(pub U256);
 
+impl Drop for PrivateKey {
+    fn drop(&mut self) {
+        unsafe {
+            core::ptr::write_volatile(&mut self.0, U256::ZERO);
+        }
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 impl PrivateKey {
     pub fn public_key(&self) -> PublicKey {
         PublicKey(ch_scal_big(&self.0, &A_GEN).unwrap())

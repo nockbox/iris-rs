@@ -206,7 +206,7 @@ impl Hashable for Seed {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct SigHashSeed<'a>(&'a Seed);
 
 impl<'a> Hashable for SigHashSeed<'a> {

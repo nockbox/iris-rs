@@ -1,4 +1,4 @@
-extern crate alloc;
+#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -85,6 +85,7 @@ pub struct CheetahPoint {
 }
 
 impl CheetahPoint {
+    #[cfg(feature = "alloc")]
     pub fn into_base58(&self) -> Result<alloc::string::String, CheetahError> {
         if self.inf {
             return Err(CheetahError::NotOnCurve);
@@ -97,6 +98,7 @@ impl CheetahPoint {
         Ok(bs58::encode(bytes).into_string())
     }
 
+    #[cfg(feature = "alloc")]
     pub fn from_base58(b58: &str) -> Result<Self, CheetahError> {
         let v = bs58::decode(b58).into_vec()?;
 

@@ -1,13 +1,18 @@
-use alloc::{fmt, string::String, vec, vec::Vec};
-use ibig::ops::DivRem;
-use ibig::UBig;
+use core::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     belt::{Belt, PRIME},
     tip5::hash::{hash_fixed, hash_varlen},
-    Noun, Zeroable,
+    Zeroable,
 };
+
+#[cfg(feature = "alloc")]
+use crate::Noun;
+#[cfg(feature = "alloc")]
+use alloc::{string::String, vec, vec::Vec};
+#[cfg(feature = "alloc")]
+use ibig::{ops::DivRem, UBig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Base58Belts<const N: usize>(pub [Belt; N]);
@@ -39,6 +44,7 @@ impl<const N: usize> From<[u64; N]> for Base58Belts<N> {
     }
 }
 
+#[cfg(feature = "alloc")]
 impl<const N: usize> Base58Belts<N> {
     pub fn to_atom(&self) -> UBig {
         let p = UBig::from(PRIME);
@@ -86,6 +92,7 @@ impl<const N: usize> Base58Belts<N> {
 }
 
 // Digest-specific implementations that delegate to Base58Belts<5>
+#[cfg(feature = "alloc")]
 impl Digest {
     pub fn to_atom(&self) -> UBig {
         Base58Belts::<5>::from(*self).to_atom()
@@ -104,6 +111,7 @@ impl Digest {
 }
 
 // Display and TryFrom implementations for Base58Belts<N>
+#[cfg(feature = "alloc")]
 impl<const N: usize> fmt::Display for Base58Belts<N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let bytes = self.to_bytes();
@@ -111,6 +119,7 @@ impl<const N: usize> fmt::Display for Base58Belts<N> {
     }
 }
 
+#[cfg(feature = "alloc")]
 impl<const N: usize> TryFrom<&str> for Base58Belts<N> {
     type Error = &'static str;
 
@@ -124,12 +133,14 @@ impl<const N: usize> TryFrom<&str> for Base58Belts<N> {
 }
 
 // Digest implementations delegate to Base58Belts<5>
+#[cfg(feature = "alloc")]
 impl fmt::Display for Digest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Base58Belts::<5>::from(*self).fmt(f)
     }
 }
 
+#[cfg(feature = "alloc")]
 impl TryFrom<&str> for Digest {
     type Error = &'static str;
 
@@ -138,6 +149,7 @@ impl TryFrom<&str> for Digest {
     }
 }
 
+#[cfg(feature = "alloc")]
 pub fn hash_noun(leaves: &[Belt], dyck: &[Belt]) -> Digest {
     let mut combined = Vec::with_capacity(1 + leaves.len() + dyck.len());
     combined.push(Belt(leaves.len() as u64));
@@ -221,9 +233,9 @@ macro_rules! impl_hashable_for_tuple {
     ($T0:ident, $T1:ident) => {
         impl<$T0: Hashable, $T1: Hashable> Hashable for ($T0, $T1) {
             fn hash(&self) -> Digest {
-                let mut belts = Vec::<Belt>::with_capacity(10);
-                belts.extend_from_slice(&self.0.hash().0);
-                belts.extend_from_slice(&self.1.hash().0);
+                let mut belts = [Belt(0); 10];
+                belts[..5].copy_from_slice(&self.0.hash().0);
+                belts[5..].copy_from_slice(&self.1.hash().0);
                 Digest(hash_fixed(&mut belts).map(|u| Belt(u)))
             }
         }
@@ -275,6 +287,7 @@ impl Hashable for &str {
     }
 }
 
+#[cfg(feature = "alloc")]
 impl Hashable for String {
     fn hash(&self) -> Digest {
         self.bytes()
@@ -284,6 +297,7 @@ impl Hashable for String {
     }
 }
 
+#[cfg(feature = "alloc")]
 impl Hashable for Noun {
     fn hash(&self) -> Digest {
         fn visit(noun: &Noun, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {

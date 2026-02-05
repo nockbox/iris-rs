@@ -1,4 +1,3 @@
-extern crate alloc;
 use alloc::vec;
 
 use super::poly::Poly;

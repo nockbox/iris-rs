@@ -21,3 +21,7 @@ serde = { workspace = true }
 thiserror = "2.0"
 ibig = { workspace = true }
 hex = "0.4"
+tsify = { workspace = true, optional = true }
+
+[features]
+wasm = ["iris-ztd/wasm", "tsify"]

@@ -1,12 +1,15 @@
 use crate::belt::based_check;
 use crate::crypto::cheetah::F6lt;
-use alloc::{boxed::Box, sync::Arc, collections::btree_map::BTreeMap, format, string::String, vec, vec::Vec};
+#[cfg(feature = "wasm")]
+use alloc::string::ToString;
+use alloc::{
+    boxed::Box, collections::btree_map::BTreeMap, format, string::String, sync::Arc, vec, vec::Vec,
+};
 use bitvec::prelude::{BitSlice, BitVec, Lsb0};
-use core::fmt;
 use ibig::UBig;
 use num_traits::Zero;
 use serde::de::{Error as DeError, SeqAccess, Visitor};
-use serde::{ser::SerializeTuple, Serialize, Serializer};
+use serde::{ser::SerializeSeq, Serialize, Serializer};
 use serde::{Deserialize, Deserializer};
 
 use crate::{belt::Belt, crypto::cheetah::CheetahPoint, Digest};
@@ -46,14 +49,18 @@ where
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(
+    feature = "wasm",
+    tsify(into_wasm_abi, from_wasm_abi, type = "string | [Noun]")
+)]
 pub enum Noun {
     Atom(UBig),
     Cell(Arc<Noun>, Arc<Noun>),
 }
 
-impl Noun {
-    #[allow(clippy::inherent_to_string_shadow_display)]
-    pub fn to_string(&self) -> String {
+impl ToString for Noun {
+    fn to_string(&self) -> String {
         fn autocons(cell: &Noun) -> String {
             match cell {
                 Noun::Atom(a) => format!("{}", a),
@@ -82,10 +89,20 @@ impl Serialize for Noun {
         match self {
             Self::Atom(v) => serializer.serialize_str(&alloc::format!("{v:x}")),
             Self::Cell(a, b) => {
-                let mut tup = serializer.serialize_tuple(2)?;
-                tup.serialize_element(a)?;
-                tup.serialize_element(b)?;
-                tup.end()
+                let mut seq = serializer.serialize_seq(None)?;
+
+                seq.serialize_element(&*a)?;
+
+                let mut b = b.clone();
+
+                while let Self::Cell(left, right) = b.as_ref() {
+                    seq.serialize_element(&*left)?;
+                    b = right.clone();
+                }
+
+                seq.serialize_element(&*b)?;
+
+                seq.end()
             }
         }
     }
@@ -117,23 +134,27 @@ impl<'de> Deserialize<'de> for Noun {
             where
                 A: SeqAccess<'de>,
             {
-                let a = seq
-                    .next_element::<Noun>()?
-                    .ok_or_else(|| DeError::custom("cell missing car"))?;
-                let b = seq
-                    .next_element::<Noun>()?
-                    .ok_or_else(|| DeError::custom("cell missing cdr"))?;
-                Ok(Noun::Cell(Arc::new(a), Arc::new(b)))
+                let mut stack = Vec::new();
+
+                while let Some(noun) = seq.next_element::<Noun>()? {
+                    stack.push(noun);
+                }
+
+                if stack.len() < 2 {
+                    return Err(DeError::custom("expected at least 2 elements"));
+                }
+
+                let mut top = stack.pop().ok_or_else(|| DeError::custom("empty cell"))?;
+
+                while let Some(noun) = stack.pop() {
+                    top = Noun::Cell(Arc::new(noun), Arc::new(top));
+                }
+
+                Ok(top)
             }
         }
 
         de.deserialize_any(V)
-    }
-}
-
-impl fmt::Display for Noun {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_string())
     }
 }
 

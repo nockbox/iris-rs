@@ -21,7 +21,10 @@ num-traits = { version = "0.2", default-features = false }
 serde = { workspace = true }
 iris-ztd-derive = { workspace = true }
 arrayvec = "0.7"
+tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
 
 [features]
 default = ["alloc"]
 alloc = ["bs58/alloc", "bitvec/alloc", "serde/alloc", "serde/rc"]
+wasm = ["tsify", "wasm-bindgen"]

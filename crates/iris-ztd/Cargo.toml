@@ -20,6 +20,7 @@ arrayref = "0.3"
 num-traits = { version = "0.2", default-features = false }
 serde = { workspace = true }
 iris-ztd-derive = { workspace = true }
+arrayvec = "0.7"
 
 [features]
 default = ["alloc"]

@@ -1,4 +1,4 @@
-use alloc::vec;
+use arrayvec::ArrayVec;
 
 use super::poly::Poly;
 use super::Belt;
@@ -52,7 +52,7 @@ pub fn bpscal(scalar: Belt, b: &[Belt], res: &mut [Belt]) {
 }
 
 #[inline(always)]
-pub fn bpdvr(a: &[Belt], b: &[Belt], q: &mut [Belt], res: &mut [Belt]) {
+pub fn bpdvr<const MAX_POLY_SIZE: usize>(a: &[Belt], b: &[Belt], q: &mut [Belt], res: &mut [Belt]) {
     if a.is_zero() {
         q.fill(Belt(0));
         res.fill(Belt(0));
@@ -65,7 +65,8 @@ pub fn bpdvr(a: &[Belt], b: &[Belt], q: &mut [Belt], res: &mut [Belt]) {
     res.fill(Belt(0));
 
     let a_end = a.degree() as usize;
-    let mut r = a[0..(a_end + 1)].to_vec();
+    let mut r = ArrayVec::<Belt, MAX_POLY_SIZE>::new();
+    r.try_extend_from_slice(&a[0..(a_end + 1)]).unwrap();
 
     let deg_b = b.degree();
 
@@ -97,18 +98,36 @@ pub fn bpdvr(a: &[Belt], b: &[Belt], q: &mut [Belt], res: &mut [Belt]) {
 
 /// Extended Euclidean Algorithm, GCD
 #[inline(always)]
-pub fn bpegcd(a: &[Belt], b: &[Belt], d: &mut [Belt], u: &mut [Belt], v: &mut [Belt]) {
-    let mut m1_u = vec![Belt(0)];
-    let mut m2_u = vec![Belt(1)];
-    let mut m1_v = vec![Belt(1)];
-    let mut m2_v = vec![Belt(0)];
+pub fn bpegcd<const MAX_POLY_SIZE: usize>(
+    a: &[Belt],
+    b: &[Belt; MAX_POLY_SIZE],
+    d: &mut [Belt; MAX_POLY_SIZE],
+    u: &mut [Belt; MAX_POLY_SIZE],
+    v: &mut [Belt],
+) {
+    let mut m1_u = ArrayVec::<Belt, MAX_POLY_SIZE>::new();
+    let mut m2_u = ArrayVec::<Belt, MAX_POLY_SIZE>::new();
+    let mut m1_v = ArrayVec::<Belt, MAX_POLY_SIZE>::new();
+    let mut m2_v = ArrayVec::<Belt, MAX_POLY_SIZE>::new();
+    m1_u.push(Belt(0));
+    m2_u.push(Belt(1));
+    m1_v.push(Belt(1));
+    m2_v.push(Belt(0));
 
     d.fill(Belt(0));
     u.fill(Belt(0));
     v.fill(Belt(0));
 
-    let mut a = a.to_vec();
-    let mut b = b.to_vec();
+    let mut a: ArrayVec<Belt, MAX_POLY_SIZE> = {
+        let mut v = ArrayVec::new();
+        v.try_extend_from_slice(a).unwrap();
+        v
+    };
+    let mut b: ArrayVec<Belt, MAX_POLY_SIZE> = {
+        let mut v = ArrayVec::new();
+        v.try_extend_from_slice(b).unwrap();
+        v
+    };
 
     while !b.is_zero() {
         let deg_a = a.degree();
@@ -117,10 +136,16 @@ pub fn bpegcd(a: &[Belt], b: &[Belt], d: &mut [Belt], u: &mut [Belt], v: &mut [B
         let len_q = deg_q + 1;
         let len_r = deg_b + 1;
 
-        let mut q = vec![Belt(0); len_q as usize];
-        let mut r = vec![Belt(0); len_r as usize];
+        let mut q = ArrayVec::<Belt, MAX_POLY_SIZE>::new();
+        for _ in 0..len_q {
+            q.push(Belt(0));
+        }
+        let mut r = ArrayVec::<Belt, MAX_POLY_SIZE>::new();
+        for _ in 0..len_r {
+            r.push(Belt(0));
+        }
 
-        bpdvr(
+        bpdvr::<MAX_POLY_SIZE>(
             a.as_slice(),
             b.as_slice(),
             q.as_mut_slice(),
@@ -134,13 +159,19 @@ pub fn bpegcd(a: &[Belt], b: &[Belt], d: &mut [Belt], u: &mut [Belt], v: &mut [B
         let m1_u_len = m1_u.len();
 
         let mut res1_len = q_len + m1_u_len - 1;
-        let mut res1 = vec![Belt(0); res1_len];
+        let mut res1 = ArrayVec::<Belt, MAX_POLY_SIZE>::new();
+        for _ in 0..res1_len {
+            res1.push(Belt(0));
+        }
         bpmul(q.as_slice(), m1_u.as_slice(), res1.as_mut_slice());
 
         let m2_u_len = m2_u.len();
 
         let len_res2 = core::cmp::max(m2_u_len, res1_len);
-        let mut res2 = vec![Belt(0); len_res2];
+        let mut res2 = ArrayVec::<Belt, MAX_POLY_SIZE>::new();
+        for _ in 0..len_res2 {
+            res2.push(Belt(0));
+        }
         bpsub(m2_u.as_slice(), res1.as_slice(), res2.as_mut_slice());
 
         m2_u = m1_u;
@@ -156,8 +187,10 @@ pub fn bpegcd(a: &[Belt], b: &[Belt], d: &mut [Belt], u: &mut [Belt], v: &mut [B
         let m2_v_len = m2_v.len();
 
         let len_res3 = core::cmp::max(m2_v_len, res1_len);
-        let mut res3 = vec![Belt(0); len_res3];
-
+        let mut res3 = ArrayVec::<Belt, MAX_POLY_SIZE>::new();
+        for _ in 0..len_res3 {
+            res3.push(Belt(0));
+        }
         bpsub(m2_v.as_slice(), res1.as_slice(), res3.as_mut_slice());
 
         m2_v = m1_v;

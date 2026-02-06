@@ -36,6 +36,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb"
 
 [[package]]
+name = "arrayvec"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
+
+[[package]]
 name = "async-stream"
 version = "0.3.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -627,6 +633,7 @@ name = "iris-crypto"
 version = "0.2.0-alpha.0"
 dependencies = [
  "argon2",
+ "arrayvec",
  "bip39",
  "bs58",
  "hex",
@@ -699,6 +706,7 @@ name = "iris-ztd"
 version = "0.2.0-alpha.0"
 dependencies = [
  "arrayref",
+ "arrayvec",
  "bitvec",
  "bs58",
  "crypto-bigint",

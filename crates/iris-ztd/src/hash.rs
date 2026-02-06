@@ -3,12 +3,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     belt::{Belt, PRIME},
+    crypto::cheetah::CheetahPoint,
     tip5::hash::{hash_fixed, hash_varlen},
-    Zeroable,
 };
 
 #[cfg(feature = "alloc")]
 use crate::Noun;
+#[cfg(feature = "alloc")]
+use crate::Zeroable;
 #[cfg(feature = "alloc")]
 use alloc::{string::String, vec, vec::Vec};
 #[cfg(feature = "alloc")]
@@ -164,7 +166,8 @@ pub trait Hashable {
 
 impl Hashable for Belt {
     fn hash(&self) -> Digest {
-        hash_noun(&[*self], &[])
+        let mut v = [Belt(1), *self];
+        Digest(hash_varlen(&mut v).map(Belt))
     }
 }
 
@@ -213,6 +216,7 @@ impl<T: Hashable> Hashable for Option<T> {
     }
 }
 
+#[cfg(feature = "alloc")]
 impl<T: Hashable> Hashable for Zeroable<T> {
     fn hash(&self) -> Digest {
         match &self.0 {
@@ -266,6 +270,7 @@ impl<T: Hashable> Hashable for &[T] {
     }
 }
 
+#[cfg(feature = "alloc")]
 impl<T: Hashable> Hashable for Vec<T> {
     fn hash(&self) -> Digest {
         fn hash_slice<T: Hashable>(arr: &[T]) -> Digest {
@@ -316,5 +321,24 @@ impl Hashable for Noun {
         let mut dyck = Vec::new();
         visit(self, &mut leaves, &mut dyck);
         hash_noun(&leaves, &dyck)
+    }
+}
+
+impl Hashable for CheetahPoint {
+    fn hash(&self) -> Digest {
+        // This is equivalent to converting CheetahPoint to noun, and then hashing that.
+        let dyck = [
+            0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1,
+        ]
+        .map(Belt);
+        let mut leaves = [Belt(0); 6 + 6 + 1];
+        leaves[..6].copy_from_slice(&self.x.0);
+        leaves[6..12].copy_from_slice(&self.y.0);
+        leaves[12] = Belt(!self.inf as u64);
+        let mut hash = [Belt(0); 1 + 24 + 6 + 6 + 1];
+        hash[0] = Belt(leaves.len() as u64);
+        hash[1..14].copy_from_slice(&leaves);
+        hash[14..38].copy_from_slice(&dyck);
+        Digest(hash_varlen(&mut hash).map(Belt))
     }
 }

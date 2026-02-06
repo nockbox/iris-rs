@@ -1,26 +1,17 @@
-use alloc::vec::Vec;
+use arrayvec::ArrayVec;
 use iris_ztd::{
     crypto::cheetah::{
         ch_add, ch_neg, ch_scal_big, trunc_g_order, CheetahPoint, F6lt, A_GEN, G_ORDER,
     },
     tip5::hash::hash_varlen,
-    Belt, Digest, Hashable, MulMod, Noun, NounDecode, NounEncode, U256,
+    Belt, Digest, Hashable, MulMod, U256,
 };
+#[cfg(feature = "alloc")]
+use iris_ztd::{Noun, NounDecode, NounEncode};
 use serde::{Deserialize, Serialize};
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    NounEncode,
-    NounDecode,
-    Serialize,
-    Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "alloc", derive(NounEncode, NounDecode))]
 pub struct PublicKey(pub CheetahPoint);
 
 impl PublicKey {
@@ -44,12 +35,12 @@ impl PublicKey {
             Err(_) => return false,
         };
         let chal = {
-            let mut transcript: Vec<Belt> = Vec::new();
-            transcript.extend_from_slice(&scalar.x.0);
-            transcript.extend_from_slice(&scalar.y.0);
-            transcript.extend_from_slice(&self.0.x.0);
-            transcript.extend_from_slice(&self.0.y.0);
-            transcript.extend_from_slice(&m.0);
+            let mut transcript: ArrayVec<Belt, { 6 + 6 + 6 + 6 + 5 }> = ArrayVec::new();
+            transcript.try_extend_from_slice(&scalar.x.0).unwrap();
+            transcript.try_extend_from_slice(&scalar.y.0).unwrap();
+            transcript.try_extend_from_slice(&self.0.x.0).unwrap();
+            transcript.try_extend_from_slice(&self.0.y.0).unwrap();
+            transcript.try_extend_from_slice(&m.0).unwrap();
             trunc_g_order(&hash_varlen(&mut transcript))
         };
 
@@ -101,10 +92,12 @@ impl PublicKey {
     }
 
     /// SLIP-10 compatible serialization (legacy 65-byte format for compatibility)
-    pub(crate) fn as_slip10_bytes(&self) -> Vec<u8> {
-        let mut data = Vec::new();
+    pub(crate) fn as_slip10_bytes(&self) -> [u8; 96] {
+        let mut data = [0u8; 96];
+        let mut offset = 0;
         for belt in self.0.y.0.iter().rev().chain(self.0.x.0.iter().rev()) {
-            data.extend_from_slice(&belt.0.to_be_bytes());
+            data[offset..offset + 8].copy_from_slice(&belt.0.to_be_bytes());
+            offset += 8;
         }
         data
     }
@@ -160,7 +153,7 @@ impl<'a> core::iter::Sum<&'a PublicKey> for PublicKey {
 
 impl Hashable for PublicKey {
     fn hash(&self) -> Digest {
-        self.to_noun().hash()
+        self.0.hash()
     }
 }
 
@@ -185,6 +178,7 @@ impl core::iter::Sum<Signature> for Option<Signature> {
     }
 }
 
+#[cfg(feature = "alloc")]
 impl NounEncode for Signature {
     fn to_noun(&self) -> Noun {
         (
@@ -195,6 +189,7 @@ impl NounEncode for Signature {
     }
 }
 
+#[cfg(feature = "alloc")]
 impl NounDecode for Signature {
     fn from_noun(noun: &Noun) -> Option<Self> {
         let (c, s): ([Belt; 8], [Belt; 8]) = NounDecode::from_noun(noun)?;
@@ -209,6 +204,8 @@ impl NounDecode for Signature {
     }
 }
 
+// TODO: unblock alloc-less signature hashing by implementing allocless Belt::from_bytes
+#[cfg(feature = "alloc")]
 impl Hashable for Signature {
     fn hash(&self) -> Digest {
         self.to_noun().hash()
@@ -239,10 +236,10 @@ impl PrivateKey {
     pub fn nonce_for(&self, m: &Digest) -> U256 {
         let pubkey = self.public_key().0;
         let nonce = {
-            let mut transcript = Vec::new();
-            transcript.extend_from_slice(&pubkey.x.0);
-            transcript.extend_from_slice(&pubkey.y.0);
-            transcript.extend_from_slice(&m.0);
+            let mut transcript: ArrayVec<Belt, { 6 + 6 + 5 + 8 }> = ArrayVec::new();
+            transcript.try_extend_from_slice(&pubkey.x.0).unwrap();
+            transcript.try_extend_from_slice(&pubkey.y.0).unwrap();
+            transcript.try_extend_from_slice(&m.0).unwrap();
             self.0.to_le_bytes().chunks(4).for_each(|chunk| {
                 let mut buf = [0u8; 4];
                 buf[..chunk.len()].copy_from_slice(chunk);
@@ -295,12 +292,16 @@ impl PrivateKey {
         let chal = {
             // scalar = nonce * G
             let scalar = ch_scal_big(shared_nonce, &A_GEN).unwrap();
-            let mut transcript = Vec::new();
-            transcript.extend_from_slice(&scalar.x.0);
-            transcript.extend_from_slice(&scalar.y.0);
-            transcript.extend_from_slice(&combined_pubkey.0.x.0);
-            transcript.extend_from_slice(&combined_pubkey.0.y.0);
-            transcript.extend_from_slice(&m.0);
+            let mut transcript: ArrayVec<Belt, { 6 + 6 + 6 + 6 + 5 }> = ArrayVec::new();
+            transcript.try_extend_from_slice(&scalar.x.0).unwrap();
+            transcript.try_extend_from_slice(&scalar.y.0).unwrap();
+            transcript
+                .try_extend_from_slice(&combined_pubkey.0.x.0)
+                .unwrap();
+            transcript
+                .try_extend_from_slice(&combined_pubkey.0.y.0)
+                .unwrap();
+            transcript.try_extend_from_slice(&m.0).unwrap();
             trunc_g_order(&hash_varlen(&mut transcript))
         };
         let nonce = self.nonce_for(m);
@@ -364,8 +365,9 @@ impl<'a> core::iter::Sum<&'a PrivateKey> for PrivateKey {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
     use super::*;
-    use alloc::vec;
+    use alloc::{vec, vec::Vec};
 
     #[test]
     fn mupk_test() {

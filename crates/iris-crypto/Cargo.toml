@@ -12,19 +12,22 @@ homepage = "https://nockbox.org"
 authors = ["NockBox inc. <tech@nockbox.org>"]
 
 [dependencies]
-iris-ztd = { workspace = true }
+iris-ztd = { workspace = true, default-features = false }
 iris-ztd-derive = { workspace = true }
 ibig = { workspace = true }
-bip39 = { version = "2.0", default-features = false, features = ["alloc"], optional = true }
-argon2 = { version = "0.5.3", default-features = false, features = ["alloc"], optional = true }
+bip39 = { version = "2.0", default-features = false, features = [], optional = true }
+argon2 = { version = "0.5.3", default-features = false, features = [], optional = true }
 hmac = { version = "0.12", default-features = false }
 sha2 = { version = "0.10", default-features = false }
-bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
+bs58 = { version = "0.5", default-features = false, features = [] }
 serde = { workspace = true }
+arrayvec = "0.7"
 
 [dev-dependencies]
 hex = "0.4"
 
 [features]
-default = ["argon2", "mnemonic"]
-mnemonic = ["dep:bip39"]
+default = ["alloc", "argon2", "mnemonic"]
+alloc = ["iris-ztd/alloc", "argon2/alloc", "bip39/alloc", "serde/alloc", "bs58/alloc"]
+argon2 = ["dep:argon2", "alloc"]
+mnemonic = ["dep:bip39", "alloc"]

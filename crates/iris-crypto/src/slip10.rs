@@ -1,4 +1,4 @@
-use alloc::vec::Vec;
+use arrayvec::ArrayVec;
 use hmac::{Hmac, Mac};
 use iris_ztd::crypto::cheetah::{ch_add, ch_scal_big, A_GEN, G_ORDER};
 use iris_ztd::U256;
@@ -25,19 +25,21 @@ impl ExtendedKey {
     pub fn derive_child(&self, index: u32) -> ExtendedKey {
         let hardened = index >= (1 << 31);
 
-        let mut data = Vec::new();
+        let mut data = ArrayVec::<_, { 1 + 96 + 4 }>::new();
         if hardened {
             let private_key = self
                 .private_key
                 .as_ref()
                 .expect("Cannot derive hardened child without private key");
             data.push(0x00);
-            data.extend_from_slice(&private_key.to_be_bytes());
-            data.extend_from_slice(&index.to_be_bytes());
+            data.try_extend_from_slice(&private_key.to_be_bytes())
+                .unwrap();
+            data.try_extend_from_slice(&index.to_be_bytes()).unwrap();
         } else {
             data.push(0x01);
-            data.extend_from_slice(&self.public_key.as_slip10_bytes());
-            data.extend_from_slice(&index.to_be_bytes());
+            data.try_extend_from_slice(&self.public_key.as_slip10_bytes())
+                .unwrap();
+            data.try_extend_from_slice(&index.to_be_bytes()).unwrap();
         }
         let mut result = hmac_sha512(&self.chain_code, &data);
 
@@ -74,10 +76,10 @@ impl ExtendedKey {
                 }
             }
             // Invalid key: rehash 0x01 || right || index
-            let mut data = Vec::new();
+            let mut data = ArrayVec::<_, { 1 + 32 + 4 }>::new();
             data.push(0x01);
-            data.extend_from_slice(&chain_code);
-            data.extend_from_slice(&index.to_be_bytes());
+            data.try_extend_from_slice(&chain_code).unwrap();
+            data.try_extend_from_slice(&index.to_be_bytes()).unwrap();
             result = hmac_sha512(&self.chain_code, &data);
         }
     }
@@ -103,12 +105,15 @@ pub fn derive_master_key(seed: &[u8]) -> ExtendedKey {
     }
 }
 
+#[cfg(feature = "alloc")]
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
     use bip39::Mnemonic;
     use iris_ztd::{Belt, Hashable, NounEncode};
 
+    #[cfg(feature = "alloc")]
     fn from_b58(s: &str) -> Vec<u8> {
         bs58::decode(s).into_vec().unwrap()
     }

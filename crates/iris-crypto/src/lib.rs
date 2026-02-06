@@ -1,6 +1,8 @@
 #![no_std]
 
+#[cfg(feature = "alloc")]
 extern crate alloc;
+#[cfg(feature = "alloc")]
 use alloc::string::{String, ToString};
 
 pub mod cheetah;
@@ -43,6 +45,8 @@ pub fn gen_master_key(entropy: &[u8], salt: &[u8]) -> (String, ExtendedKey) {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+    use alloc::string::{String, ToString};
     use alloc::{vec, vec::Vec};
     use ibig::UBig;
     use iris_ztd::Hashable;
@@ -68,6 +72,7 @@ mod tests {
         res
     }
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn test_keygen() {
         const LOG_ENTROPY_DEC: &str =
@@ -96,6 +101,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn test_ledger_keygen() {
         // This private key is derived from the default seed and default path for CX_CURVE_Ed25519

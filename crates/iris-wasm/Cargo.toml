@@ -5,7 +5,7 @@ edition.workspace = true
 keywords = ["nockchain", "iris", "wallet", "nock"]
 license = "MIT"
 repository = "https://github.com/nockbox/iris-rs"
-rust-version = "1.85.0"
+rust-version = "1.88.0"
 description = "WASM bindings for Iris wallet"
 documentation = "https://docs.rs/iris-wasm"
 homepage = "https://nockbox.org"
@@ -15,9 +15,9 @@ authors = ["NockBox inc. <tech@nockbox.org>"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-iris-crypto = { workspace = true }
+iris-crypto = { workspace = true, features = ["default"] }
 iris-nockchain-types = { workspace = true }
-iris-ztd = { workspace = true }
+iris-ztd = { workspace = true, features = ["default"] }
 iris-grpc-proto = { workspace = true }
 ibig = { workspace = true }
 bip39 = { version = "2.0", default-features = false, features = ["alloc", "std"] }

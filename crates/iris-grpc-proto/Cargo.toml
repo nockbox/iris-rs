@@ -5,7 +5,7 @@ edition.workspace = true
 keywords = ["nockchain", "iris", "wallet", "nock"]
 license = "MIT"
 repository = "https://github.com/nockbox/iris-rs"
-rust-version = "1.85.0"
+rust-version = "1.88.0"
 description = "Nockchain gRPC protobuf definitions"
 documentation = "https://docs.rs/iris-grpc-proto"
 homepage = "https://nockbox.org"
@@ -13,7 +13,7 @@ authors = ["NockBox inc. <tech@nockbox.org>"]
 
 [dependencies]
 iris-nockchain-types = { workspace = true }
-iris-ztd = { workspace = true }
+iris-ztd = { workspace = true, features = ["default"] }
 prost = "0.13"
 prost-types = "0.13"
 tonic = { version = "0.12", default-features = false, features = ["codegen", "prost"] }

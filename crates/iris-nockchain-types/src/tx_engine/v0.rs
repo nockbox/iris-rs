@@ -9,7 +9,9 @@ use super::note::{BlockHeight, Name, Source, TimelockRange, Version};
 use super::TxId;
 use crate::Nicks;
 
-#[derive(Debug, Clone, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq,
+)]
 pub struct NoteInner {
     pub version: Version,
     pub origin_page: BlockHeight,
@@ -17,7 +19,9 @@ pub struct NoteInner {
     pub timelock: TimelockIntent,
 }
 
-#[derive(Debug, Clone, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq,
+)]
 pub struct Note {
     pub inner: NoteInner,
     pub name: Name,

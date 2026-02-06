@@ -1,8 +1,11 @@
 use core::borrow::Borrow;
+use alloc::string::ToString;
+use alloc::boxed::Box;
+use alloc::format;
 
 use crate::Zeroable;
 use crate::{Digest, Hashable, Noun, NounDecode, NounEncode};
-use alloc::boxed::Box;
+
 use alloc::fmt::Debug;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -27,6 +30,8 @@ pub trait ZEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi, type = "any[]"))]
 pub struct ZBase<E> {
     root: Zeroable<Box<Node<E>>>,
 }

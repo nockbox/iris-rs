@@ -1,6 +1,7 @@
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{boxed::Box, format, string::ToString};
 use iris_crypto::{PublicKey, Signature};
 use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode, ZMap, ZSet};
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,8 @@ use crate::Nicks;
 #[derive(
     Debug, Clone, Copy, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq,
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct NoteInner {
     pub version: Version,
     pub origin_page: BlockHeight,
@@ -20,6 +23,8 @@ pub struct NoteInner {
 }
 
 #[derive(Debug, Clone, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Note {
     pub inner: NoteInner,
     pub name: Name,
@@ -53,6 +58,8 @@ impl Note {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Hashable, NounDecode, NounEncode)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct LegacySignature(pub ZMap<PublicKey, Signature>);
 
 impl LegacySignature {
@@ -68,8 +75,6 @@ impl LegacySignature {
 #[derive(
     Debug,
     Clone,
-    Serialize,
-    Deserialize,
     PartialEq,
     Eq,
     Ord,
@@ -77,7 +82,11 @@ impl LegacySignature {
     Hashable,
     NounDecode,
     NounEncode,
+    Serialize,
+    Deserialize,
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Sig {
     pub m: u64,
     pub pubkeys: ZSet<PublicKey>,
@@ -93,12 +102,16 @@ impl Sig {
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Input {
     pub note: Note,
     pub spend: Spend,
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Spend {
     pub signature: Option<LegacySignature>,
     pub seeds: Seeds,
@@ -106,6 +119,8 @@ pub struct Spend {
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct RawTx {
     pub id: TxId,
     pub inputs: Inputs,
@@ -178,11 +193,15 @@ impl RawTx {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Inputs(pub ZMap<Name, Input>);
 
 #[derive(
     Debug, Clone, Copy, NounEncode, Hashable, NounDecode, Serialize, Deserialize, PartialEq, Eq,
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Timelock {
     pub rel: TimelockRange,
     pub abs: TimelockRange,
@@ -220,11 +239,15 @@ impl Timelock {
     PartialEq,
     Eq,
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct TimelockIntent {
     pub tim: Option<Timelock>,
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Seed {
     pub output_source: Option<Source>,
     pub recipient: Sig,
@@ -283,6 +306,8 @@ impl<'a> NounEncode for SigHashSeed<'a> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Seeds(pub ZSet<Seed>);
 
 impl Seeds {

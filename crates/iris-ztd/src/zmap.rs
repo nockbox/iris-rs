@@ -3,8 +3,12 @@ use core::borrow::Borrow;
 use crate::zbase::{ZBase, ZEntry};
 use crate::{Hashable, NounDecode, NounEncode};
 use alloc::fmt::Debug;
+#[cfg(feature = "wasm")]
+use alloc::{boxed::Box, format, string::ToString};
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd, NounDecode, NounEncode, Hashable)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct ZMapEntry<K, V> {
     key: K,
     value: V,

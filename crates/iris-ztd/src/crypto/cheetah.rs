@@ -1,5 +1,7 @@
 #[cfg(feature = "alloc")]
-use alloc::vec::Vec;
+use arrayvec::ArrayVec;
+#[cfg(feature = "alloc")]
+use alloc::{boxed::Box, format, string::ToString, vec::Vec};
 use core::fmt;
 
 use bs58;
@@ -78,6 +80,8 @@ impl From<bs58::decode::Error> for CheetahError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct CheetahPoint {
     pub x: F6lt,
     pub y: F6lt,

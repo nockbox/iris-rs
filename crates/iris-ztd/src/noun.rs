@@ -1,6 +1,6 @@
 use crate::belt::based_check;
 use crate::crypto::cheetah::F6lt;
-use alloc::{boxed::Box, collections::btree_map::BTreeMap, format, string::String, vec, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, collections::btree_map::BTreeMap, format, string::String, vec, vec::Vec};
 use bitvec::prelude::{BitSlice, BitVec, Lsb0};
 use core::fmt;
 use ibig::UBig;
@@ -48,7 +48,7 @@ where
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Noun {
     Atom(UBig),
-    Cell(Box<Noun>, Box<Noun>),
+    Cell(Arc<Noun>, Arc<Noun>),
 }
 
 impl Noun {
@@ -123,7 +123,7 @@ impl<'de> Deserialize<'de> for Noun {
                 let b = seq
                     .next_element::<Noun>()?
                     .ok_or_else(|| DeError::custom("cell missing cdr"))?;
-                Ok(Noun::Cell(Box::new(a), Box::new(b)))
+                Ok(Noun::Cell(Arc::new(a), Arc::new(b)))
             }
         }
 
@@ -153,12 +153,24 @@ fn atom(value: u64) -> Noun {
 }
 
 fn cons(left: Noun, right: Noun) -> Noun {
-    Noun::Cell(Box::new(left), Box::new(right))
+    Noun::Cell(Arc::new(left), Arc::new(right))
 }
 
 impl<T: NounEncode + ?Sized> NounEncode for &T {
     fn to_noun(&self) -> Noun {
         (**self).to_noun()
+    }
+}
+
+impl<T: NounEncode + ?Sized> NounEncode for Arc<T> {
+    fn to_noun(&self) -> Noun {
+        (**self).to_noun()
+    }
+}
+
+impl<T: NounDecode> NounDecode for Arc<T> {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        Some(Arc::new(T::from_noun(noun)?))
     }
 }
 
@@ -558,8 +570,8 @@ pub fn jam(noun: Noun) -> Vec<u8> {
                 Noun::Cell(left, right) => {
                     buffer.push(true);
                     buffer.push(false);
-                    stack.push(*right);
-                    stack.push(*left);
+                    stack.push((*right).clone());
+                    stack.push((*left).clone());
                 }
             }
         }
@@ -685,10 +697,10 @@ pub fn cue_bitslice(buffer: &BitSlice<u8, Lsb0>) -> Option<Noun> {
                             *dest_ptr = (**backref_map.get(&backref)?).clone();
                         } else {
                             // 10 tag: cell
-                            let mut head = Box::new(atom(0));
-                            let head_ptr = (&mut *head) as *mut _;
-                            let mut tail = Box::new(atom(0));
-                            let tail_ptr = (&mut *tail) as *mut _;
+                            let head = Arc::new(atom(0));
+                            let head_ptr = Arc::as_ptr(&head) as *mut _;
+                            let tail = Arc::new(atom(0));
+                            let tail_ptr = Arc::as_ptr(&tail) as *mut _;
                             *dest_ptr = Noun::Cell(head, tail);
                             let backref = (cursor - 2) as u64;
                             backref_map.insert(backref, dest_ptr);

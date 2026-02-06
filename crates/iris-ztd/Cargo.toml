@@ -24,4 +24,4 @@ arrayvec = "0.7"
 
 [features]
 default = ["alloc"]
-alloc = ["bs58/alloc", "bitvec/alloc", "serde/alloc"]
+alloc = ["bs58/alloc", "bitvec/alloc", "serde/alloc", "serde/rc"]

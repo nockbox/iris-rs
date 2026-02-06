@@ -1,10 +1,13 @@
 use alloc::vec::Vec;
+use alloc::{boxed::Box, format, string::ToString};
 use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode};
 use serde::{Deserialize, Serialize};
 
 pub type Nicks = u64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub enum Note {
     V0(super::v0::Note),
     V1(super::v1::Note),
@@ -73,12 +76,16 @@ impl NounEncode for Note {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Balance(pub Vec<(Name, Note)>);
 
 pub type BlockHeight = u64;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct BalanceUpdate {
     pub height: BlockHeight,
     pub block_id: Digest,
@@ -86,6 +93,8 @@ pub struct BalanceUpdate {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub enum Version {
     V0,
     V1,
@@ -157,6 +166,8 @@ impl From<u32> for Version {
     Serialize,
     Deserialize,
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Name {
     pub first: Digest,
     pub last: Digest,
@@ -192,6 +203,8 @@ impl Name {
 #[derive(
     Debug, Clone, Copy, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq,
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Source {
     pub hash: Digest,
     pub is_coinbase: bool,
@@ -201,6 +214,8 @@ pub struct Source {
 #[derive(
     Debug, Clone, Copy, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq,
 )]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct TimelockRange {
     pub min: Option<BlockHeight>,
     pub max: Option<BlockHeight>,

@@ -1,5 +1,11 @@
 use core::fmt;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "alloc")]
+use alloc::string::ToString;
+#[cfg(feature = "alloc")]
+use alloc::boxed::Box;
+#[cfg(feature = "alloc")]
+use alloc::format;
 
 use crate::{
     belt::{Belt, PRIME},
@@ -20,6 +26,8 @@ use ibig::{ops::DivRem, UBig};
 pub struct Base58Belts<const N: usize>(pub [Belt; N]);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Digest(pub [Belt; 5]);
 
 impl From<[u64; 5]> for Digest {

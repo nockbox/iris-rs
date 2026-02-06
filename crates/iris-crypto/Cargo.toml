@@ -23,6 +23,7 @@ bs58 = { version = "0.5", default-features = false, features = [] }
 serde = { workspace = true }
 arrayvec = "0.7"
 tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
 
 [dev-dependencies]
 hex = "0.4"
@@ -32,4 +33,4 @@ default = ["alloc", "argon2", "mnemonic"]
 alloc = ["iris-ztd/alloc", "argon2/alloc", "bip39/alloc", "serde/alloc", "bs58/alloc"]
 argon2 = ["dep:argon2", "alloc"]
 mnemonic = ["dep:bip39", "alloc"]
-wasm = ["iris-ztd/wasm", "tsify"]
+wasm = ["iris-ztd/wasm", "tsify", "wasm-bindgen"]

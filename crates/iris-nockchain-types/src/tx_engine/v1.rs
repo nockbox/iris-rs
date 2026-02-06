@@ -1,5 +1,6 @@
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
+use alloc::{boxed::Box, format};
 use alloc::vec;
 use alloc::vec::Vec;
 use iris_crypto::{PublicKey, Signature};
@@ -18,7 +19,9 @@ fn noun_words(n: &Noun) -> u64 {
     }
 }
 
-#[derive(Debug, Clone, Hashable, NounDecode, NounEncode)]
+#[derive(Debug, Clone, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Pkh {
     pub m: u64,
     pub hashes: ZSet<Digest>,
@@ -41,6 +44,8 @@ impl Pkh {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, NounDecode, NounEncode)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct NoteData(pub ZMap<String, Noun>);
 
 impl Hashable for NoteData {
@@ -86,6 +91,8 @@ impl NoteData {
 }
 
 #[derive(Debug, Clone, Hashable, Serialize, Deserialize, NounEncode, NounDecode, PartialEq, Eq)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Note {
     pub version: Version,
     pub origin_page: BlockHeight,
@@ -112,7 +119,9 @@ impl Note {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub enum LockRoot {
     Hash(Digest),
     Lock(SpendCondition),
@@ -158,7 +167,9 @@ impl Hashable for LockRoot {
     }
 }
 
-#[derive(Debug, Clone, NounEncode, NounDecode)]
+#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Seed {
     pub output_source: Option<Source>,
     pub lock_root: LockRoot,
@@ -229,7 +240,9 @@ impl<'a> NounEncode for SigHashSeed<'a> {
     }
 }
 
-#[derive(Debug, Clone, Hashable, NounDecode, NounEncode)]
+#[derive(Debug, Clone, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Seeds(pub ZSet<Seed>);
 
 impl Seeds {
@@ -246,7 +259,9 @@ impl Seeds {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Spend0 {
     pub signature: LegacySignature,
     pub seeds: Seeds,
@@ -259,7 +274,9 @@ impl Spend0 {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Spend1 {
     pub witness: Witness,
     pub seeds: Seeds,
@@ -272,7 +289,9 @@ impl Spend1 {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub enum Spend {
     S0(Spend0),
     S1(Spend1),
@@ -447,10 +466,14 @@ impl Hashable for Spend {
     }
 }
 
-#[derive(Debug, Clone, Default, Hashable, NounDecode, NounEncode)]
+#[derive(Debug, Clone, Default, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct PkhSignature(pub ZMap<Digest, (PublicKey, Signature)>);
 
-#[derive(Debug, Clone, Hashable, NounEncode, NounDecode)]
+#[derive(Debug, Clone, Hashable, NounEncode, NounDecode, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Witness {
     pub lock_merkle_proof: LockMerkleProof,
     pub pkh_signature: PkhSignature,
@@ -485,7 +508,9 @@ impl Witness {
     }
 }
 
-#[derive(Debug, Clone, NounEncode, NounDecode)]
+#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct LockMerkleProof {
     pub spend_condition: SpendCondition,
     pub axis: u64,
@@ -502,13 +527,17 @@ impl Hashable for LockMerkleProof {
     }
 }
 
-#[derive(Debug, Clone, NounEncode, NounDecode, Hashable)]
+#[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct MerkleProof {
     pub root: Digest,
     pub path: Vec<Digest>,
 }
 
-#[derive(Debug, Clone, NounEncode, NounDecode, Hashable)]
+#[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct SpendCondition(pub Vec<LockPrimitive>);
 
 impl SpendCondition {
@@ -555,7 +584,9 @@ impl SpendCondition {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub enum LockPrimitive {
     Pkh(Pkh),
     Tim(LockTim),
@@ -600,10 +631,14 @@ impl Hashable for LockPrimitive {
 
 pub type LockTim = super::v0::Timelock;
 
-#[derive(Debug, Clone, Hashable, NounDecode, NounEncode)]
+#[derive(Debug, Clone, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Hax(pub ZSet<Digest>);
 
-#[derive(Debug, Clone, Default, Hashable, NounDecode, NounEncode)]
+#[derive(Debug, Clone, Default, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Spends(pub ZMap<Name, Spend>);
 
 impl Spends {
@@ -646,7 +681,9 @@ impl Spends {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct RawTx {
     pub id: TxId,
     pub spends: Spends,
@@ -756,7 +793,9 @@ impl RawTx {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct NockchainTx {
     pub version: Version,
     pub id: TxId,
@@ -819,7 +858,9 @@ impl NounDecode for NockchainTx {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct WitnessData {
     pub data: ZMap<Name, Witness>,
 }
@@ -839,7 +880,9 @@ impl NounDecode for WitnessData {
     }
 }
 
-#[derive(Debug, Clone, NounEncode, NounDecode, Hashable)]
+#[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct LockMetadata {
     pub lock: SpendCondition,
     pub include_data: bool,
@@ -854,7 +897,9 @@ impl From<SpendCondition> for LockMetadata {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub enum InputDisplay {
     V0(ZMap<Name, super::v0::Sig>),
     V1(ZMap<Name, SpendCondition>),
@@ -886,7 +931,9 @@ impl NounDecode for InputDisplay {
     }
 }
 
-#[derive(Default, Debug, Clone, NounEncode, NounDecode)]
+#[derive(Default, Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct TransactionDisplay {
     pub inputs: InputDisplay,
     pub outputs: ZMap<Digest, LockMetadata>,

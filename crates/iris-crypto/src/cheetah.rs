@@ -8,10 +8,14 @@ use iris_ztd::{
 };
 #[cfg(feature = "alloc")]
 use iris_ztd::{Noun, NounDecode, NounEncode};
+#[cfg(feature = "alloc")]
+use alloc::{boxed::Box, format, string::ToString};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "alloc", derive(NounEncode, NounDecode))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct PublicKey(pub CheetahPoint);
 
 impl PublicKey {
@@ -158,6 +162,8 @@ impl Hashable for PublicKey {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Signature {
     pub c: U256, // challenge
     pub s: U256, // signature scalar

@@ -22,6 +22,7 @@ thiserror = "2.0"
 ibig = { workspace = true }
 hex = "0.4"
 tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
 
 [features]
-wasm = ["iris-ztd/wasm", "tsify"]
+wasm = ["iris-ztd/wasm", "tsify", "wasm-bindgen"]

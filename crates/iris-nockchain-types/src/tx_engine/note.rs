@@ -85,7 +85,7 @@ pub struct BalanceUpdate {
     pub notes: Balance,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Version {
     V0,
     V1,
@@ -94,7 +94,7 @@ pub enum Version {
 
 impl NounEncode for Version {
     fn to_noun(&self) -> Noun {
-        u32::from(self.clone()).to_noun()
+        u32::from(*self).to_noun()
     }
 }
 

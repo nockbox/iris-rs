@@ -19,9 +19,7 @@ pub struct NoteInner {
     pub timelock: TimelockIntent,
 }
 
-#[derive(
-    Debug, Clone, Copy, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq,
-)]
+#[derive(Debug, Clone, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Note {
     pub inner: NoteInner,
     pub name: Name,
@@ -143,12 +141,7 @@ impl RawTx {
                 // Note that it's reconciling timelock.note.child, not timelock.note.chi.
                 // This effectively means, that the reconcile code is useless - it will just
                 // keep timelock intent of the last seed.
-                if let Some(tl) = seed
-                    .timelock_intent
-                    .tim
-                    .clone()
-                    .filter(|v| *v != Timelock::none())
-                {
+                if let Some(tl) = seed.timelock_intent.tim.filter(|v| *v != Timelock::none()) {
                     child.0.tim = Some(tl);
                 }
                 child.1 += seed.gift;
@@ -164,7 +157,7 @@ impl RawTx {
                 is_coinbase: false,
             };
             outputs.push(Note {
-                name: Name::new_v0(sig.clone(), source.clone(), timelock.clone()),
+                name: Name::new_v0(sig.clone(), source, timelock),
                 sig,
                 source,
                 assets,
@@ -187,7 +180,9 @@ impl RawTx {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
 pub struct Inputs(pub ZMap<Name, Input>);
 
-#[derive(Debug, Clone, NounEncode, Hashable, NounDecode, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, NounEncode, Hashable, NounDecode, Serialize, Deserialize, PartialEq, Eq,
+)]
 pub struct Timelock {
     pub rel: TimelockRange,
     pub abs: TimelockRange,
@@ -213,7 +208,17 @@ impl Timelock {
 }
 
 #[derive(
-    Debug, Default, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize, PartialEq, Eq,
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    NounEncode,
+    NounDecode,
+    Hashable,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
 )]
 pub struct TimelockIntent {
     pub tim: Option<Timelock>,

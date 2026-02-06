@@ -157,7 +157,7 @@ pub fn hash_noun(leaves: &[Belt], dyck: &[Belt]) -> Digest {
     combined.push(Belt(leaves.len() as u64));
     combined.extend_from_slice(leaves);
     combined.extend_from_slice(dyck);
-    Digest(hash_varlen(&mut combined).map(Belt))
+    Digest(hash_varlen(&combined).map(Belt))
 }
 
 pub trait Hashable {
@@ -166,8 +166,8 @@ pub trait Hashable {
 
 impl Hashable for Belt {
     fn hash(&self) -> Digest {
-        let mut v = [Belt(1), *self];
-        Digest(hash_varlen(&mut v).map(Belt))
+        let v = [Belt(1), *self];
+        Digest(hash_varlen(&v).map(Belt))
     }
 }
 
@@ -339,6 +339,6 @@ impl Hashable for CheetahPoint {
         hash[0] = Belt(leaves.len() as u64);
         hash[1..14].copy_from_slice(&leaves);
         hash[14..38].copy_from_slice(&dyck);
-        Digest(hash_varlen(&mut hash).map(Belt))
+        Digest(hash_varlen(&hash).map(Belt))
     }
 }

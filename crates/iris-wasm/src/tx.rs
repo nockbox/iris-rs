@@ -112,7 +112,7 @@ impl WasmVersion {
 
     fn from_internal(version: &Version) -> Self {
         Self {
-            version: version.clone().into(),
+            version: (*version).into(),
         }
     }
 }
@@ -501,7 +501,7 @@ impl WasmNote {
             tim: timelock.map(|t| t.to_internal()),
         };
 
-        let name = Name::new_v0(sig.clone(), source.clone(), timelock_intent.clone());
+        let name = Name::new_v0(sig.clone(), source, timelock_intent);
 
         let internal = Note::V0(v0::Note::new(
             Version::V0,

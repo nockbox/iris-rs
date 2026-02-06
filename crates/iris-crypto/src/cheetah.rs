@@ -41,7 +41,7 @@ impl PublicKey {
             transcript.try_extend_from_slice(&self.0.x.0).unwrap();
             transcript.try_extend_from_slice(&self.0.y.0).unwrap();
             transcript.try_extend_from_slice(&m.0).unwrap();
-            trunc_g_order(&hash_varlen(&mut transcript))
+            trunc_g_order(&hash_varlen(&transcript))
         };
 
         chal == sig.c
@@ -245,7 +245,7 @@ impl PrivateKey {
                 buf[..chunk.len()].copy_from_slice(chunk);
                 transcript.push(Belt(u32::from_le_bytes(buf) as u64));
             });
-            trunc_g_order(&hash_varlen(&mut transcript))
+            trunc_g_order(&hash_varlen(&transcript))
         };
         nonce
     }
@@ -302,7 +302,7 @@ impl PrivateKey {
                 .try_extend_from_slice(&combined_pubkey.0.y.0)
                 .unwrap();
             transcript.try_extend_from_slice(&m.0).unwrap();
-            trunc_g_order(&hash_varlen(&mut transcript))
+            trunc_g_order(&hash_varlen(&transcript))
         };
         let nonce = self.nonce_for(m);
         let chal_mul = MulMod::mul_mod(&chal, &self.0, &G_ORDER);

@@ -106,7 +106,7 @@ pub fn hash_varlen(input_vec: &[Belt]) -> [u64; 5] {
 }
 
 pub fn hash_fixed(input_vec: &mut [Belt]) -> [u64; 5] {
-    let mut sponge = create_init_sponge_variable();
+    let mut sponge = create_init_sponge_fixed();
 
     // assert that input is made of base field elements
     assert_all_based(input_vec);

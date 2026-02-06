@@ -1526,18 +1526,6 @@ mod tests {
                   },
                   "seeds":[
                      {
-                        "lock_root":"9baDCLsAat7JD2YoBBZCxpZMeh3QhUnmSaBTBu1UNH9oqeybehthbLx",
-                        "note_data":{
-                           "entries":[
-                              
-                           ]
-                        },
-                        "gift":{
-                           "value":"3276800"
-                        },
-                        "parent_hash":"9TmqsBWQmJoWg6ZABwLGu2WsHEzt5bbNWwga9hygVpax7UEscW7MCg2"
-                     },
-                     {
                         "lock_root":"66oU5Tv4ukTdcNTWHwWJeNP873vJW1MLCWooj4udDn1cq3Yw8mTS2wH",
                         "note_data":{
                            "entries":[
@@ -1546,6 +1534,18 @@ mod tests {
                         },
                         "gift":{
                            "value":"18210766"
+                        },
+                        "parent_hash":"9TmqsBWQmJoWg6ZABwLGu2WsHEzt5bbNWwga9hygVpax7UEscW7MCg2"
+                     },
+                     {
+                        "lock_root":"9baDCLsAat7JD2YoBBZCxpZMeh3QhUnmSaBTBu1UNH9oqeybehthbLx",
+                        "note_data":{
+                           "entries":[
+                              
+                           ]
+                        },
+                        "gift":{
+                           "value":"3276800"
                         },
                         "parent_hash":"9TmqsBWQmJoWg6ZABwLGu2WsHEzt5bbNWwga9hygVpax7UEscW7MCg2"
                      }

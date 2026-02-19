@@ -357,7 +357,7 @@ impl AsRef<SpendV1> for SpendV1 {
 }
 
 impl SpendV1 {
-    pub const MIN_FEE: u64 = 256;
+    pub const MIN_FEE: Nicks = Nicks(256);
 
     pub fn fee_for_many<T: AsRef<SpendV1>>(
         spends: impl Iterator<Item = T>,
@@ -365,13 +365,13 @@ impl SpendV1 {
     ) -> Nicks {
         let fee = spends
             .map(|v| v.as_ref().unclamped_fee(per_word))
-            .sum::<u64>();
+            .sum::<Nicks>();
         fee.max(Self::MIN_FEE)
     }
 
     pub fn unclamped_fee(&self, per_word: Nicks) -> Nicks {
         let (a, b) = self.calc_words();
-        (a + b) * per_word
+        per_word * (a + b)
     }
 
     pub fn calc_words(&self) -> (u64, u64) {

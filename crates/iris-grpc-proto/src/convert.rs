@@ -115,13 +115,13 @@ impl TryFrom<PbName> for Name {
 
 impl From<Nicks> for PbNicks {
     fn from(n: Nicks) -> Self {
-        PbNicks { value: n }
+        PbNicks { value: n.0 }
     }
 }
 
 impl From<PbNicks> for Nicks {
     fn from(n: PbNicks) -> Self {
-        n.value
+        Nicks(n.value)
     }
 }
 
@@ -140,13 +140,13 @@ impl TryFrom<PbNoteVersion> for Version {
 
 impl From<BlockHeight> for PbBlockHeight {
     fn from(h: BlockHeight) -> Self {
-        PbBlockHeight { value: h }
+        PbBlockHeight { value: h as u64 }
     }
 }
 
 impl From<PbBlockHeight> for BlockHeight {
     fn from(h: PbBlockHeight) -> Self {
-        h.value
+        h.value as u32
     }
 }
 
@@ -190,17 +190,20 @@ impl From<TimelockRange> for PbTimeLockRangeRelative {
         PbTimeLockRangeRelative {
             min: range
                 .min
-                .map(|v| crate::pb::common::v1::BlockHeightDelta { value: v }),
+                .map(|v| crate::pb::common::v1::BlockHeightDelta { value: v as u64 }),
             max: range
                 .max
-                .map(|v| crate::pb::common::v1::BlockHeightDelta { value: v }),
+                .map(|v| crate::pb::common::v1::BlockHeightDelta { value: v as u64 }),
         }
     }
 }
 
 impl From<PbTimeLockRangeRelative> for TimelockRange {
     fn from(range: PbTimeLockRangeRelative) -> Self {
-        TimelockRange::new(range.min.map(|v| v.value), range.max.map(|v| v.value))
+        TimelockRange::new(
+            range.min.map(|v| v.value as u32),
+            range.max.map(|v| v.value as u32),
+        )
     }
 }
 
@@ -782,14 +785,12 @@ impl From<v0::TimelockIntent> for PbTimeLockIntent {
                             max: t.abs.max.map(|v| v.into()),
                         }),
                         relative: Some(PbTimeLockRangeRelative {
-                            min: t
-                                .rel
-                                .min
-                                .map(|v| crate::pb::common::v1::BlockHeightDelta { value: v }),
-                            max: t
-                                .rel
-                                .max
-                                .map(|v| crate::pb::common::v1::BlockHeightDelta { value: v }),
+                            min: t.rel.min.map(|v| crate::pb::common::v1::BlockHeightDelta {
+                                value: v as u64,
+                            }),
+                            max: t.rel.max.map(|v| crate::pb::common::v1::BlockHeightDelta {
+                                value: v as u64,
+                            }),
                         }),
                     },
                 )
@@ -1371,7 +1372,7 @@ impl TryFrom<PbRawTransactionV0> for v0::RawTxV0 {
             .timelock_range
             .map(|tr| tr.into())
             .unwrap_or_else(TimelockRange::none);
-        let total_fees = tx.total_fees.map(|f| f.into()).unwrap_or(0u64);
+        let total_fees = tx.total_fees.map(|f| f.into()).unwrap_or(Nicks(0u64));
 
         Ok(v0::RawTxV0 {
             id,

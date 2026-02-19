@@ -1,6 +1,5 @@
 use crate::belt::based_check;
 use crate::crypto::cheetah::F6lt;
-#[cfg(feature = "wasm")]
 use alloc::string::ToString;
 use alloc::{
     boxed::Box, collections::btree_map::BTreeMap, format, string::String, sync::Arc, vec, vec::Vec,

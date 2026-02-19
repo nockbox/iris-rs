@@ -147,7 +147,7 @@ impl RawTxV0 {
                 let sig = seed.recipient.clone();
                 let child = output_base
                     .entry(sig)
-                    .or_insert_with(|| (TimelockIntent::default(), 0, ZSet::new()));
+                    .or_insert_with(|| (TimelockIntent::default(), Nicks(0), ZSet::new()));
                 // NOTE: in hoon, we see:
                 //
                 // =?  timelock.note.chi  !=(~ timelock-intent.seed)

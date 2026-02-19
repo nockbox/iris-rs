@@ -4,7 +4,150 @@ use core::convert::TryFrom;
 use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-pub type Nicks = u64;
+/// 64-bit unsigned integer representing the number of assets.
+#[derive(Debug, Clone, Copy, Eq, Ord, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi, type = "string"))]
+#[serde(transparent)]
+pub struct Nicks(pub u64);
+
+impl Nicks {
+    pub fn saturating_sub(self, other: Self) -> Self {
+        Self(self.0.saturating_sub(other.0))
+    }
+
+    pub fn nocks(self) -> u64 {
+        self.0 / 65536
+    }
+
+    pub fn parts(self) -> (u64, Nicks) {
+        (self.0 / 65536, Nicks(self.0 % 65536))
+    }
+}
+
+impl core::fmt::Display for Nicks {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let (nocks, nicks) = self.parts();
+        write!(f, "{}.{}", nocks, nicks.0)
+    }
+}
+
+macro_rules! impl_math_ops {
+    ($($t:ty),*) => {
+        $(
+            impl PartialEq<$t> for Nicks {
+                fn eq(&self, other: &$t) -> bool {
+                    self.0 == u64::from(*other)
+                }
+            }
+            impl PartialOrd<$t> for Nicks {
+                fn partial_cmp(&self, other: &$t) -> Option<core::cmp::Ordering> {
+                    self.0.partial_cmp(&u64::from(*other))
+                }
+            }
+            impl core::ops::Add<$t> for Nicks {
+                type Output = Self;
+
+                fn add(self, other: $t) -> Self::Output {
+                    Self(self.0.strict_add(u64::from(other)))
+                }
+            }
+
+            impl core::ops::AddAssign<$t> for Nicks {
+                fn add_assign(&mut self, other: $t) {
+                    *self = *self + other;
+                }
+            }
+
+            impl core::ops::Sub<$t> for Nicks {
+                type Output = Self;
+
+                fn sub(self, other: $t) -> Self::Output {
+                    Self(self.0.strict_sub(u64::from(other)))
+                }
+            }
+
+            impl core::ops::SubAssign<$t> for Nicks {
+                fn sub_assign(&mut self, other: $t) {
+                    *self = *self - other;
+                }
+            }
+
+            impl core::ops::Mul<$t> for Nicks {
+                type Output = Self;
+
+                fn mul(self, other: $t) -> Self::Output {
+                    Self(self.0.strict_mul(u64::from(other)))
+                }
+            }
+
+            impl core::ops::MulAssign<$t> for Nicks {
+                fn mul_assign(&mut self, other: $t) {
+                    *self = *self * other;
+                }
+            }
+
+            impl core::ops::Div<$t> for Nicks {
+                type Output = Self;
+
+                fn div(self, other: $t) -> Self::Output {
+                    Self(self.0.strict_div(u64::from(other)))
+                }
+            }
+
+            impl core::ops::DivAssign<$t> for Nicks {
+                fn div_assign(&mut self, other: $t) {
+                    *self = *self / other;
+                }
+            }
+
+            impl core::ops::Rem<$t> for Nicks {
+                type Output = Self;
+
+                fn rem(self, other: $t) -> Self::Output {
+                    Self(self.0.strict_rem(u64::from(other)))
+                }
+            }
+
+            impl core::ops::RemAssign<$t> for Nicks {
+                fn rem_assign(&mut self, other: $t) {
+                    *self = *self % other;
+                }
+            }
+
+            impl core::iter::Sum<$t> for Nicks {
+                fn sum<I: Iterator<Item = $t>>(iter: I) -> Self {
+                    let mut sum = Self(0);
+                    for x in iter {
+                        sum += x;
+                    }
+                    sum
+                }
+            }
+        )*
+    };
+}
+
+macro_rules! impl_from_ops {
+    ($($t:ty),*) => {
+        $(
+            impl From<$t> for Nicks {
+                fn from(value: $t) -> Self {
+                    Self(u64::from(value))
+                }
+            }
+            impl From<Nicks> for $t {
+                fn from(nicks: Nicks) -> Self {
+                    assert!(nicks.0 <= <$t>::MAX as u64);
+                    nicks.0 as $t
+                }
+            }
+        )*
+    };
+}
+
+impl_from_ops!(u64);
+impl_math_ops!(u64, Nicks);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -83,7 +226,8 @@ impl NounEncode for Note {
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Balance(pub Vec<(Name, Note)>);
 
-pub type BlockHeight = u64;
+// We are choosing 32-bit integer, so that it is a number in JS
+pub type BlockHeight = u32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]

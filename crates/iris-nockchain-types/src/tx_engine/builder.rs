@@ -57,13 +57,13 @@ impl SpendBuilder {
         refund_lock: Option<SpendCondition>,
     ) -> Result<Self, BuildError> {
         let spend = if note.version() == Version::V0 {
-            Spend::new_legacy(Seeds(Default::default()), 0)
+            Spend::new_legacy(Seeds(Default::default()), 0.into())
         } else {
             let spend_condition = spend_condition.ok_or(BuildError::MissingSpendCondition)?;
             Spend::new_witness(
                 Witness::new(spend_condition.clone()),
                 Seeds(Default::default()),
-                0,
+                0.into(),
             )
         };
         Ok(Self {
@@ -110,7 +110,7 @@ impl SpendBuilder {
                 .retain(|v| v.lock_root.hash() != lock_root.hash());
             let refund = self.note.assets()
                 - self.spend.fee()
-                - self.spend.seeds().0.iter().map(|v| v.gift).sum::<u64>();
+                - self.spend.seeds().0.iter().map(|v| v.gift).sum::<Nicks>();
             if refund > 0 {
                 let seed = self.build_seed(rl, refund, include_lock_data);
                 // NOTE: by convention, the refund seed is always first
@@ -301,7 +301,7 @@ impl SpendBuilder {
             match mu {
                 MissingUnlocks::Pkh { num_sigs, .. } => {
                     // Heuristic for missing signatures. It is perhaps 30, but perhaps not.
-                    fee += 35 * num_sigs * fee_per_word;
+                    fee += fee_per_word * 35 * num_sigs;
                 }
                 // TODO: handle hax
                 _ => (),
@@ -352,7 +352,7 @@ impl TxBuilder {
                 })
                 .collect::<Result<BTreeMap<_, _>, _>>()?,
             fee_pool: vec![],
-            fee_per_word: 1 << 15,
+            fee_per_word: (1 << 15).into(),
         })
     }
 
@@ -529,7 +529,7 @@ impl TxBuilder {
     }
 
     pub fn calc_fee(&self) -> Nicks {
-        let mut fee = 0;
+        let mut fee = Nicks(0);
 
         for s in self.spends.values() {
             fee += s.unclamped_fee(self.fee_per_word);
@@ -560,8 +560,8 @@ impl TxBuilder {
 
             // Sort by non-refund assets, so that we prioritize refunds from used-up notes
             spends.sort_by(|a, b| {
-                let anra = a.note.assets() - a.cur_refund().map(|v| v.gift).unwrap_or(0);
-                let bnra = b.note.assets() - b.cur_refund().map(|v| v.gift).unwrap_or(0);
+                let anra = a.note.assets() - a.cur_refund().map(|v| v.gift).unwrap_or(0.into());
+                let bnra = b.note.assets() - b.cur_refund().map(|v| v.gift).unwrap_or(0.into());
                 if anra != bnra {
                     // By default, put the greatest non-refund transfers first
                     bnra.cmp(&anra)
@@ -586,7 +586,7 @@ impl TxBuilder {
 
                         // Eliminate refund seed words, if the refund is now gone.
                         if adjust_fee && s.cur_refund().is_none() {
-                            fee_left -= fee_left.min(words * self.fee_per_word);
+                            fee_left -= fee_left.min(self.fee_per_word * words);
                         }
                     }
                 }
@@ -625,8 +625,8 @@ impl TxBuilder {
             // Sort by smallest fee, so that we can return as many low-fee notes to fee pool as
             // possible.
             spends.sort_by(|a, b| {
-                let anra = a.note.assets() - a.cur_refund().map(|v| v.gift).unwrap_or(0);
-                let bnra = b.note.assets() - b.cur_refund().map(|v| v.gift).unwrap_or(0);
+                let anra = a.note.assets() - a.cur_refund().map(|v| v.gift).unwrap_or(0.into());
+                let bnra = b.note.assets() - b.cur_refund().map(|v| v.gift).unwrap_or(0.into());
                 let aor = a.spend.seeds().0.len() == 1 && a.cur_refund().is_some();
                 let bor = b.spend.seeds().0.len() == 1 && b.cur_refund().is_some();
                 if aor != bor {

@@ -37,7 +37,15 @@ jobs:
 
     - name: Build WASM
       working-directory: crates/iris-wasm
-      run: wasm-pack build --target web --scope nockbox
+      run: bash scripts/build-wasm.sh
+
+    - name: Test Guard
+      working-directory: crates/iris-wasm
+      run: npx tsx scripts/test-guard.ts
+
+    - name: Test typescript
+      working-directory: crates/iris-wasm
+      run: npx --no-install --yes -p typescript tsc --noEmit pkg/iris_wasm.guard.ts
 
     - name: Validate npm package
       working-directory: crates/iris-wasm/pkg

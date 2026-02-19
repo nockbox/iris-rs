@@ -12,7 +12,7 @@ use iris_nockchain_types::{
     tx::RawTx,
     v0,
     v1::{self, NockchainTx, NoteData, SeedV1 as Seed, SpendCondition},
-    Nicks, Source, SpendBuilder,
+    BlockHeight, Nicks, Source, SpendBuilder,
 };
 use iris_ztd::{cue, Digest, ZSet, U256};
 use serde::{Deserialize, Serialize};
@@ -67,7 +67,7 @@ pub fn note_from_protobuf(value: JsValue) -> Result<Note, JsValue> {
 #[wasm_bindgen]
 pub fn create_note_v1(
     version: Version,
-    origin_page: u64,
+    origin_page: BlockHeight,
     name: Name,
     note_data: NoteData,
     assets: Nicks,
@@ -85,7 +85,7 @@ pub fn create_note_v1(
 // Helper to create V0 note
 #[wasm_bindgen]
 pub fn create_note_v0(
-    origin_page: u64,
+    origin_page: BlockHeight,
     sig_m: u64,
     sig_pubkeys: Vec<js_sys::Uint8Array>,
     source_hash: Digest,

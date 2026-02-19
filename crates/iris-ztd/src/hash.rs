@@ -376,6 +376,12 @@ impl Hashable for u64 {
     }
 }
 
+impl Hashable for u32 {
+    fn hash(&self) -> Digest {
+        Belt(*self as u64).hash()
+    }
+}
+
 impl Hashable for usize {
     fn hash(&self) -> Digest {
         (*self as u64).hash()

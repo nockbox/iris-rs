@@ -58,24 +58,25 @@ pub enum Noun {
     Cell(Arc<Noun>, Arc<Noun>),
 }
 
-impl ToString for Noun {
-    fn to_string(&self) -> String {
-        fn autocons(cell: &Noun) -> String {
-            match cell {
-                Noun::Atom(a) => format!("{}", a),
-                Noun::Cell(head, tail) => match &**tail {
-                    Noun::Cell(_, _) => format!("{} {}", autocons(head), autocons(tail)),
-                    Noun::Atom(a) if a.is_zero() => autocons(head),
-                    Noun::Atom(_) => format!("{} . {}", autocons(head), autocons(tail)),
-                },
+impl core::fmt::Display for Noun {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        struct AutoCons<'a>(&'a Noun);
+        impl<'a> core::fmt::Display for AutoCons<'a> {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self.0 {
+                    Noun::Atom(a) => write!(f, "{}", a),
+                    Noun::Cell(head, tail) => match &**tail {
+                        Noun::Cell(_, _) => write!(f, "{} {}", AutoCons(head), AutoCons(tail)),
+                        Noun::Atom(a) if a.is_zero() => AutoCons(head).fmt(f),
+                        Noun::Atom(_) => write!(f, "{} . {}", AutoCons(head), AutoCons(tail)),
+                    },
+                }
             }
         }
 
         match self {
-            Noun::Atom(a) => format!("{}", a),
-            Noun::Cell(head, tail) => {
-                format!("[{}]", autocons(&Noun::Cell(head.clone(), tail.clone())))
-            }
+            Noun::Atom(a) => write!(f, "{}", a),
+            Noun::Cell(_, _) => write!(f, "[{}]", AutoCons(self)),
         }
     }
 }
@@ -90,12 +91,12 @@ impl Serialize for Noun {
             Self::Cell(a, b) => {
                 let mut seq = serializer.serialize_seq(None)?;
 
-                seq.serialize_element(&*a)?;
+                seq.serialize_element(a)?;
 
                 let mut b = b.clone();
 
                 while let Self::Cell(left, right) = b.as_ref() {
-                    seq.serialize_element(&*left)?;
+                    seq.serialize_element(left)?;
                     b = right.clone();
                 }
 

@@ -63,7 +63,7 @@ impl SpendBuilder {
             Spend::new_witness(
                 Witness::new(spend_condition.clone()),
                 Seeds(Default::default()),
-                0.into(),
+                Nicks(0),
             )
         };
         Ok(Self {
@@ -560,8 +560,8 @@ impl TxBuilder {
 
             // Sort by non-refund assets, so that we prioritize refunds from used-up notes
             spends.sort_by(|a, b| {
-                let anra = a.note.assets() - a.cur_refund().map(|v| v.gift).unwrap_or(0.into());
-                let bnra = b.note.assets() - b.cur_refund().map(|v| v.gift).unwrap_or(0.into());
+                let anra = a.note.assets() - a.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
+                let bnra = b.note.assets() - b.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
                 if anra != bnra {
                     // By default, put the greatest non-refund transfers first
                     bnra.cmp(&anra)
@@ -625,8 +625,8 @@ impl TxBuilder {
             // Sort by smallest fee, so that we can return as many low-fee notes to fee pool as
             // possible.
             spends.sort_by(|a, b| {
-                let anra = a.note.assets() - a.cur_refund().map(|v| v.gift).unwrap_or(0.into());
-                let bnra = b.note.assets() - b.cur_refund().map(|v| v.gift).unwrap_or(0.into());
+                let anra = a.note.assets() - a.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
+                let bnra = b.note.assets() - b.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
                 let aor = a.spend.seeds().0.len() == 1 && a.cur_refund().is_some();
                 let bor = b.spend.seeds().0.len() == 1 && b.cur_refund().is_some();
                 if aor != bor {
@@ -772,14 +772,14 @@ mod tests {
                     .unwrap(),
             ),
             note_data: NoteData::empty(),
-            assets: 4294967296,
+            assets: Nicks(4294967296),
         });
 
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
-        let gift = 1234567;
-        let fee = 2850816;
+        let gift = Nicks(1234567);
+        let fee = Nicks(2850816);
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
@@ -790,7 +790,7 @@ mod tests {
             ]
             .into(),
         );
-        let tx = TxBuilder::new(1)
+        let tx = TxBuilder::new(Nicks(1))
             .simple_spend_base(
                 vec![(note.clone(), Some(spend_condition.clone()))],
                 recipient,
@@ -811,7 +811,7 @@ mod tests {
             "3pmkA1knKhJzmd28t5TULP9DADK7GhWsHaNSTpPcGcN4nxzrWsDK2xe",
         );
 
-        let mut tx = TxBuilder::new(1 << 17);
+        let mut tx = TxBuilder::new(Nicks(1 << 17));
 
         tx.simple_spend_base(
             vec![(note.clone(), Some(spend_condition.clone()))],
@@ -827,7 +827,7 @@ mod tests {
 
         assert!(tx.validate().is_err());
 
-        let fee_per_word = 40000;
+        let fee_per_word = Nicks(40000);
         let mut builder = TxBuilder::new(fee_per_word);
 
         builder
@@ -844,8 +844,8 @@ mod tests {
 
         let tx = builder.sign(&private_key).build();
 
-        assert_eq!(tx.to_raw_tx().spends.fee(fee_per_word), 2520000);
-        assert_eq!(fee1, 2520000);
+        assert_eq!(tx.to_raw_tx().spends.fee(fee_per_word), Nicks(2520000));
+        assert_eq!(fee1, Nicks(2520000));
     }
 
     #[test]
@@ -865,7 +865,7 @@ mod tests {
                         .unwrap(),
                 ),
                 note_data: NoteData::empty(),
-                assets: 3000,
+                assets: Nicks(3000),
             },
             v1::NoteV1 {
                 version: Version::V1,
@@ -879,7 +879,7 @@ mod tests {
                         .unwrap(),
                 ),
                 note_data: NoteData::empty(),
-                assets: 3000,
+                assets: Nicks(3000),
             },
             v1::NoteV1 {
                 version: Version::V1,
@@ -893,7 +893,7 @@ mod tests {
                         .unwrap(),
                 ),
                 note_data: NoteData::empty(),
-                assets: 3000,
+                assets: Nicks(3000),
             },
         ]
         .map(Note::V1);
@@ -901,7 +901,7 @@ mod tests {
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
-        let gift = 2700;
+        let gift = Nicks(2700);
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
@@ -916,41 +916,41 @@ mod tests {
             .into_iter()
             .map(|v| (v, Some(spend_condition.clone())))
             .collect::<Vec<_>>();
-        let mut builder = TxBuilder::new(8);
+        let mut builder = TxBuilder::new(Nicks(8));
 
         builder
             .simple_spend_base(notes, recipient, gift, refund_pkh, false)
             .unwrap();
 
         // By default, fee is just 504, because we are using one note, and one note only.
-        assert_eq!(builder.calc_fee(), 504);
+        assert_eq!(builder.calc_fee(), Nicks(504));
 
         // Since fee pool exists, we will automatically pick a note from it to set the fee appropriately.
         builder.recalc_and_set_fee(false).unwrap();
         assert_eq!(
             builder.calc_fee(),
-            992,
+            Nicks(992),
             "{} {:?}",
             builder.fee_pool.len(),
             builder.spends
         );
-        assert_eq!(builder.cur_fee(), 992);
+        assert_eq!(builder.cur_fee(), Nicks(992));
 
         // Calling this twice should not make the fee jump back and forth.
         builder.recalc_and_set_fee(false).unwrap();
         assert_eq!(
             builder.calc_fee(),
-            992,
+            Nicks(992),
             "{} {:?}",
             builder.fee_pool.len(),
             builder.spends
         );
-        assert_eq!(builder.cur_fee(), 992);
+        assert_eq!(builder.cur_fee(), Nicks(992));
 
         // After signing, the fee shouldn't change.
         builder.sign(&private_key);
-        assert_eq!(builder.calc_fee(), 992);
-        assert_eq!(builder.cur_fee(), 992);
+        assert_eq!(builder.calc_fee(), Nicks(992));
+        assert_eq!(builder.cur_fee(), Nicks(992));
 
         // And the transaction should validate.
         builder.validate().unwrap();
@@ -989,7 +989,7 @@ mod tests {
                         .unwrap(),
                 ),
                 note_data: NoteData::empty(),
-                assets: 4294967296,
+                assets: Nicks(4294967296),
             },
             v1::NoteV1 {
                 version: Version::V1,
@@ -1003,7 +1003,7 @@ mod tests {
                         .unwrap(),
                 ),
                 note_data: NoteData::empty(),
-                assets: 4294967296,
+                assets: Nicks(4294967296),
             },
             v1::NoteV1 {
                 version: Version::V1,
@@ -1017,7 +1017,7 @@ mod tests {
                         .unwrap(),
                 ),
                 note_data: NoteData::empty(),
-                assets: 4294967296,
+                assets: Nicks(4294967296),
             },
         ]
         .map(Note::V1);
@@ -1025,10 +1025,10 @@ mod tests {
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
-        let gift = 4294967296 * 3 - 65536 * 100;
+        let gift = Nicks(4294967296 * 3 - 65536 * 100);
         let refund_pkh = public_key.hash();
 
-        let tx = TxBuilder::new(1 << 15)
+        let tx = TxBuilder::new(Nicks(1 << 15))
             .simple_spend_base(
                 notes
                     .into_iter()
@@ -1075,8 +1075,8 @@ mod tests {
             .iter()
             .map(|output| (output.name.first.to_string(), output.name.last.to_string()))
             .collect::<Vec<_>>();
-        assert_eq!(outputs[0].assets, 425984);
-        assert_eq!(outputs[1].assets, 12878348288);
+        assert_eq!(outputs[0].assets, Nicks(425984));
+        assert_eq!(outputs[1].assets, Nicks(12878348288));
         assert_eq!(
             names[0],
             (
@@ -1109,13 +1109,13 @@ mod tests {
                     .unwrap(),
             ),
             note_data: NoteData::empty(),
-            assets: 4294967296,
+            assets: Nicks(4294967296),
         });
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
-        let gift = 1234567;
-        let fee = 2850816;
+        let gift = Nicks(1234567);
+        let fee = Nicks(2850816);
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
@@ -1126,7 +1126,7 @@ mod tests {
             ]
             .into(),
         );
-        let mut builder = TxBuilder::new(1);
+        let mut builder = TxBuilder::new(Nicks(1));
 
         builder
             .simple_spend_base(
@@ -1171,13 +1171,13 @@ mod tests {
                     .unwrap(),
             ),
             note_data: NoteData::empty(),
-            assets: 4294967296,
+            assets: Nicks(4294967296),
         });
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
-        let gift = 1234567;
-        let fee = 2850816;
+        let gift = Nicks(1234567);
+        let fee = Nicks(2850816);
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
@@ -1199,7 +1199,7 @@ mod tests {
             ]
             .into(),
         );
-        let mut builder = TxBuilder::new(1);
+        let mut builder = TxBuilder::new(Nicks(1));
 
         builder
             .simple_spend_base(
@@ -1247,13 +1247,13 @@ mod tests {
                     .unwrap(),
             ),
             note_data: NoteData::empty(),
-            assets: 4294967296,
+            assets: Nicks(4294967296),
         });
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
-        let gift = 1234567;
-        let fee = 2850816;
+        let gift = Nicks(1234567);
+        let fee = Nicks(2850816);
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
@@ -1264,7 +1264,7 @@ mod tests {
             ]
             .into(),
         );
-        let tx = TxBuilder::new(1)
+        let tx = TxBuilder::new(Nicks(1))
             .simple_spend_base(
                 vec![(note.clone(), Some(spend_condition.clone()))],
                 recipient,

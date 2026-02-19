@@ -101,6 +101,11 @@ for (let i = 0; i < lines.length; i++) {
         continue;
     }
 
+    // Downgrade type cast to any for compatibility
+    if (line.trim().startsWith('const typedObj = obj as')) {
+        line = line.replace(/as .+$/, 'as any');
+    }
+
     newLines.push(line);
 }
 

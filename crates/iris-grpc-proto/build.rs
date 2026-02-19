@@ -186,7 +186,7 @@ fn rewrite_generated_files(out_dir: &std::path::Path) -> Result<(), Box<dyn std:
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().map_or(false, |ext| ext == "rs")
+        if path.extension().is_some_and(|ext| ext == "rs")
             && path
                 .file_name()
                 .unwrap()
@@ -225,12 +225,7 @@ fn rewrite_generated_files(out_dir: &std::path::Path) -> Result<(), Box<dyn std:
                                 if prefix == base_prefix {
                                     // New Prefix: Base + ModName(Pascal)
                                     let mod_pascal = to_pascal_case(mod_name);
-                                    format!(
-                                        "{}{}{}",
-                                        &caps[1],
-                                        format!("{prefix}{mod_pascal}"),
-                                        &caps[3]
-                                    )
+                                    format!("{}{}{}{}", &caps[1], prefix, mod_pascal, &caps[3])
                                 } else {
                                     caps[0].to_string()
                                 }
@@ -247,10 +242,8 @@ fn rewrite_generated_files(out_dir: &std::path::Path) -> Result<(), Box<dyn std:
                 brace_depth += open_braces;
                 brace_depth -= close_braces;
 
-                if let Some(_) = current_mod {
-                    if brace_depth <= mod_brace_depth {
-                        current_mod = None;
-                    }
+                if current_mod.is_some() && brace_depth <= mod_brace_depth {
+                    current_mod = None;
                 }
             }
 
@@ -358,7 +351,7 @@ fn rewrite_generated_files(out_dir: &std::path::Path) -> Result<(), Box<dyn std:
                  let type_name = &caps[4];
 
                  // If type_name starts with v, ignore (likely v1::Type caught by other regex or just unhandled)
-                 if type_name.starts_with('v') && type_name.chars().nth(1).map_or(false, |c| c.is_numeric()) {
+                 if type_name.starts_with('v') && type_name.chars().nth(1).is_some_and(|c| c.is_numeric()) {
                      return caps[0].to_string();
                  }
 

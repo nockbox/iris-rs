@@ -243,9 +243,9 @@ where
         let mut belts = [Belt(0); N];
         let mut remainder = num;
 
-        for i in 0..N {
+        for b in &mut belts[..] {
             let (quotient, rem) = <Self as Limbable>::div_rem(remainder, p);
-            belts[i] = Belt(be_bytes_to_u64(Self::to_be_bytes(rem).as_ref()));
+            *b = Belt(be_bytes_to_u64(Self::to_be_bytes(rem).as_ref()));
             remainder = quotient;
         }
 

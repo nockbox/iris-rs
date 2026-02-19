@@ -1,13 +1,13 @@
 # Iris
 
-[![Build and test]][workflows] [![Rustc 1.88]][rust] [![MIT licensed]][license]
+[![Build and test]][workflows] [![Rustc 1.91]][rust] [![MIT licensed]][license]
 
 [Build and test]: https://github.com/nockbox/iris-rs/actions/workflows/test.yml/badge.svg
 [workflows]: https://github.com/nockbox/iris-rs/actions/workflows/test.yml
 [MIT licensed]: https://img.shields.io/badge/license-MIT-blue.svg
 [license]: LICENSE
-[Rustc 1.88]: https://img.shields.io/badge/rustc-1.88+-lightgray.svg
-[rust]: https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/
+[Rustc 1.91]: https://img.shields.io/badge/rustc-1.91+-lightgray.svg
+[rust]: https://blog.rust-lang.org/2025/10/30/Rust-1.91.0/
 
 > [!WARNING]
 > **This software is unaudited and provided with no security or privacy guarantees.**

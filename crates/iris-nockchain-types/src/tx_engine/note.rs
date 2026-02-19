@@ -9,6 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi, type = "string"))]
 #[serde(transparent)]
+#[allow(clippy::derive_ord_xor_partial_ord)]
 pub struct Nicks(pub u64);
 
 impl Nicks {
@@ -42,7 +43,7 @@ macro_rules! impl_math_ops {
             }
             impl PartialOrd<$t> for Nicks {
                 fn partial_cmp(&self, other: &$t) -> Option<core::cmp::Ordering> {
-                    self.0.partial_cmp(&u64::from(*other))
+                    Some(self.cmp(&Nicks(u64::from(*other))))
                 }
             }
             impl core::ops::Add<$t> for Nicks {
@@ -265,7 +266,7 @@ impl<'de, const V: u32> Deserialize<'de> for ExpectedVersion<V> {
 
 impl<const V: u32> NounEncode for ExpectedVersion<V> {
     fn to_noun(&self) -> Noun {
-        u32::from(V).to_noun()
+        V.to_noun()
     }
 }
 

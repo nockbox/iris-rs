@@ -88,19 +88,19 @@ impl GrpcClient {
 
     /// Send a transaction
     #[wasm_bindgen(js_name = sendTransaction)]
-    pub async fn send_transaction(&self, raw_tx: JsValue) -> Result<String, JsValue> {
+    pub async fn send_transaction(
+        &self,
+        raw_tx: pb_common_v2::RawTransaction,
+    ) -> Result<String, JsValue> {
         let client = Client::new(self.endpoint.clone());
         let mut grpc_client = nockchain_service_client::NockchainServiceClient::new(client);
 
-        let pb_raw_tx: pb_common_v2::RawTransaction = serde_wasm_bindgen::from_value(raw_tx)
-            .map_err(|e| JsValue::from_str(&format!("Deserialization error: {}", e)))?;
-
         // Extract the tx_id from the raw transaction
-        let pb_tx_id = pb_raw_tx.id;
+        let pb_tx_id = raw_tx.id;
 
         let request = WalletSendTransactionRequest {
             tx_id: pb_tx_id,
-            raw_tx: Some(pb_raw_tx),
+            raw_tx: Some(raw_tx),
         };
 
         let response = grpc_client

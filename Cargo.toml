@@ -11,35 +11,35 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 edition = "2021"
 
 [workspace.dependencies.iris-ztd]
 path = "crates/iris-ztd"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 default-features = false
 
 [workspace.dependencies.iris-ztd-derive]
 path = "crates/iris-ztd-derive"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 
 [workspace.dependencies.iris-crypto]
 path = "crates/iris-crypto"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 default-features = false
 
 
 [workspace.dependencies.iris-nockchain-types]
 path = "crates/iris-nockchain-types"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 
 [workspace.dependencies.iris-wasm]
 path = "crates/iris-wasm"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 
 [workspace.dependencies.iris-grpc-proto]
 path = "crates/iris-grpc-proto"
-version = "0.2.0-alpha.0"
+version = "0.2.0-alpha.1"
 
 # Commonly used deps for wasm bindings generation
 [workspace.dependencies.tsify]

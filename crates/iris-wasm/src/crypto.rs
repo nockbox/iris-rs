@@ -164,5 +164,5 @@ pub fn verify_signature(
     pub_bytes.copy_from_slice(public_key_bytes);
     let public_key = PublicKey::from_be_bytes(&pub_bytes);
     let digest = Belt::from_bytes(message.as_bytes()).to_noun().hash();
-    Ok(public_key.verify(&digest, &signature))
+    Ok(public_key.verify(&digest, signature))
 }

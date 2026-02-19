@@ -1,13 +1,14 @@
 {
     "compilerOptions": {
-        "target": "esnext",
-        "module": "esnext",
+        "target": "es2015",
+        "module": "es2015",
         "strict": true,
         "esModuleInterop": true,
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true
     },
     "include": [
-        "pkg/iris_wasm.d.ts"
+        "pkg/iris_wasm.d.ts",
+        "pkg/iris_wasm.guard.ts"
     ]
 }

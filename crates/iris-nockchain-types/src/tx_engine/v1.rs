@@ -1060,7 +1060,7 @@ mod tests {
             .unwrap();
         let seed1 = Seed::new_single_pkh(
             pkh,
-            4290881913,
+            Nicks(4290881913),
             "6qF9RtWRUWfCX8NS8QU2u7A3BufVrsMwwWWZ8KSzZ5gVn4syqmeVa4"
                 .try_into()
                 .unwrap(),
@@ -1079,7 +1079,7 @@ mod tests {
         );
 
         let mut seed2 = seed1.clone();
-        seed2.gift = 1234567;
+        seed2.gift = Nicks(1234567);
 
         let mut spend = Spend::new_witness(
             Witness::new(SpendCondition(
@@ -1090,7 +1090,7 @@ mod tests {
                 .into(),
             )),
             SeedsV1([seed1.clone(), seed2.clone()].into()),
-            2850816,
+            Nicks(2850816),
         );
 
         check_hash(

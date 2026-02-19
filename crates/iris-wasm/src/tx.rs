@@ -33,14 +33,14 @@ pub fn hex_to_digest(s: &str) -> Result<Digest, JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn digest_to_protobuf(d: Digest) -> Result<pb_v1::Hash, JsValue> {
-    Ok(d.into())
+pub fn digest_to_protobuf(d: Digest) -> pb_v1::Hash {
+    d.into()
 }
 
 #[wasm_bindgen]
-pub fn digest_from_protobuf(value: JsValue) -> Result<Digest, JsValue> {
-    let pb: pb_v1::Hash = serde_wasm_bindgen::from_value(value)?;
-    pb.try_into()
+pub fn digest_from_protobuf(value: pb_v1::Hash) -> Result<Digest, JsValue> {
+    value
+        .try_into()
         .map_err(|e| JsValue::from_str(&format!("{}", e)))
 }
 
@@ -51,15 +51,14 @@ pub fn note_hash(note: Note) -> Digest {
 }
 
 #[wasm_bindgen]
-pub fn note_to_protobuf(note: Note) -> Result<JsValue, JsValue> {
-    let pb = pb::Note::from(note);
-    serde_wasm_bindgen::to_value(&pb).map_err(|e| e.into())
+pub fn note_to_protobuf(note: Note) -> pb::Note {
+    note.into()
 }
 
 #[wasm_bindgen]
-pub fn note_from_protobuf(value: JsValue) -> Result<Note, JsValue> {
-    let pb: pb::Note = serde_wasm_bindgen::from_value(value)?;
-    pb.try_into()
+pub fn note_from_protobuf(value: pb::Note) -> Result<Note, JsValue> {
+    value
+        .try_into()
         .map_err(|e| JsValue::from_str(&format!("{}", e)))
 }
 
@@ -178,7 +177,7 @@ impl WasmTxBuilder {
 
         let internal_notes: Result<BTreeMap<Name, (Note, Option<SpendCondition>)>, String> = notes
             .into_iter()
-            .zip(spend_conditions.into_iter())
+            .zip(spend_conditions)
             .map(|(n, sc)| Ok((n.name(), (n, Some(sc)))))
             .collect();
         let internal_notes = internal_notes.map_err(|e| JsValue::from_str(&e))?;
@@ -208,7 +207,7 @@ impl WasmTxBuilder {
 
         let internal_notes: Vec<(Note, Option<SpendCondition>)> = notes
             .into_iter()
-            .zip(spend_conditions.into_iter())
+            .zip(spend_conditions)
             .map(|(n, sc)| (n, Some(sc)))
             .collect();
 
@@ -361,7 +360,7 @@ impl WasmSpendBuilder {
 
     #[wasm_bindgen(js_name = curRefund)]
     pub fn cur_refund(&self) -> Option<Seed> {
-        self.builder.cur_refund().map(|v| v.clone())
+        self.builder.cur_refund().cloned()
     }
 
     #[wasm_bindgen(js_name = isBalanced)]

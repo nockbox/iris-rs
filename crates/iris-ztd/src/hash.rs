@@ -1,11 +1,8 @@
+#[cfg(feature = "wasm")]
+use alloc::{boxed::Box, format, string::ToString};
 use core::fmt;
+use crypto_bigint::{nlimbs, NonZero, Uint};
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "alloc")]
-use alloc::string::ToString;
-#[cfg(feature = "alloc")]
-use alloc::boxed::Box;
-#[cfg(feature = "alloc")]
-use alloc::format;
 
 use crate::{
     belt::{Belt, PRIME},
@@ -20,15 +17,179 @@ use crate::Zeroable;
 #[cfg(feature = "alloc")]
 use alloc::{string::String, vec, vec::Vec};
 #[cfg(feature = "alloc")]
-use ibig::{ops::DivRem, UBig};
+use ibig::UBig;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Base58Belts<const N: usize>(pub [Belt; N]);
 
+impl<const N: usize> Serialize for Base58Belts<N>
+where
+    Self: Limbable,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let bytes = self.to_bytes_arr();
+        let mut buf = <Self as Limbable>::bs58_buf();
+        let len = bs58::encode(bytes.as_ref())
+            .onto(buf.as_mut())
+            .map_err(serde::ser::Error::custom)?;
+        let s = core::str::from_utf8(&buf.as_ref()[..len]).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(s)
+    }
+}
+
+impl<'de, const N: usize> Deserialize<'de> for Base58Belts<N>
+where
+    Self: Limbable,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Base58Visitor<const M: usize>;
+
+        impl<'de, const M: usize> serde::de::Visitor<'de> for Base58Visitor<M>
+        where
+            Base58Belts<M>: Limbable,
+        {
+            type Value = Base58Belts<M>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a base58-encoded string")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Base58Belts::<M>::try_from(v).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(Base58Visitor::<N>)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi, type = "string"))]
+#[serde(from = "Base58Belts<5>")]
+#[serde(into = "Base58Belts<5>")]
 pub struct Digest(pub [Belt; 5]);
+
+/// Convert big-endian bytes of any length to u64, asserting no overflow.
+fn be_bytes_to_u64(bytes: &[u8]) -> u64 {
+    if bytes.len() > 8 {
+        assert!(
+            bytes[..bytes.len() - 8].iter().all(|&x| x == 0),
+            "value overflows u64"
+        );
+    }
+    let mut buf = [0u8; 8];
+    let start = 8usize.saturating_sub(bytes.len());
+    buf[start..].copy_from_slice(&bytes[bytes.len().saturating_sub(8)..]);
+    u64::from_be_bytes(buf)
+}
+
+pub trait Limbable {
+    const LIMBS: usize;
+    const BYTES: usize;
+    /// Buffer size for base58 encode/decode. Must be >= ceil(BYTES * 1.366).
+    const BS58_BUF_SIZE: usize;
+    type UintType: From<u64>
+        + core::ops::MulAssign
+        + core::ops::Mul<Output = Self::UintType>
+        + core::ops::AddAssign
+        + Copy
+        + core::fmt::Debug;
+    type BytesArray: AsRef<[u8]>
+        + AsMut<[u8]>
+        + core::ops::Index<usize, Output = u8>
+        + core::ops::IndexMut<usize, Output = u8>;
+    type Bs58Buf: AsRef<[u8]> + AsMut<[u8]>;
+    fn bs58_buf() -> Self::Bs58Buf;
+    fn to_be_bytes(uint: Self::UintType) -> Self::BytesArray;
+    fn from_be_bytes(bytes: &[u8]) -> Self::UintType;
+    fn div_rem(a: Self::UintType, b: Self::UintType) -> (Self::UintType, Self::UintType);
+    fn is_zero(val: &Self::UintType) -> bool;
+}
+
+impl Limbable for Base58Belts<5> {
+    const LIMBS: usize = nlimbs!(64 * 5);
+    const BYTES: usize = 8 * 5;
+    const BS58_BUF_SIZE: usize = Self::BYTES * 2;
+    type UintType = Uint<{ Self::LIMBS }>;
+    type BytesArray = [u8; Self::BYTES];
+    type Bs58Buf = [u8; Self::BS58_BUF_SIZE];
+    fn bs58_buf() -> Self::Bs58Buf {
+        [0u8; Self::BS58_BUF_SIZE]
+    }
+    fn to_be_bytes(uint: Self::UintType) -> [u8; Self::BYTES] {
+        uint.to_be_bytes()
+    }
+    fn from_be_bytes(bytes: &[u8]) -> Self::UintType {
+        Self::UintType::from_be_slice(bytes)
+    }
+    fn div_rem(a: Self::UintType, b: Self::UintType) -> (Self::UintType, Self::UintType) {
+        let nz = NonZero::new(b).expect("division by zero");
+        a.div_rem(&nz)
+    }
+    fn is_zero(val: &Self::UintType) -> bool {
+        *val == Self::UintType::from(0u64)
+    }
+}
+
+impl Limbable for Base58Belts<6> {
+    const LIMBS: usize = nlimbs!(64 * 6);
+    const BYTES: usize = 8 * 6;
+    const BS58_BUF_SIZE: usize = Self::BYTES * 2;
+    type UintType = Uint<{ Self::LIMBS }>;
+    type BytesArray = [u8; Self::BYTES];
+    type Bs58Buf = [u8; Self::BS58_BUF_SIZE];
+    fn bs58_buf() -> Self::Bs58Buf {
+        [0u8; Self::BS58_BUF_SIZE]
+    }
+    fn to_be_bytes(uint: Self::UintType) -> [u8; Self::BYTES] {
+        uint.to_be_bytes()
+    }
+    fn from_be_bytes(bytes: &[u8]) -> Self::UintType {
+        Self::UintType::from_be_slice(bytes)
+    }
+    fn div_rem(a: Self::UintType, b: Self::UintType) -> (Self::UintType, Self::UintType) {
+        let nz = NonZero::new(b).expect("division by zero");
+        a.div_rem(&nz)
+    }
+    fn is_zero(val: &Self::UintType) -> bool {
+        *val == Self::UintType::from(0u64)
+    }
+}
+
+impl Limbable for Base58Belts<7> {
+    const LIMBS: usize = nlimbs!(64 * 7);
+    const BYTES: usize = 8 * 7;
+    const BS58_BUF_SIZE: usize = Self::BYTES * 2;
+    type UintType = Uint<{ Self::LIMBS }>;
+    type BytesArray = [u8; Self::BYTES];
+    type Bs58Buf = [u8; Self::BS58_BUF_SIZE];
+    fn bs58_buf() -> Self::Bs58Buf {
+        [0u8; Self::BS58_BUF_SIZE]
+    }
+    fn to_be_bytes(uint: Self::UintType) -> [u8; Self::BYTES] {
+        uint.to_be_bytes()
+    }
+    fn from_be_bytes(bytes: &[u8]) -> Self::UintType {
+        Self::UintType::from_be_slice(bytes)
+    }
+    fn div_rem(a: Self::UintType, b: Self::UintType) -> (Self::UintType, Self::UintType) {
+        let nz = NonZero::new(b).expect("division by zero");
+        a.div_rem(&nz)
+    }
+    fn is_zero(val: &Self::UintType) -> bool {
+        *val == Self::UintType::from(0u64)
+    }
+}
 
 impl From<[u64; 5]> for Digest {
     fn from(belts: [u64; 5]) -> Self {
@@ -51,6 +212,49 @@ impl From<Base58Belts<5>> for Digest {
 impl<const N: usize> From<[u64; N]> for Base58Belts<N> {
     fn from(belts: [u64; N]) -> Self {
         Base58Belts(belts.map(Belt))
+    }
+}
+
+impl<const N: usize> Base58Belts<N>
+where
+    Self: Limbable,
+{
+    pub fn to_uint(&self) -> <Self as Limbable>::UintType {
+        let p = <Self as Limbable>::UintType::from(PRIME);
+        let mut result = <Self as Limbable>::UintType::from(0u64);
+        let mut power = <Self as Limbable>::UintType::from(1u64);
+
+        for belt in &self.0 {
+            result += <Self as Limbable>::UintType::from(belt.0) * power;
+            power *= p;
+        }
+
+        result
+    }
+
+    pub fn to_bytes_arr(&self) -> <Self as Limbable>::BytesArray {
+        Self::to_be_bytes(self.to_uint())
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let p = <Self as Limbable>::UintType::from(PRIME);
+        let num = <Self as Limbable>::from_be_bytes(bytes);
+
+        let mut belts = [Belt(0); N];
+        let mut remainder = num;
+
+        for i in 0..N {
+            let (quotient, rem) = <Self as Limbable>::div_rem(remainder, p);
+            belts[i] = Belt(be_bytes_to_u64(Self::to_be_bytes(rem).as_ref()));
+            remainder = quotient;
+        }
+
+        assert!(
+            <Self as Limbable>::is_zero(&remainder),
+            "Invalid belt count"
+        );
+
+        Base58Belts(belts)
     }
 }
 
@@ -79,26 +283,6 @@ impl<const N: usize> Base58Belts<N> {
         bytes[start_offset..].copy_from_slice(&res_bytes);
         bytes
     }
-
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let p = UBig::from(PRIME);
-        let num = UBig::from_be_bytes(bytes);
-
-        let mut belts = Vec::with_capacity(N);
-        let mut remainder = num;
-
-        for _ in 0..N {
-            let (quotient, rem) = remainder.div_rem(&p);
-            belts.push(Belt(rem.try_into().unwrap()));
-            remainder = quotient;
-        }
-
-        // Convert Vec to array
-        let array: [Belt; N] = belts
-            .try_into()
-            .unwrap_or_else(|_| panic!("Invalid belt count"));
-        Base58Belts(array)
-    }
 }
 
 // Digest-specific implementations that delegate to Base58Belts<5>
@@ -120,37 +304,44 @@ impl Digest {
     }
 }
 
-// Display and TryFrom implementations for Base58Belts<N>
-#[cfg(feature = "alloc")]
-impl<const N: usize> fmt::Display for Base58Belts<N> {
+// Display and TryFrom implementations for Base58Belts<N> (no-alloc)
+impl<const N: usize> fmt::Display for Base58Belts<N>
+where
+    Self: Limbable,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let bytes = self.to_bytes();
-        write!(f, "{}", bs58::encode(bytes).into_string())
+        let bytes = self.to_bytes_arr();
+        let mut buf = <Self as Limbable>::bs58_buf();
+        let len = bs58::encode(bytes.as_ref())
+            .onto(buf.as_mut())
+            .map_err(|_| fmt::Error)?;
+        let s = core::str::from_utf8(&buf.as_ref()[..len]).map_err(|_| fmt::Error)?;
+        f.write_str(s)
     }
 }
 
-#[cfg(feature = "alloc")]
-impl<const N: usize> TryFrom<&str> for Base58Belts<N> {
+impl<const N: usize> TryFrom<&str> for Base58Belts<N>
+where
+    Self: Limbable,
+{
     type Error = &'static str;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Ok(Base58Belts::from_bytes(
-            &bs58::decode(s)
-                .into_vec()
-                .map_err(|_| "unable to decode base58 belts")?,
-        ))
+        let mut buf = <Self as Limbable>::bs58_buf();
+        let len = bs58::decode(s)
+            .onto(buf.as_mut())
+            .map_err(|_| "unable to decode base58 belts")?;
+        Ok(Base58Belts::from_bytes(&buf.as_ref()[..len]))
     }
 }
 
 // Digest implementations delegate to Base58Belts<5>
-#[cfg(feature = "alloc")]
 impl fmt::Display for Digest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Base58Belts::<5>::from(*self).fmt(f)
     }
 }
 
-#[cfg(feature = "alloc")]
 impl TryFrom<&str> for Digest {
     type Error = &'static str;
 

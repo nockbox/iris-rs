@@ -2,12 +2,20 @@ use super::note::{Note, Version};
 use alloc::vec::Vec;
 use iris_ztd::{Digest, Noun, NounDecode, NounEncode};
 
+#[cfg(feature = "wasm")]
+use alloc::{boxed::Box, format, string::ToString};
+
 pub type TxId = Digest;
 
-#[derive(Debug, Clone)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[serde(untagged)]
 pub enum RawTx {
-    V0(super::v0::RawTx),
-    V1(super::v1::RawTx),
+    V0(super::v0::RawTxV0),
+    V1(super::v1::RawTxV1),
 }
 
 impl RawTx {
@@ -45,10 +53,10 @@ impl NounEncode for RawTx {
 impl NounDecode for RawTx {
     fn from_noun(noun: &Noun) -> Option<Self> {
         // TODO: instead check whether head is a cell or an atom
-        if let Some(tx) = super::v0::RawTx::from_noun(noun) {
+        if let Some(tx) = super::v0::RawTxV0::from_noun(noun) {
             return Some(RawTx::V0(tx));
         }
-        let (version, tx): (u32, super::v1::RawTx) = NounDecode::from_noun(noun)?;
+        let (version, tx): (u32, super::v1::RawTxV1) = NounDecode::from_noun(noun)?;
         match version {
             1 => Some(RawTx::V1(tx)),
             _ => None,

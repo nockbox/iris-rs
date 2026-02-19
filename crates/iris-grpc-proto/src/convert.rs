@@ -1,8 +1,9 @@
 use iris_nockchain_types::tx_engine::{v0, v1};
 use iris_nockchain_types::v0::LegacySignature;
 use iris_nockchain_types::v1::{
-    Hax, LockMerkleProof, LockPrimitive, LockRoot, LockTim, MerkleProof, Pkh, PkhSignature, Seed,
-    Seeds, Spend, Spend0, Spend1, SpendCondition, Witness,
+    Hax, LockMerkleProof, LockPrimitive, LockRoot, LockTim, MerkleProof, Pkh, PkhSignature,
+    SeedV1 as Seed, SeedsV1 as Seeds, Spend0V1 as Spend0, Spend1V1 as Spend1, SpendCondition,
+    SpendV1 as Spend, Witness,
 };
 use iris_nockchain_types::*;
 use iris_ztd::{jam, Belt, Digest, Noun, ZMap, ZSet, U256};
@@ -130,9 +131,10 @@ impl From<Version> for PbNoteVersion {
     }
 }
 
-impl From<PbNoteVersion> for Version {
-    fn from(v: PbNoteVersion) -> Self {
-        Version::from(v.value)
+impl TryFrom<PbNoteVersion> for Version {
+    type Error = ConversionError;
+    fn try_from(v: PbNoteVersion) -> Result<Self, Self::Error> {
+        Version::try_from(v.value).map_err(|_| ConversionError::Invalid("Invalid NoteVersion"))
     }
 }
 
@@ -709,14 +711,14 @@ impl From<Witness> for PbWitness {
 impl From<Spend> for PbSpend {
     fn from(spend: Spend) -> Self {
         match spend {
-            Spend::S1(ws) => PbSpend {
+            Spend::S1 { spend: ws, .. } => PbSpend {
                 spend_kind: Some(spend::SpendKind::Witness(PbWitnessSpend {
                     witness: Some(PbWitness::from(ws.witness)),
                     seeds: seeds_to_pb(ws.seeds),
                     fee: Some(PbNicks::from(ws.fee)),
                 })),
             },
-            Spend::S0(ls) => PbSpend {
+            Spend::S0 { spend: ls, .. } => PbSpend {
                 spend_kind: Some(spend::SpendKind::Legacy(PbLegacySpend {
                     signature: Some(PbLegacySignature::from(ls.signature)),
                     seeds: seeds_to_pb(ls.seeds),
@@ -727,8 +729,8 @@ impl From<Spend> for PbSpend {
     }
 }
 
-impl From<v1::RawTx> for PbRawTransaction {
-    fn from(tx: v1::RawTx) -> Self {
+impl From<v1::RawTxV1> for PbRawTransaction {
+    fn from(tx: v1::RawTxV1) -> Self {
         PbRawTransaction {
             version: Some(PbNoteVersion::from(tx.version())),
             id: Some(PbHash::from(tx.id)),
@@ -855,8 +857,8 @@ impl TryFrom<PbLegacyLock> for v0::Sig {
 }
 
 // v0::Note <-> PbNoteV0 (crate::pb::common::v1::Note) conversions
-impl From<v0::Note> for crate::pb::common::v1::Note {
-    fn from(note: v0::Note) -> Self {
+impl From<v0::NoteV0> for crate::pb::common::v1::Note {
+    fn from(note: v0::NoteV0) -> Self {
         crate::pb::common::v1::Note {
             origin_page: Some(PbBlockHeight::from(note.inner.origin_page)),
             timelock: Some(PbTimeLockIntent::from(note.inner.timelock)),
@@ -869,14 +871,14 @@ impl From<v0::Note> for crate::pb::common::v1::Note {
     }
 }
 
-impl TryFrom<crate::pb::common::v1::Note> for v0::Note {
+impl TryFrom<crate::pb::common::v1::Note> for v0::NoteV0 {
     type Error = ConversionError;
 
     fn try_from(pb: crate::pb::common::v1::Note) -> Result<Self, Self::Error> {
         let origin_page: BlockHeight = pb.origin_page.required("Note", "origin_page")?.into();
         let name: Name = pb.name.required("Note", "name")?.try_into()?;
         let assets: Nicks = pb.assets.required("Note", "assets")?.into();
-        let version: Version = pb.version.required("Note", "version")?.into();
+        let version: Version = pb.version.required("Note", "version")?.try_into()?;
         let source: Source = pb.source.required("Note", "source")?.try_into()?;
         let sig: v0::Sig = pb.lock.required("Note", "lock")?.try_into()?;
         let timelock: v0::TimelockIntent = if let Some(intent) = pb.timelock {
@@ -885,7 +887,7 @@ impl TryFrom<crate::pb::common::v1::Note> for v0::Note {
             v0::TimelockIntent { tim: None }
         };
 
-        Ok(v0::Note::new(
+        Ok(v0::NoteV0::new(
             version,
             origin_page,
             timelock,
@@ -992,8 +994,8 @@ impl TryFrom<PbNote> for iris_nockchain_types::Note {
     fn try_from(pb_note: PbNote) -> Result<Self, Self::Error> {
         match pb_note.note_version.required("Note", "note_version")? {
             crate::pb::common::v2::note::NoteVersion::V1(v1) => {
-                Ok(iris_nockchain_types::Note::V1(v1::Note {
-                    version: v1.version.required("NoteV1", "version")?.into(),
+                Ok(iris_nockchain_types::Note::V1(v1::NoteV1 {
+                    version: v1.version.required("NoteV1", "version")?.try_into()?,
                     origin_page: v1.origin_page.required("NoteV1", "origin_page")?.into(),
                     name: v1.name.required("NoteV1", "name")?.try_into()?,
                     note_data: v1.note_data.required("NoteV1", "note_data")?.try_into()?,
@@ -1015,7 +1017,7 @@ impl TryFrom<PbNote> for iris_nockchain_types::Note {
                     origin_page.required("LegacyNote", "origin_page")?.into();
                 let name: Name = name.required("LegacyNote", "name")?.try_into()?;
                 let assets: Nicks = assets.required("LegacyNote", "assets")?.into();
-                let version: Version = version.required("LegacyNote", "version")?.into();
+                let version: Version = version.required("LegacyNote", "version")?.try_into()?;
                 let source: Source = source.required("LegacyNote", "source")?.try_into()?;
 
                 let sig: v0::Sig = lock.required("LegacyNote", "lock")?.try_into()?;
@@ -1026,7 +1028,7 @@ impl TryFrom<PbNote> for iris_nockchain_types::Note {
                     v0::TimelockIntent { tim: None }
                 };
 
-                Ok(iris_nockchain_types::Note::V0(v0::Note::new(
+                Ok(iris_nockchain_types::Note::V0(v0::NoteV0::new(
                     version,
                     origin_page,
                     timelock,
@@ -1126,7 +1128,10 @@ impl TryFrom<PbSeed> for Seed {
 impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
     type Error = ConversionError;
     fn try_from(tx: PbRawTransaction) -> Result<Self, Self::Error> {
-        let version: Version = tx.version.required("RawTransaction", "version")?.into();
+        let version: Version = tx
+            .version
+            .required("RawTransaction", "version")?
+            .try_into()?;
         let id: Digest = tx.id.required("RawTransaction", "id")?.try_into()?;
         let spends: Result<ZMap<Name, Spend>, ConversionError> = tx
             .spends
@@ -1184,11 +1189,14 @@ impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
                         let seeds: Result<ZSet<Seed>, ConversionError> =
                             w.seeds.into_iter().map(|s| s.try_into()).collect();
 
-                        Spend::S1(Spend1 {
-                            witness,
-                            seeds: Seeds(seeds?),
-                            fee: w.fee.required("WitnessSpend", "fee")?.into(),
-                        })
+                        Spend::S1 {
+                            version: ExpectedVersion,
+                            spend: Spend1 {
+                                witness,
+                                seeds: Seeds(seeds?),
+                                fee: w.fee.required("WitnessSpend", "fee")?.into(),
+                            },
+                        }
                     }
                     spend::SpendKind::Legacy(l) => {
                         let signature: LegacySignature = l
@@ -1197,11 +1205,14 @@ impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
                             .try_into()?;
                         let seeds: Result<ZSet<Seed>, ConversionError> =
                             l.seeds.into_iter().map(|s| s.try_into()).collect();
-                        Spend::S0(Spend0 {
-                            signature,
-                            seeds: Seeds(seeds?),
-                            fee: l.fee.required("LegacySpend", "fee")?.into(),
-                        })
+                        Spend::S0 {
+                            version: ExpectedVersion,
+                            spend: Spend0 {
+                                signature,
+                                seeds: Seeds(seeds?),
+                                fee: l.fee.required("LegacySpend", "fee")?.into(),
+                            },
+                        }
                     }
                 };
                 Ok((name, spend))
@@ -1209,9 +1220,10 @@ impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
             .collect();
 
         match version {
-            Version::V1 => Ok(RawTx::V1(v1::RawTx {
+            Version::V1 => Ok(RawTx::V1(v1::RawTxV1 {
+                version: ExpectedVersion,
                 id,
-                spends: v1::Spends(spends?),
+                spends: v1::SpendsV1(spends?),
             })),
             _ => Err(ConversionError::Invalid("Unsupported RawTx version")),
         }
@@ -1223,8 +1235,8 @@ impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
 // ============================================
 
 // V0 Seed conversion
-impl From<v0::Seed> for PbSeedV0 {
-    fn from(seed: v0::Seed) -> Self {
+impl From<v0::SeedV0> for PbSeedV0 {
+    fn from(seed: v0::SeedV0) -> Self {
         PbSeedV0 {
             output_source: seed
                 .output_source
@@ -1239,11 +1251,11 @@ impl From<v0::Seed> for PbSeedV0 {
     }
 }
 
-impl TryFrom<PbSeedV0> for v0::Seed {
+impl TryFrom<PbSeedV0> for v0::SeedV0 {
     type Error = ConversionError;
 
     fn try_from(seed: PbSeedV0) -> Result<Self, Self::Error> {
-        Ok(v0::Seed {
+        Ok(v0::SeedV0 {
             output_source: seed
                 .output_source
                 .and_then(|os| os.source)
@@ -1264,8 +1276,8 @@ impl TryFrom<PbSeedV0> for v0::Seed {
 }
 
 // V0 Spend conversion
-impl From<v0::Spend> for PbSpendV0 {
-    fn from(spend: v0::Spend) -> Self {
+impl From<v0::SpendV0> for PbSpendV0 {
+    fn from(spend: v0::SpendV0) -> Self {
         PbSpendV0 {
             signature: spend.signature.map(PbLegacySignature::from),
             seeds: spend.seeds.0.into_iter().map(PbSeedV0::from).collect(),
@@ -1274,7 +1286,7 @@ impl From<v0::Spend> for PbSpendV0 {
     }
 }
 
-impl TryFrom<PbSpendV0> for v0::Spend {
+impl TryFrom<PbSpendV0> for v0::SpendV0 {
     type Error = ConversionError;
 
     fn try_from(spend: PbSpendV0) -> Result<Self, Self::Error> {
@@ -1283,11 +1295,11 @@ impl TryFrom<PbSpendV0> for v0::Spend {
         } else {
             None
         };
-        let seeds: Result<ZSet<v0::Seed>, ConversionError> =
+        let seeds: Result<ZSet<v0::SeedV0>, ConversionError> =
             spend.seeds.into_iter().map(|s| s.try_into()).collect();
-        Ok(v0::Spend {
+        Ok(v0::SpendV0 {
             signature,
-            seeds: v0::Seeds(seeds?),
+            seeds: v0::SeedsV0(seeds?),
             fee: spend
                 .miner_fee_nicks
                 .required("Spend", "miner_fee_nicks")?
@@ -1318,8 +1330,8 @@ impl TryFrom<PbInputV0> for v0::Input {
 }
 
 // V0 RawTransaction conversion
-impl From<v0::RawTx> for PbRawTransactionV0 {
-    fn from(tx: v0::RawTx) -> Self {
+impl From<v0::RawTxV0> for PbRawTransactionV0 {
+    fn from(tx: v0::RawTxV0) -> Self {
         PbRawTransactionV0 {
             named_inputs: tx
                 .inputs
@@ -1340,7 +1352,7 @@ impl From<v0::RawTx> for PbRawTransactionV0 {
     }
 }
 
-impl TryFrom<PbRawTransactionV0> for v0::RawTx {
+impl TryFrom<PbRawTransactionV0> for v0::RawTxV0 {
     type Error = ConversionError;
 
     fn try_from(tx: PbRawTransactionV0) -> Result<Self, Self::Error> {
@@ -1361,7 +1373,7 @@ impl TryFrom<PbRawTransactionV0> for v0::RawTx {
             .unwrap_or_else(TimelockRange::none);
         let total_fees = tx.total_fees.map(|f| f.into()).unwrap_or(0u64);
 
-        Ok(v0::RawTx {
+        Ok(v0::RawTxV0 {
             id,
             inputs: v0::Inputs(inputs?),
             timelock_range,

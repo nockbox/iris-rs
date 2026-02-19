@@ -1,7 +1,5 @@
-#[cfg(feature = "alloc")]
-use arrayvec::ArrayVec;
-#[cfg(feature = "alloc")]
-use alloc::{boxed::Box, format, string::ToString, vec::Vec};
+#[cfg(feature = "wasm")]
+use alloc::{boxed::Box, format, string::ToString};
 use core::fmt;
 
 use bs58;
@@ -54,7 +52,8 @@ pub const A_GEN: CheetahPoint = CheetahPoint {
 
 #[derive(Debug)]
 pub enum CheetahError {
-    Base58(bs58::decode::Error),
+    Base58Decode(bs58::decode::Error),
+    Base58Encode(bs58::encode::Error),
     InvalidLength(usize),
     ArrayConversion,
     NotOnCurve,
@@ -64,7 +63,8 @@ pub enum CheetahError {
 impl fmt::Display for CheetahError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CheetahError::Base58(e) => write!(f, "Base58: {}", e),
+            CheetahError::Base58Decode(e) => write!(f, "Base58 decode: {}", e),
+            CheetahError::Base58Encode(e) => write!(f, "Base58 encode: {}", e),
             CheetahError::InvalidLength(len) => write!(f, "Invalid length: {}", len),
             CheetahError::ArrayConversion => write!(f, "Array conversion failed"),
             CheetahError::NotOnCurve => write!(f, "Point is not on the curve"),
@@ -73,56 +73,91 @@ impl fmt::Display for CheetahError {
     }
 }
 
-impl From<bs58::decode::Error> for CheetahError {
-    fn from(e: bs58::decode::Error) -> Self {
-        CheetahError::Base58(e)
-    }
-}
+/// Size: 1 byte prefix + 12 belts × 8 bytes = 97
+const CHEETAH_POINT_BYTES: usize = 97;
+/// Buffer for base58 encoding (ceil(97 * 1.366) ≈ 133, using 200 for safety)
+const CHEETAH_BS58_BUF: usize = 200;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi, type = "string"))]
 pub struct CheetahPoint {
     pub x: F6lt,
     pub y: F6lt,
     pub inf: bool,
 }
 
+impl Serialize for CheetahPoint {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let (buf, len) = self.into_base58_buf().map_err(serde::ser::Error::custom)?;
+        let s = core::str::from_utf8(&buf[..len]).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for CheetahPoint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct CheetahVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for CheetahVisitor {
+            type Value = CheetahPoint;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a base58-encoded CheetahPoint string")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                CheetahPoint::from_base58(v).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(CheetahVisitor)
+    }
+}
+
 impl CheetahPoint {
-    #[cfg(feature = "alloc")]
-    pub fn into_base58(&self) -> Result<alloc::string::String, CheetahError> {
+    /// Serialize to a fixed-size byte array: [0x01 | y[5]..y[0] | x[5]..x[0]] (big-endian belts)
+    pub fn to_bytes(&self) -> Result<[u8; CHEETAH_POINT_BYTES], CheetahError> {
         if self.inf {
             return Err(CheetahError::NotOnCurve);
         }
-        let mut bytes = Vec::new();
-        bytes.push(0x1);
+        let mut bytes = [0u8; CHEETAH_POINT_BYTES];
+        bytes[0] = 0x01;
+        let mut offset = 1;
         for belt in self.y.0.iter().rev().chain(self.x.0.iter().rev()) {
-            bytes.extend_from_slice(&belt.0.to_be_bytes());
+            bytes[offset..offset + 8].copy_from_slice(&belt.0.to_be_bytes());
+            offset += 8;
         }
-        Ok(bs58::encode(bytes).into_string())
+        Ok(bytes)
     }
 
-    #[cfg(feature = "alloc")]
-    pub fn from_base58(b58: &str) -> Result<Self, CheetahError> {
-        let v = bs58::decode(b58).into_vec()?;
-
-        if v.len() != 97 {
+    /// Deserialize from a byte slice (expected 97 bytes)
+    pub fn from_bytes(v: &[u8]) -> Result<Self, CheetahError> {
+        if v.len() != CHEETAH_POINT_BYTES {
             return Err(CheetahError::InvalidLength(v.len()));
         }
 
-        let mut v64 = v[1..]
-            .chunks_exact(8)
-            .map(|a| {
-                let arr = <[u8; 8]>::try_from(a).map_err(|_| CheetahError::ArrayConversion)?;
-                Ok(Belt(u64::from_be_bytes(arr)))
-            })
-            .collect::<Result<Vec<Belt>, CheetahError>>()?;
-
-        v64.reverse();
+        let mut belts = [Belt(0); 12];
+        for (i, chunk) in v[1..].chunks_exact(8).enumerate() {
+            let arr: [u8; 8] = chunk
+                .try_into()
+                .map_err(|_| CheetahError::ArrayConversion)?;
+            belts[i] = Belt(u64::from_be_bytes(arr));
+        }
+        belts.reverse();
 
         let c_pt = CheetahPoint {
-            x: F6lt(<[Belt; 6]>::try_from(&v64[..6]).map_err(|_| CheetahError::ArrayConversion)?),
-            y: F6lt(<[Belt; 6]>::try_from(&v64[6..]).map_err(|_| CheetahError::ArrayConversion)?),
+            x: F6lt(<[Belt; 6]>::try_from(&belts[..6]).map_err(|_| CheetahError::ArrayConversion)?),
+            y: F6lt(<[Belt; 6]>::try_from(&belts[6..]).map_err(|_| CheetahError::ArrayConversion)?),
             inf: false,
         };
 
@@ -131,6 +166,35 @@ impl CheetahPoint {
         } else {
             Err(CheetahError::NotOnCurve)
         }
+    }
+
+    /// Encode to base58 into a fixed buffer; returns (buffer, length).
+    pub fn into_base58_buf(&self) -> Result<([u8; CHEETAH_BS58_BUF], usize), CheetahError> {
+        let raw = self.to_bytes()?;
+        let mut buf = [0u8; CHEETAH_BS58_BUF];
+        let len = bs58::encode(&raw)
+            .onto(&mut buf[..])
+            .map_err(CheetahError::Base58Encode)?;
+        Ok((buf, len))
+    }
+
+    /// Decode from a base58 string (alloc-less).
+    pub fn from_base58(b58: &str) -> Result<Self, CheetahError> {
+        let mut buf = [0u8; CHEETAH_POINT_BYTES];
+        let len = bs58::decode(b58)
+            .onto(&mut buf[..])
+            .map_err(CheetahError::Base58Decode)?;
+        if len != CHEETAH_POINT_BYTES {
+            return Err(CheetahError::InvalidLength(len));
+        }
+        Self::from_bytes(&buf[..len])
+    }
+
+    #[cfg(feature = "alloc")]
+    pub fn into_base58(&self) -> Result<alloc::string::String, CheetahError> {
+        let (buf, len) = self.into_base58_buf()?;
+        let s = core::str::from_utf8(&buf[..len]).map_err(|_| CheetahError::ArrayConversion)?;
+        Ok(alloc::string::String::from(s))
     }
 
     pub fn in_curve(&self) -> bool {

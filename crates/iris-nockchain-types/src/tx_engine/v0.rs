@@ -25,7 +25,7 @@ pub struct NoteInner {
 #[derive(Debug, Clone, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-pub struct Note {
+pub struct NoteV0 {
     pub inner: NoteInner,
     pub name: Name,
     pub sig: Sig,
@@ -33,7 +33,7 @@ pub struct Note {
     pub assets: Nicks,
 }
 
-impl Note {
+impl NoteV0 {
     pub fn new(
         version: Version,
         origin_page: BlockHeight,
@@ -105,30 +105,30 @@ impl Sig {
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Input {
-    pub note: Note,
-    pub spend: Spend,
+    pub note: NoteV0,
+    pub spend: SpendV0,
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-pub struct Spend {
+pub struct SpendV0 {
     pub signature: Option<LegacySignature>,
-    pub seeds: Seeds,
+    pub seeds: SeedsV0,
     pub fee: Nicks,
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-pub struct RawTx {
+pub struct RawTxV0 {
     pub id: TxId,
     pub inputs: Inputs,
     pub timelock_range: TimelockRange,
     pub total_fees: Nicks,
 }
 
-impl RawTx {
+impl RawTxV0 {
     pub fn version(&self) -> Version {
         Version::V0
     }
@@ -136,10 +136,10 @@ impl RawTx {
     /// Calculate output notes from the transaction inputs.
     ///
     /// This function combines seeds across multiple inputs into one output note per-recipient-sig.
-    pub fn outputs(&self) -> Vec<Note> {
+    pub fn outputs(&self) -> Vec<NoteV0> {
         let inps = &self.inputs.0;
 
-        let mut output_base: BTreeMap<Sig, (TimelockIntent, Nicks, ZSet<Seed>)> = BTreeMap::new();
+        let mut output_base: BTreeMap<Sig, (TimelockIntent, Nicks, ZSet<SeedV0>)> = BTreeMap::new();
 
         for (_, input) in inps {
             for seed in &input.spend.seeds.0 {
@@ -171,7 +171,7 @@ impl RawTx {
                 hash: seeds.hash(),
                 is_coinbase: false,
             };
-            outputs.push(Note {
+            outputs.push(NoteV0 {
                 name: Name::new_v0(sig.clone(), source, timelock),
                 sig,
                 source,
@@ -248,7 +248,7 @@ pub struct TimelockIntent {
 #[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-pub struct Seed {
+pub struct SeedV0 {
     pub output_source: Option<Source>,
     pub recipient: Sig,
     pub timelock_intent: TimelockIntent,
@@ -256,7 +256,7 @@ pub struct Seed {
     pub parent_hash: Digest,
 }
 
-impl Seed {
+impl SeedV0 {
     pub fn new_single_pk(pk: PublicKey, gift: Nicks, parent_hash: Digest) -> Self {
         let recipient = Sig::new_single_pk(pk);
         Self {
@@ -269,7 +269,7 @@ impl Seed {
     }
 }
 
-impl Hashable for Seed {
+impl Hashable for SeedV0 {
     fn hash(&self) -> Digest {
         // output source is omitted
         (
@@ -283,9 +283,9 @@ impl Hashable for Seed {
 }
 
 #[derive(Debug, Clone)]
-pub struct SigHashSeed<'a>(&'a Seed);
+pub struct SigHashSeedV0<'a>(&'a SeedV0);
 
-impl<'a> Hashable for SigHashSeed<'a> {
+impl<'a> Hashable for SigHashSeedV0<'a> {
     fn hash(&self) -> Digest {
         // output source is included
         (
@@ -299,7 +299,7 @@ impl<'a> Hashable for SigHashSeed<'a> {
     }
 }
 
-impl<'a> NounEncode for SigHashSeed<'a> {
+impl<'a> NounEncode for SigHashSeedV0<'a> {
     fn to_noun(&self) -> Noun {
         self.0.to_noun()
     }
@@ -308,11 +308,11 @@ impl<'a> NounEncode for SigHashSeed<'a> {
 #[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-pub struct Seeds(pub ZSet<Seed>);
+pub struct SeedsV0(pub ZSet<SeedV0>);
 
-impl Seeds {
+impl SeedsV0 {
     pub fn sig_hash(&self) -> Digest {
-        ZSet::from_iter(self.0.iter().map(SigHashSeed)).hash()
+        ZSet::from_iter(self.0.iter().map(SigHashSeedV0)).hash()
     }
 }
 
@@ -344,7 +344,7 @@ mod tests {
 
         let (_a, _b, _c, _d): (Noun, Noun, Noun, Noun) = NounDecode::from_noun(&noun).unwrap();
 
-        let tx = RawTx::from_noun(&noun).unwrap();
+        let tx = RawTxV0::from_noun(&noun).unwrap();
         check_hash(
             "tx_id",
             &tx.id,
@@ -361,10 +361,10 @@ mod tests {
     fn check_tx_outputs() {
         let noun = iris_ztd::cue(TX1).unwrap();
 
-        let tx = RawTx::from_noun(&noun).unwrap();
+        let tx = RawTxV0::from_noun(&noun).unwrap();
 
         let out_noun = iris_ztd::cue(TX1_OUTPUTS).unwrap();
-        let mut outs: Vec<Note> = NounDecode::from_noun(&out_noun).unwrap();
+        let mut outs: Vec<NoteV0> = NounDecode::from_noun(&out_noun).unwrap();
         outs.sort_by_key(|note| note.name);
 
         let mut tx_outs = tx.outputs();

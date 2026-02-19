@@ -1,16 +1,18 @@
 use alloc::vec::Vec;
 use alloc::{boxed::Box, format, string::ToString};
+use core::convert::TryFrom;
 use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub type Nicks = u64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[serde(untagged)]
 pub enum Note {
-    V0(super::v0::Note),
-    V1(super::v1::Note),
+    V0(super::v0::NoteV0),
+    V1(super::v1::NoteV1),
 }
 
 impl Note {
@@ -54,14 +56,14 @@ impl Hashable for Note {
 
 impl NounDecode for Note {
     fn from_noun(noun: &Noun) -> Option<Self> {
-        if let Some(n) = super::v0::Note::from_noun(noun) {
+        if let Some(n) = super::v0::NoteV0::from_noun(noun) {
             return Some(Note::V0(n));
         }
 
         let v: u32 = NounDecode::from_noun(noun)?;
 
         Some(match v {
-            1 => Note::V1(super::v1::Note::from_noun(noun)?),
+            1 => Note::V1(super::v1::NoteV1::from_noun(noun)?),
             _ => return None,
         })
     }
@@ -92,13 +94,88 @@ pub struct BalanceUpdate {
     pub notes: Balance,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpectedVersion<const V: u32>;
+
+impl<const V: u32> Serialize for ExpectedVersion<V> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u32(V)
+    }
+}
+
+impl<'de, const V: u32> Deserialize<'de> for ExpectedVersion<V> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v = u32::deserialize(deserializer)?;
+        if v != V {
+            return Err(serde::de::Error::custom("Invalid version"));
+        }
+        Ok(ExpectedVersion)
+    }
+}
+
+impl<const V: u32> NounEncode for ExpectedVersion<V> {
+    fn to_noun(&self) -> Noun {
+        u32::from(V).to_noun()
+    }
+}
+
+impl<const V: u32> NounDecode for ExpectedVersion<V> {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let v: u32 = NounDecode::from_noun(noun)?;
+
+        if v != V {
+            return None;
+        }
+
+        Some(ExpectedVersion)
+    }
+}
+
+impl<const V: u32> TryFrom<Version> for ExpectedVersion<V> {
+    type Error = ();
+
+    fn try_from(value: Version) -> Result<Self, Self::Error> {
+        if value as u32 != V {
+            return Err(());
+        }
+        Ok(ExpectedVersion)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[cfg_attr(feature = "wasm", tsify(type = "0 | 1 | 2"))]
+#[repr(u32)]
 pub enum Version {
-    V0,
-    V1,
-    V2,
+    V0 = 0,
+    V1 = 1,
+    V2 = 2,
+}
+
+impl Serialize for Version {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u32(*self as u32)
+    }
+}
+
+impl<'de> Deserialize<'de> for Version {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v = u32::deserialize(deserializer)?;
+        TryFrom::try_from(v).map_err(|_| serde::de::Error::custom("Invalid version"))
+    }
 }
 
 impl NounEncode for Version {
@@ -122,32 +199,25 @@ impl NounDecode for Version {
 
 impl Hashable for Version {
     fn hash(&self) -> Digest {
-        match self {
-            Version::V0 => 0,
-            Version::V1 => 1,
-            Version::V2 => 2,
-        }
-        .hash()
+        (*self as u32 as u64).hash()
     }
 }
 
 impl From<Version> for u32 {
     fn from(version: Version) -> Self {
-        match version {
-            Version::V0 => 0,
-            Version::V1 => 1,
-            Version::V2 => 2,
-        }
+        version as u32
     }
 }
 
-impl From<u32> for Version {
-    fn from(version: u32) -> Self {
-        match version {
-            0 => Version::V0,
-            1 => Version::V1,
-            2 => Version::V2,
-            _ => panic!("Invalid version"),
+impl TryFrom<u32> for Version {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Version::V0),
+            1 => Ok(Version::V1),
+            2 => Ok(Version::V2),
+            _ => Err(()),
         }
     }
 }

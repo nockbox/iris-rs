@@ -6,15 +6,20 @@ use iris_crypto::{PrivateKey, PublicKey};
 use iris_ztd::{noun_deserialize, noun_serialize, Digest, Hashable as HashableTrait, Noun, ZMap};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "wasm")]
+use alloc::{boxed::Box, format, string::ToString};
+
 use super::note::Note;
 use super::v1::{
-    InputDisplay, LockRoot, NockchainTx, NoteData, Pkh, Seed, Seeds, Spend, SpendCondition, Spends,
-    TransactionDisplay, Witness,
+    InputDisplay, LockRoot, NockchainTx, NoteData, Pkh, SeedV1 as Seed, SeedsV1 as Seeds,
+    SpendCondition, SpendV1 as Spend, SpendsV1 as Spends, TransactionDisplay, Witness,
 };
-use super::{Name, Version};
+use super::{ExpectedVersion, Name, Version};
 use crate::{Nicks, RawTx};
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub enum MissingUnlocks {
     Pkh {
         num_sigs: u64,
@@ -74,8 +79,8 @@ impl SpendBuilder {
         refund_lock: Option<SpendCondition>,
     ) -> Option<Self> {
         match (note.version(), &spend) {
-            (Version::V0, Spend::S0(_)) => (),
-            (Version::V1, Spend::S1(_)) => (),
+            (Version::V0, Spend::S0 { .. }) => (),
+            (Version::V1, Spend::S1 { .. }) => (),
             _ => return None,
         }
 
@@ -161,7 +166,7 @@ impl SpendBuilder {
         let mut missing_unlocks = vec![];
 
         match &self.spend {
-            Spend::S0(spend) => {
+            Spend::S0 { spend, .. } => {
                 let Note::V0(note) = &self.note else {
                     panic!("Note is not V0");
                 };
@@ -180,7 +185,7 @@ impl SpendBuilder {
                     })
                 }
             }
-            Spend::S1(spend) => {
+            Spend::S1 { spend, .. } => {
                 let present_sigs: BTreeSet<Digest> = spend
                     .witness
                     .pkh_signature
@@ -209,14 +214,14 @@ impl SpendBuilder {
                     let valid_hax = h.0.iter().cloned().collect::<BTreeSet<_>>();
 
                     let current_hax = match &self.spend {
-                        Spend::S1(ws) => ws
+                        Spend::S1 { spend, .. } => spend
                             .witness
                             .hax_map
                             .clone()
                             .into_iter()
                             .map(|(k, _)| k)
                             .collect::<BTreeSet<_>>(),
-                        Spend::S0(_) => BTreeSet::new(),
+                        Spend::S0 { .. } => BTreeSet::new(),
                     };
 
                     let checked_hax = &current_hax & &valid_hax;
@@ -237,15 +242,15 @@ impl SpendBuilder {
     }
 
     pub fn add_preimage(&mut self, preimage: Noun) -> Option<Digest> {
-        let Spend::S1(ws) = &mut self.spend else {
+        let Spend::S1 { spend, .. } = &mut self.spend else {
             return None;
         };
 
         let digest = preimage.hash();
 
-        for h in ws.witness.lock_merkle_proof.spend_condition.hax() {
+        for h in spend.witness.lock_merkle_proof.spend_condition.hax() {
             if h.0.contains(&digest) {
-                ws.witness.hax_map.insert(digest, preimage);
+                spend.witness.hax_map.insert(digest, preimage);
                 return Some(digest);
             }
         }
@@ -255,27 +260,31 @@ impl SpendBuilder {
 
     pub fn sign(&mut self, signing_key: &PrivateKey) -> bool {
         match &mut self.spend {
-            Spend::S1(ws) => {
+            Spend::S1 { spend, .. } => {
                 let pkpkh = signing_key.public_key().hash();
 
-                for p in ws.witness.lock_merkle_proof.spend_condition.pkh() {
+                for p in spend.witness.lock_merkle_proof.spend_condition.pkh() {
                     if p.hashes.contains(&pkpkh) {
-                        ws.witness.pkh_signature.0.insert(
+                        spend.witness.pkh_signature.0.insert(
                             signing_key.public_key().hash(),
-                            (signing_key.public_key(), signing_key.sign(&ws.sig_hash())),
+                            (
+                                signing_key.public_key(),
+                                signing_key.sign(&spend.sig_hash()),
+                            ),
                         );
                         return true;
                     }
                 }
             }
-            Spend::S0(ls) => {
+            Spend::S0 { spend, .. } => {
                 let Note::V0(note) = &self.note else {
                     panic!("Note is not V0");
                 };
                 if note.sig.pubkeys.contains(&signing_key.public_key()) {
-                    ls.signature
-                        .0
-                        .insert(signing_key.public_key(), signing_key.sign(&ls.sig_hash()));
+                    spend.signature.0.insert(
+                        signing_key.public_key(),
+                        signing_key.sign(&spend.sig_hash()),
+                    );
                     return true;
                 }
             }
@@ -460,16 +469,19 @@ impl TxBuilder {
 
         for (name, spend) in &self.spends {
             match (&spend.spend, &spend.note, &mut display.inputs) {
-                (Spend::S0(_), Note::V0(n), InputDisplay::V0(map)) => {
-                    map.insert(*name, n.sig.clone());
+                (Spend::S0 { .. }, Note::V0(n), InputDisplay::V0 { p, .. }) => {
+                    p.insert(*name, n.sig.clone());
                 }
-                (Spend::S1(ws), _, InputDisplay::V0(_)) => {
+                (Spend::S1 { spend: ws, .. }, _, InputDisplay::V0 { .. }) => {
                     let mut map = ZMap::new();
                     map.insert(*name, ws.witness.lock_merkle_proof.spend_condition.clone());
-                    display.inputs = InputDisplay::V1(map);
+                    display.inputs = InputDisplay::V1 {
+                        version: ExpectedVersion,
+                        p: map,
+                    };
                 }
-                (Spend::S1(ws), _, InputDisplay::V1(map)) => {
-                    map.insert(*name, ws.witness.lock_merkle_proof.spend_condition.clone());
+                (Spend::S1 { spend: ws, .. }, _, InputDisplay::V1 { p, .. }) => {
+                    p.insert(*name, ws.witness.lock_merkle_proof.spend_condition.clone());
                 }
                 _ => (),
             }
@@ -498,7 +510,7 @@ impl TxBuilder {
         self.spends
             .iter()
             .map(|(a, b)| {
-                let sp = if let Spend::S1(ws) = &b.spend {
+                let sp = if let Spend::S1 { spend: ws, .. } = &b.spend {
                     Some(ws.witness.lock_merkle_proof.spend_condition.clone())
                 } else {
                     None
@@ -748,7 +760,7 @@ mod tests {
     fn test_builder() {
         let (private_key, _) = keys();
 
-        let note = Note::V1(v1::Note {
+        let note = Note::V1(v1::NoteV1 {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
@@ -841,7 +853,7 @@ mod tests {
         let (private_key, _) = keys();
 
         let notes = [
-            v1::Note {
+            v1::NoteV1 {
                 version: Version::V1,
                 origin_page: 13,
                 name: Name::new(
@@ -855,7 +867,7 @@ mod tests {
                 note_data: NoteData::empty(),
                 assets: 3000,
             },
-            v1::Note {
+            v1::NoteV1 {
                 version: Version::V1,
                 origin_page: 14,
                 name: Name::new(
@@ -869,7 +881,7 @@ mod tests {
                 note_data: NoteData::empty(),
                 assets: 3000,
             },
-            v1::Note {
+            v1::NoteV1 {
                 version: Version::V1,
                 origin_page: 15,
                 name: Name::new(
@@ -965,7 +977,7 @@ mod tests {
     fn test_multiseed_outputs() {
         let (private_key, public_key) = keys();
         let notes = [
-            v1::Note {
+            v1::NoteV1 {
                 version: Version::V1,
                 origin_page: 13,
                 name: Name::new(
@@ -979,7 +991,7 @@ mod tests {
                 note_data: NoteData::empty(),
                 assets: 4294967296,
             },
-            v1::Note {
+            v1::NoteV1 {
                 version: Version::V1,
                 origin_page: 14,
                 name: Name::new(
@@ -993,7 +1005,7 @@ mod tests {
                 note_data: NoteData::empty(),
                 assets: 4294967296,
             },
-            v1::Note {
+            v1::NoteV1 {
                 version: Version::V1,
                 origin_page: 15,
                 name: Name::new(
@@ -1085,7 +1097,7 @@ mod tests {
     #[test]
     fn test_missing_unlock() {
         let (private_key, _) = keys();
-        let note = Note::V1(v1::Note {
+        let note = Note::V1(v1::NoteV1 {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
@@ -1147,7 +1159,7 @@ mod tests {
     fn test_missing_unlock_hax() {
         use crate::v1::Hax;
         use iris_ztd::Belt;
-        let note = Note::V1(v1::Note {
+        let note = Note::V1(v1::NoteV1 {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
@@ -1223,7 +1235,7 @@ mod tests {
     #[test]
     fn test_jam_vector() {
         let (private_key, _) = keys();
-        let note = Note::V1(v1::Note {
+        let note = Note::V1(v1::NoteV1 {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(

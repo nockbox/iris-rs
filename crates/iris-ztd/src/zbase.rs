@@ -1,7 +1,7 @@
-use core::borrow::Borrow;
-use alloc::string::ToString;
 use alloc::boxed::Box;
 use alloc::format;
+use alloc::string::ToString;
+use core::borrow::Borrow;
 
 use crate::Zeroable;
 use crate::{Digest, Hashable, Noun, NounDecode, NounEncode};

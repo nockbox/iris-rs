@@ -1,13 +1,13 @@
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
-use alloc::{boxed::Box, format};
 use alloc::vec;
 use alloc::vec::Vec;
+use alloc::{boxed::Box, format};
 use iris_crypto::{PublicKey, Signature};
 use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode, ZMap, ZSet};
 use serde::{Deserialize, Serialize};
 
-use super::note::{BlockHeight, Name, Source, Version};
+use super::note::{BlockHeight, ExpectedVersion, Name, Source, Version};
 use super::v0::LegacySignature;
 use super::TxId;
 use crate::Nicks;
@@ -93,7 +93,7 @@ impl NoteData {
 #[derive(Debug, Clone, Hashable, Serialize, Deserialize, NounEncode, NounDecode, PartialEq, Eq)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-pub struct Note {
+pub struct NoteV1 {
     pub version: Version,
     pub origin_page: BlockHeight,
     pub name: Name,
@@ -101,7 +101,7 @@ pub struct Note {
     pub assets: Nicks,
 }
 
-impl Note {
+impl NoteV1 {
     pub fn new(
         version: Version,
         origin_page: BlockHeight,
@@ -170,7 +170,7 @@ impl Hashable for LockRoot {
 #[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-pub struct Seed {
+pub struct SeedV1 {
     pub output_source: Option<Source>,
     pub lock_root: LockRoot,
     pub note_data: NoteData,
@@ -178,7 +178,7 @@ pub struct Seed {
     pub parent_hash: Digest,
 }
 
-impl Seed {
+impl SeedV1 {
     pub fn new_single_pkh(
         pkh: Digest,
         gift: Nicks,
@@ -204,7 +204,7 @@ impl Seed {
     }
 }
 
-impl Hashable for Seed {
+impl Hashable for SeedV1 {
     fn hash(&self) -> Digest {
         // output source is omitted
         (
@@ -218,9 +218,9 @@ impl Hashable for Seed {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct SigHashSeed<'a>(&'a Seed);
+pub struct SigHashSeedV1<'a>(&'a SeedV1);
 
-impl<'a> Hashable for SigHashSeed<'a> {
+impl<'a> Hashable for SigHashSeedV1<'a> {
     fn hash(&self) -> Digest {
         // output source is included
         (
@@ -234,7 +234,7 @@ impl<'a> Hashable for SigHashSeed<'a> {
     }
 }
 
-impl<'a> NounEncode for SigHashSeed<'a> {
+impl<'a> NounEncode for SigHashSeedV1<'a> {
     fn to_noun(&self) -> Noun {
         self.0.to_noun()
     }
@@ -243,18 +243,18 @@ impl<'a> NounEncode for SigHashSeed<'a> {
 #[derive(Debug, Clone, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-pub struct Seeds(pub ZSet<Seed>);
+pub struct SeedsV1(pub ZSet<SeedV1>);
 
-impl Seeds {
+impl SeedsV1 {
     pub fn sig_hash(&self) -> Digest {
-        ZSet::from_iter(self.0.iter().map(SigHashSeed)).hash()
+        ZSet::from_iter(self.0.iter().map(SigHashSeedV1)).hash()
     }
 
     pub fn retain<F>(&mut self, mut f: F)
     where
-        F: FnMut(&Seed) -> bool,
+        F: FnMut(&SeedV1) -> bool,
     {
-        let new_set: ZSet<Seed> = self.0.iter().filter(|s| f(s)).cloned().collect();
+        let new_set: ZSet<SeedV1> = self.0.iter().filter(|s| f(s)).cloned().collect();
         self.0 = new_set;
     }
 }
@@ -262,13 +262,13 @@ impl Seeds {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-pub struct Spend0 {
+pub struct Spend0V1 {
     pub signature: LegacySignature,
-    pub seeds: Seeds,
+    pub seeds: SeedsV1,
     pub fee: Nicks,
 }
 
-impl Spend0 {
+impl Spend0V1 {
     pub fn sig_hash(&self) -> Digest {
         (&self.seeds.sig_hash(), self.fee).hash()
     }
@@ -277,13 +277,13 @@ impl Spend0 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-pub struct Spend1 {
+pub struct Spend1V1 {
     pub witness: Witness,
-    pub seeds: Seeds,
+    pub seeds: SeedsV1,
     pub fee: Nicks,
 }
 
-impl Spend1 {
+impl Spend1V1 {
     pub fn sig_hash(&self) -> Digest {
         (&self.seeds.sig_hash(), self.fee).hash()
     }
@@ -292,55 +292,74 @@ impl Spend1 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-pub enum Spend {
-    S0(Spend0),
-    S1(Spend1),
+#[serde(untagged)]
+pub enum SpendV1 {
+    S0 {
+        #[cfg_attr(feature = "wasm", tsify(type = "0"))]
+        version: ExpectedVersion<0>,
+        spend: Spend0V1,
+    },
+    S1 {
+        #[cfg_attr(feature = "wasm", tsify(type = "1"))]
+        version: ExpectedVersion<1>,
+        spend: Spend1V1,
+    },
 }
 
-impl NounEncode for Spend {
+impl NounEncode for SpendV1 {
     fn to_noun(&self) -> Noun {
         match self {
-            Spend::S0(s) => (Version::V0, &s.signature, &s.seeds, &s.fee).to_noun(),
-            Spend::S1(s) => (Version::V1, &s.witness, &s.seeds, &s.fee).to_noun(),
+            SpendV1::S0 { version, spend } => {
+                (version, &spend.signature, &spend.seeds, &spend.fee).to_noun()
+            }
+            SpendV1::S1 { version, spend } => {
+                (version, &spend.witness, &spend.seeds, &spend.fee).to_noun()
+            }
         }
     }
 }
 
-impl NounDecode for Spend {
+impl NounDecode for SpendV1 {
     fn from_noun(noun: &Noun) -> Option<Self> {
-        let (v, a, seeds, fee): (Version, Noun, Seeds, Nicks) = NounDecode::from_noun(noun)?;
+        let (v, a, seeds, fee): (Version, Noun, SeedsV1, Nicks) = NounDecode::from_noun(noun)?;
         match v {
             Version::V0 => {
                 let signature: LegacySignature = NounDecode::from_noun(&a)?;
-                Some(Spend::S0(Spend0 {
-                    signature,
-                    seeds,
-                    fee,
-                }))
+                Some(SpendV1::S0 {
+                    version: ExpectedVersion,
+                    spend: Spend0V1 {
+                        signature,
+                        seeds,
+                        fee,
+                    },
+                })
             }
             Version::V1 => {
                 let witness: Witness = NounDecode::from_noun(&a)?;
-                Some(Spend::S1(Spend1 {
-                    witness,
-                    seeds,
-                    fee,
-                }))
+                Some(SpendV1::S1 {
+                    version: ExpectedVersion,
+                    spend: Spend1V1 {
+                        witness,
+                        seeds,
+                        fee,
+                    },
+                })
             }
             _ => None,
         }
     }
 }
 
-impl AsRef<Spend> for Spend {
-    fn as_ref(&self) -> &Spend {
+impl AsRef<SpendV1> for SpendV1 {
+    fn as_ref(&self) -> &SpendV1 {
         self
     }
 }
 
-impl Spend {
+impl SpendV1 {
     pub const MIN_FEE: u64 = 256;
 
-    pub fn fee_for_many<T: AsRef<Spend>>(
+    pub fn fee_for_many<T: AsRef<SpendV1>>(
         spends: impl Iterator<Item = T>,
         per_word: Nicks,
     ) -> Nicks {
@@ -357,77 +376,94 @@ impl Spend {
 
     pub fn calc_words(&self) -> (u64, u64) {
         match self {
-            Spend::S0(s) => {
-                let seed_words: u64 = s.seeds.0.iter().map(|seed| seed.note_data_words()).sum();
-                let sig_words = noun_words(&s.signature.to_noun());
+            SpendV1::S0 { spend, .. } => {
+                let seed_words: u64 = spend
+                    .seeds
+                    .0
+                    .iter()
+                    .map(|seed| seed.note_data_words())
+                    .sum();
+                let sig_words = noun_words(&spend.signature.to_noun());
                 (seed_words, sig_words)
             }
-            Spend::S1(s) => {
-                let seed_words: u64 = s.seeds.0.iter().map(|seed| seed.note_data_words()).sum();
-                let witness_words = noun_words(&s.witness.to_noun());
+            SpendV1::S1 { spend, .. } => {
+                let seed_words: u64 = spend
+                    .seeds
+                    .0
+                    .iter()
+                    .map(|seed| seed.note_data_words())
+                    .sum();
+                let witness_words = noun_words(&spend.witness.to_noun());
                 (seed_words, witness_words)
             }
         }
     }
 
-    pub fn new_legacy(seeds: Seeds, fee: Nicks) -> Self {
-        Spend::S0(Spend0 {
-            signature: LegacySignature::default(),
-            seeds,
-            fee,
-        })
+    pub fn new_legacy(seeds: SeedsV1, fee: Nicks) -> Self {
+        SpendV1::S0 {
+            version: ExpectedVersion,
+            spend: Spend0V1 {
+                signature: LegacySignature::default(),
+                seeds,
+                fee,
+            },
+        }
     }
 
-    pub fn new_witness(witness: Witness, seeds: Seeds, fee: Nicks) -> Self {
-        Spend::S1(Spend1 {
-            witness,
-            seeds,
-            fee,
-        })
+    pub fn new_witness(witness: Witness, seeds: SeedsV1, fee: Nicks) -> Self {
+        SpendV1::S1 {
+            version: ExpectedVersion,
+            spend: Spend1V1 {
+                witness,
+                seeds,
+                fee,
+            },
+        }
     }
 
     pub fn fee(&self) -> Nicks {
         match self {
-            Spend::S0(s) => s.fee,
-            Spend::S1(s) => s.fee,
+            SpendV1::S0 { spend, .. } => spend.fee,
+            SpendV1::S1 { spend, .. } => spend.fee,
         }
     }
 
     pub fn fee_mut(&mut self) -> &mut Nicks {
         match self {
-            Spend::S0(s) => &mut s.fee,
-            Spend::S1(s) => &mut s.fee,
+            SpendV1::S0 { spend, .. } => &mut spend.fee,
+            SpendV1::S1 { spend, .. } => &mut spend.fee,
         }
     }
 
-    pub fn seeds(&self) -> &Seeds {
+    pub fn seeds(&self) -> &SeedsV1 {
         match self {
-            Spend::S0(s) => &s.seeds,
-            Spend::S1(s) => &s.seeds,
+            SpendV1::S0 { spend, .. } => &spend.seeds,
+            SpendV1::S1 { spend, .. } => &spend.seeds,
         }
     }
 
-    pub fn seeds_mut(&mut self) -> &mut Seeds {
+    pub fn seeds_mut(&mut self) -> &mut SeedsV1 {
         match self {
-            Spend::S0(s) => &mut s.seeds,
-            Spend::S1(s) => &mut s.seeds,
+            SpendV1::S0 { spend, .. } => &mut spend.seeds,
+            SpendV1::S1 { spend, .. } => &mut spend.seeds,
         }
     }
 
     pub fn sig_hash(&self) -> Digest {
         match self {
-            Spend::S0(s) => s.sig_hash(),
-            Spend::S1(s) => s.sig_hash(),
+            SpendV1::S0 { spend, .. } => spend.sig_hash(),
+            SpendV1::S1 { spend, .. } => spend.sig_hash(),
         }
     }
 
     pub fn add_signature(&mut self, key: PublicKey, signature: Signature) {
         match self {
-            Spend::S0(s) => {
-                s.signature.add_entry(key, signature);
+            SpendV1::S0 { spend, .. } => {
+                spend.signature.add_entry(key, signature);
             }
-            Spend::S1(s) => {
-                s.witness
+            SpendV1::S1 { spend, .. } => {
+                spend
+                    .witness
                     .pkh_signature
                     .0
                     .insert(key.hash(), (key, signature));
@@ -437,13 +473,13 @@ impl Spend {
 
     pub fn add_preimage(&mut self, preimage: Noun) -> Digest {
         match self {
-            Spend::S0(_) => {
+            SpendV1::S0 { .. } => {
                 // Legacy spends do not carry hax preimages
                 preimage.hash()
             }
-            Spend::S1(s) => {
+            SpendV1::S1 { spend, .. } => {
                 let digest = preimage.hash();
-                s.witness.hax_map.insert(digest, preimage);
+                spend.witness.hax_map.insert(digest, preimage);
                 digest
             }
         }
@@ -451,17 +487,21 @@ impl Spend {
 
     pub fn clear_signatures(&mut self) {
         match self {
-            Spend::S0(s) => s.signature.clear(),
-            Spend::S1(s) => s.witness.pkh_signature.0.clear(),
+            SpendV1::S0 { spend, .. } => spend.signature.clear(),
+            SpendV1::S1 { spend, .. } => spend.witness.pkh_signature.0.clear(),
         }
     }
 }
 
-impl Hashable for Spend {
+impl Hashable for SpendV1 {
     fn hash(&self) -> Digest {
         match self {
-            Spend::S0(s) => (Version::V0, &s.signature, &s.seeds, &s.fee).hash(),
-            Spend::S1(s) => (Version::V1, &s.witness, &s.seeds, &s.fee).hash(),
+            SpendV1::S0 { spend, .. } => {
+                (Version::V0, &spend.signature, &spend.seeds, &spend.fee).hash()
+            }
+            SpendV1::S1 { spend, .. } => {
+                (Version::V1, &spend.witness, &spend.seeds, &spend.fee).hash()
+            }
         }
     }
 }
@@ -639,25 +679,25 @@ pub struct Hax(pub ZSet<Digest>);
 #[derive(Debug, Clone, Default, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-pub struct Spends(pub ZMap<Name, Spend>);
+pub struct SpendsV1(pub ZMap<Name, SpendV1>);
 
-impl Spends {
+impl SpendsV1 {
     pub fn fee(&self, per_word: Nicks) -> Nicks {
-        Spend::fee_for_many(self.0.iter().map(|(_k, v)| v), per_word)
+        SpendV1::fee_for_many(self.0.iter().map(|(_k, v)| v), per_word)
     }
 
-    pub fn split_witness(&self) -> (Spends, WitnessData) {
-        let mut spends = Spends(ZMap::new());
+    pub fn split_witness(&self) -> (SpendsV1, WitnessData) {
+        let mut spends = SpendsV1(ZMap::new());
         let mut witness_data = WitnessData::default();
         for (name, spend) in &self.0 {
             let mut spend = spend.clone();
             match &mut spend {
-                Spend::S1(ws) => {
+                SpendV1::S1 { spend: ws, .. } => {
                     let witness = ws.witness.take_data();
                     spends.0.insert(*name, spend);
                     witness_data.data.insert(*name, witness);
                 }
-                Spend::S0(_) => {
+                SpendV1::S0 { .. } => {
                     spends.0.insert(*name, spend);
                 }
             }
@@ -665,12 +705,12 @@ impl Spends {
         (spends, witness_data)
     }
 
-    pub fn apply_witness(&self, witness_data: &WitnessData) -> Spends {
-        let mut spends = Spends::default();
+    pub fn apply_witness(&self, witness_data: &WitnessData) -> SpendsV1 {
+        let mut spends = SpendsV1::default();
         for (name, spend) in &self.0 {
             let mut spend = spend.clone();
             // NOTE: this behavior does not match the wallet hoon, but if the worst that can happen is transaction remain invalid, it's ok.
-            if let Spend::S1(ws) = &mut spend {
+            if let SpendV1::S1 { spend: ws, .. } = &mut spend {
                 if let Some(witness) = witness_data.data.get(name) {
                     ws.witness = witness.clone();
                 }
@@ -681,34 +721,24 @@ impl Spends {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-pub struct RawTx {
+pub struct RawTxV1 {
+    #[cfg_attr(feature = "wasm", tsify(type = "1"))]
+    pub version: ExpectedVersion<1>,
     pub id: TxId,
-    pub spends: Spends,
+    pub spends: SpendsV1,
 }
 
-impl NounEncode for RawTx {
-    fn to_noun(&self) -> Noun {
-        (Version::V1, &self.id, &self.spends).to_noun()
-    }
-}
-
-impl NounDecode for RawTx {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let (Version::V1, id, spends): (Version, TxId, Spends) = NounDecode::from_noun(noun)?
-        else {
-            return None;
-        };
-        Some(Self { id, spends })
-    }
-}
-
-impl RawTx {
-    pub fn new(spends: Spends) -> Self {
+impl RawTxV1 {
+    pub fn new(spends: SpendsV1) -> Self {
         let id = (Version::V1, &spends).hash();
-        Self { id, spends }
+        Self {
+            version: ExpectedVersion,
+            id,
+            spends,
+        }
     }
 
     pub fn version(&self) -> Version {
@@ -718,11 +748,11 @@ impl RawTx {
     /// Calculate output notes from the transaction spends.
     ///
     /// This function combines seeds across multiple spends into one output note per-lock-root.
-    pub fn outputs(&self) -> Vec<Note> {
+    pub fn outputs(&self) -> Vec<NoteV1> {
         // Already a ZMap, no conversion needed
         let spends = &self.spends.0;
 
-        let mut seeds_by_lock: BTreeMap<Digest, ZSet<Seed>> = BTreeMap::new();
+        let mut seeds_by_lock: BTreeMap<Digest, ZSet<SeedV1>> = BTreeMap::new();
         for (_, spend) in spends {
             for seed in spend.seeds().0.iter() {
                 seeds_by_lock
@@ -732,10 +762,10 @@ impl RawTx {
             }
         }
 
-        let mut outputs: Vec<Note> = Vec::new();
+        let mut outputs: Vec<NoteV1> = Vec::new();
 
         for (lock_root_hash, seeds) in seeds_by_lock {
-            let seeds: Vec<Seed> = seeds.into_iter().collect();
+            let seeds: Vec<SeedV1> = seeds.into_iter().collect();
 
             if seeds.is_empty() {
                 continue;
@@ -746,7 +776,7 @@ impl RawTx {
             // Hoon code ends up taking the last note-data for the output note, by the tap order of z-set.
             let note_data = seeds[seeds.len() - 1].note_data.clone();
 
-            let mut normalized_seeds_set: ZSet<Seed> = ZSet::new();
+            let mut normalized_seeds_set: ZSet<SeedV1> = ZSet::new();
             for seed in seeds {
                 let mut normalized_seed = seed.clone();
                 normalized_seed.output_source = None;
@@ -762,7 +792,7 @@ impl RawTx {
 
             let name = Name::new_v1(lock_root_hash, src);
 
-            let note = Note::new(
+            let note = NoteV1::new(
                 Version::V1,
                 // As opposed to `None`.
                 0,
@@ -799,13 +829,13 @@ impl RawTx {
 pub struct NockchainTx {
     pub version: Version,
     pub id: TxId,
-    pub spends: Spends,
+    pub spends: SpendsV1,
     pub display: TransactionDisplay,
     pub witness_data: WitnessData,
 }
 
 impl NockchainTx {
-    pub fn to_raw_tx(&self) -> RawTx {
+    pub fn to_raw_tx(&self) -> RawTxV1 {
         assert_eq!(
             self.version,
             Version::V1,
@@ -814,13 +844,14 @@ impl NockchainTx {
 
         let spends = self.spends.apply_witness(&self.witness_data);
 
-        RawTx {
+        RawTxV1 {
+            version: ExpectedVersion,
             id: self.id,
             spends,
         }
     }
 
-    pub fn outputs(&self) -> Vec<Note> {
+    pub fn outputs(&self) -> Vec<NoteV1> {
         self.to_raw_tx().outputs()
     }
 }
@@ -900,22 +931,34 @@ impl From<SpendCondition> for LockMetadata {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[serde(untagged)]
 pub enum InputDisplay {
-    V0(ZMap<Name, super::v0::Sig>),
-    V1(ZMap<Name, SpendCondition>),
+    V0 {
+        #[cfg_attr(feature = "wasm", tsify(type = "0"))]
+        version: ExpectedVersion<0>,
+        p: ZMap<Name, super::v0::Sig>,
+    },
+    V1 {
+        #[cfg_attr(feature = "wasm", tsify(type = "1"))]
+        version: ExpectedVersion<1>,
+        p: ZMap<Name, SpendCondition>,
+    },
 }
 
 impl Default for InputDisplay {
     fn default() -> Self {
-        Self::V0(ZMap::new())
+        Self::V0 {
+            version: ExpectedVersion,
+            p: ZMap::new(),
+        }
     }
 }
 
 impl NounEncode for InputDisplay {
     fn to_noun(&self) -> Noun {
         match self {
-            InputDisplay::V0(map) => (Version::V0, map).to_noun(),
-            InputDisplay::V1(map) => (Version::V1, map).to_noun(),
+            InputDisplay::V0 { version, p } => (version, p).to_noun(),
+            InputDisplay::V1 { version, p } => (version, p).to_noun(),
         }
     }
 }
@@ -924,8 +967,14 @@ impl NounDecode for InputDisplay {
     fn from_noun(noun: &Noun) -> Option<Self> {
         let (version, map): (Version, Noun) = NounDecode::from_noun(noun)?;
         match version {
-            Version::V0 => Some(InputDisplay::V0(NounDecode::from_noun(&map)?)),
-            Version::V1 => Some(InputDisplay::V1(NounDecode::from_noun(&map)?)),
+            Version::V0 => Some(InputDisplay::V0 {
+                version: ExpectedVersion,
+                p: NounDecode::from_noun(&map)?,
+            }),
+            Version::V1 => Some(InputDisplay::V1 {
+                version: ExpectedVersion,
+                p: NounDecode::from_noun(&map)?,
+            }),
             _ => None,
         }
     }
@@ -945,6 +994,8 @@ mod tests {
     use bip39::Mnemonic;
     use iris_crypto::derive_master_key;
     use iris_ztd::Hashable;
+
+    use super::{RawTxV1 as RawTx, SeedV1 as Seed, SpendV1 as Spend, SpendsV1 as Spends};
 
     fn check_hash(name: &str, h: &impl Hashable, exp: &str) {
         assert_eq!(h.hash().to_string(), exp, "hash mismatch for {}", name);
@@ -968,7 +1019,7 @@ mod tests {
         assert_eq!(id.to_string(), txid);
 
         let out_noun = iris_ztd::cue(TX1_OUTPUTS).unwrap();
-        let mut outs: Vec<Note> = NounDecode::from_noun(&out_noun).unwrap();
+        let mut outs: Vec<NoteV1> = NounDecode::from_noun(&out_noun).unwrap();
         outs.sort_by_key(|note| note.name);
 
         let mut tx_outs = tx.outputs();
@@ -1038,7 +1089,7 @@ mod tests {
                 ]
                 .into(),
             )),
-            Seeds([seed1.clone(), seed2.clone()].into()),
+            SeedsV1([seed1.clone(), seed2.clone()].into()),
             2850816,
         );
 
@@ -1081,7 +1132,7 @@ mod tests {
             "AvHDRESkhM9F2FMPiYFPeQ9GrL2kX8QkmHP8dGpVT8Pr2f8xM1SLGJW",
         );
 
-        let Spend::S1(ws) = &spend else {
+        let SpendV1::S1 { spend: ws, .. } = &spend else {
             panic!("expected witness spend");
         };
 

@@ -1,3 +1,5 @@
+#[cfg(feature = "alloc")]
+use alloc::{boxed::Box, format, string::ToString};
 use arrayvec::ArrayVec;
 use iris_ztd::{
     crypto::cheetah::{
@@ -8,8 +10,6 @@ use iris_ztd::{
 };
 #[cfg(feature = "alloc")]
 use iris_ztd::{Noun, NounDecode, NounEncode};
-#[cfg(feature = "alloc")]
-use alloc::{boxed::Box, format, string::ToString};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -161,11 +161,39 @@ impl Hashable for PublicKey {
     }
 }
 
+mod u256_be_bytes {
+    use iris_ztd::U256;
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(val: &U256, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let bytes = val.to_be_bytes();
+        serde::Serialize::serialize(&bytes[..], serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<U256, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let bytes: &[u8] = Deserialize::deserialize(deserializer)?;
+        if bytes.len() != 32 {
+            return Err(serde::de::Error::custom("expected 32 bytes for U256"));
+        }
+        Ok(U256::from_be_slice(bytes))
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Signature {
+    #[serde(with = "u256_be_bytes")]
+    #[cfg_attr(feature = "wasm", tsify(type = "Uint8Array"))]
     pub c: U256, // challenge
+    #[serde(with = "u256_be_bytes")]
+    #[cfg_attr(feature = "wasm", tsify(type = "Uint8Array"))]
     pub s: U256, // signature scalar
 }
 

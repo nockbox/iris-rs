@@ -666,6 +666,8 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-build",
+ "tsify",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -700,6 +702,7 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "tonic-web-wasm-client",
+ "tsify",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

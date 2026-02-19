@@ -27,4 +27,4 @@ wasm-bindgen = { workspace = true, optional = true }
 [features]
 default = ["alloc"]
 alloc = ["bs58/alloc", "bitvec/alloc", "serde/alloc", "serde/rc"]
-wasm = ["tsify", "wasm-bindgen"]
+wasm = ["tsify", "alloc", "wasm-bindgen"]

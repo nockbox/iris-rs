@@ -144,4 +144,80 @@ impl GrpcClient {
             None => Err(JsValue::from_str("Empty response from server")),
         }
     }
+
+    /// Peek a value from a Nock application
+    #[cfg(feature = "private-api")]
+    #[wasm_bindgen(js_name = peek)]
+    pub async fn peek(&self, pid: i32, path: iris_ztd::Noun) -> Result<iris_ztd::Noun, JsValue> {
+        let client = Client::new(self.endpoint.clone());
+        let mut grpc_client =
+            iris_grpc_proto::pb::private::v1::nock_app_service_client::NockAppServiceClient::new(
+                client,
+            );
+
+        let path_jam = iris_ztd::jam(path);
+        let request = iris_grpc_proto::pb::private::v1::PeekRequest {
+            pid,
+            path: path_jam,
+        };
+
+        let response = grpc_client
+            .peek(request)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("gRPC error: {}", e)))?
+            .into_inner();
+
+        match response.result {
+            Some(iris_grpc_proto::pb::private::v1::peek_response::Result::Data(data)) => {
+                iris_ztd::cue(&data)
+                    .ok_or_else(|| JsValue::from_str("Failed to cue noun from peek response"))
+            }
+            Some(iris_grpc_proto::pb::private::v1::peek_response::Result::Error(err)) => {
+                Err(JsValue::from_str(&format!("Server error: {}", err.message)))
+            }
+            None => Err(JsValue::from_str("Empty response from server")),
+        }
+    }
+
+    /// Poke a Nock application
+    #[cfg(feature = "private-api")]
+    #[wasm_bindgen(js_name = poke)]
+    pub async fn poke(
+        &self,
+        pid: i32,
+        wire: iris_grpc_proto::pb::common::v1::Wire,
+        payload: iris_ztd::Noun,
+    ) -> Result<(), JsValue> {
+        let client = Client::new(self.endpoint.clone());
+        let mut grpc_client =
+            iris_grpc_proto::pb::private::v1::nock_app_service_client::NockAppServiceClient::new(
+                client,
+            );
+
+        let payload_jam = iris_ztd::jam(payload);
+        let request = iris_grpc_proto::pb::private::v1::PokeRequest {
+            pid,
+            wire: Some(wire),
+            payload: payload_jam,
+        };
+
+        let response = grpc_client
+            .poke(request)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("gRPC error: {}", e)))?
+            .into_inner();
+
+        match response.result {
+            Some(iris_grpc_proto::pb::private::v1::poke_response::Result::Acknowledged(true)) => {
+                Ok(())
+            }
+            Some(iris_grpc_proto::pb::private::v1::poke_response::Result::Acknowledged(false)) => {
+                Err(JsValue::from_str("Poke not acknowledged"))
+            }
+            Some(iris_grpc_proto::pb::private::v1::poke_response::Result::Error(err)) => {
+                Err(JsValue::from_str(&format!("Server error: {}", err.message)))
+            }
+            None => Err(JsValue::from_str("Empty response from server")),
+        }
+    }
 }

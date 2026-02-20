@@ -1,7 +1,6 @@
-use alloc::vec::Vec;
 use alloc::{boxed::Box, format, string::ToString};
 use core::convert::TryFrom;
-use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode};
+use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode, ZMap};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// 64-bit unsigned integer representing the number of assets.
@@ -151,8 +150,7 @@ impl_from_ops!(u64);
 impl_math_ops!(u64, Nicks);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 #[serde(untagged)]
 pub enum Note {
     V0(super::v0::NoteV0),
@@ -222,17 +220,15 @@ impl NounEncode for Note {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-pub struct Balance(pub Vec<(Name, Note)>);
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode)]
+#[iris_ztd::wasm_noun_codec(no_hash)]
+pub struct Balance(pub ZMap<Name, Note>);
 
 // We are choosing 32-bit integer, so that it is a number in JS
 pub type BlockHeight = u32;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode)]
+#[iris_ztd::wasm_noun_codec(no_hash)]
 pub struct BalanceUpdate {
     pub height: BlockHeight,
     pub block_id: Digest,
@@ -294,8 +290,7 @@ impl<const V: u32> TryFrom<Version> for ExpectedVersion<V> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 #[cfg_attr(feature = "wasm", tsify(type = "0 | 1 | 2"))]
 #[repr(u32)]
 pub enum Version {
@@ -381,8 +376,7 @@ impl TryFrom<u32> for Version {
     Serialize,
     Deserialize,
 )]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct Name {
     pub first: Digest,
     pub last: Digest,
@@ -418,8 +412,7 @@ impl Name {
 #[derive(
     Debug, Clone, Copy, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq,
 )]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct Source {
     pub hash: Digest,
     pub is_coinbase: bool,
@@ -429,8 +422,7 @@ pub struct Source {
 #[derive(
     Debug, Clone, Copy, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq,
 )]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct TimelockRange {
     pub min: Option<BlockHeight>,
     pub max: Option<BlockHeight>,

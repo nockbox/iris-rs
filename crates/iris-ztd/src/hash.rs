@@ -17,7 +17,43 @@ use crate::Zeroable;
 #[cfg(feature = "alloc")]
 use alloc::{string::String, vec, vec::Vec};
 #[cfg(feature = "alloc")]
-use ibig::UBig;
+use ibig::{ops::DivRem, UBig};
+
+#[cfg(feature = "alloc")]
+pub fn belts_from_bytes(bytes: &[u8]) -> Vec<Belt> {
+    belts_from_atom(UBig::from_be_bytes(bytes))
+}
+
+#[cfg(feature = "alloc")]
+pub fn belts_from_atom(num: UBig) -> Vec<Belt> {
+    let p = UBig::from(PRIME);
+    let mut belts = Vec::new();
+    let mut remainder = num;
+    let zero = UBig::from(0u64);
+
+    while remainder != zero {
+        let (quotient, rem) = remainder.div_rem(&p);
+        belts.push(Belt(rem.try_into().unwrap()));
+        remainder = quotient;
+    }
+
+    belts
+}
+
+#[cfg(feature = "alloc")]
+pub fn belts_to_bytes(belts: &[Belt]) -> Vec<u8> {
+    belts_to_atom(belts).to_be_bytes()
+}
+
+#[cfg(feature = "alloc")]
+pub fn belts_to_atom(belts: &[Belt]) -> UBig {
+    let p = UBig::from(PRIME);
+    let mut num = UBig::from(0u64);
+    for belt in belts {
+        num = num * &p + UBig::from(belt.0);
+    }
+    num
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Base58Belts<const N: usize>(pub [Belt; N]);
@@ -73,8 +109,8 @@ where
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi, type = "string"))]
+#[iris_ztd_derive::wasm_noun_codec]
+#[cfg_attr(feature = "wasm", tsify(type = "string"))]
 #[serde(from = "Base58Belts<5>")]
 #[serde(into = "Base58Belts<5>")]
 pub struct Digest(pub [Belt; 5]);

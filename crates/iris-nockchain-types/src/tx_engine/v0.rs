@@ -13,8 +13,7 @@ use crate::Nicks;
 #[derive(
     Debug, Clone, Copy, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq,
 )]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct NoteInner {
     pub version: Version,
     pub origin_page: BlockHeight,
@@ -23,8 +22,7 @@ pub struct NoteInner {
 }
 
 #[derive(Debug, Clone, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct NoteV0 {
     pub inner: NoteInner,
     pub name: Name,
@@ -58,8 +56,7 @@ impl NoteV0 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, Hashable, NounDecode, NounEncode)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct LegacySignature(pub ZMap<PublicKey, Signature>);
 
 impl LegacySignature {
@@ -85,8 +82,7 @@ impl LegacySignature {
     Serialize,
     Deserialize,
 )]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct Sig {
     pub m: u64,
     pub pubkeys: ZSet<PublicKey>,
@@ -102,16 +98,14 @@ impl Sig {
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct Input {
     pub note: NoteV0,
     pub spend: SpendV0,
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct SpendV0 {
     pub signature: Option<LegacySignature>,
     pub seeds: SeedsV0,
@@ -119,8 +113,7 @@ pub struct SpendV0 {
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec(no_hash)]
 pub struct RawTxV0 {
     pub id: TxId,
     pub inputs: Inputs,
@@ -193,15 +186,13 @@ impl RawTxV0 {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct Inputs(pub ZMap<Name, Input>);
 
 #[derive(
     Debug, Clone, Copy, NounEncode, Hashable, NounDecode, Serialize, Deserialize, PartialEq, Eq,
 )]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct Timelock {
     pub rel: TimelockRange,
     pub abs: TimelockRange,
@@ -239,15 +230,13 @@ impl Timelock {
     PartialEq,
     Eq,
 )]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct TimelockIntent {
     pub tim: Option<Timelock>,
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct SeedV0 {
     pub output_source: Option<Source>,
     pub recipient: Sig,
@@ -306,8 +295,7 @@ impl<'a> NounEncode for SigHashSeedV0<'a> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct SeedsV0(pub ZSet<SeedV0>);
 
 impl SeedsV0 {

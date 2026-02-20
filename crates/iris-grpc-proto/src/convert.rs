@@ -1069,7 +1069,7 @@ impl TryFrom<PbBalance> for BalanceUpdate {
                 .block_id
                 .required("Balance", "block_id")?
                 .try_into()?,
-            notes: Balance(notes?),
+            notes: Balance(notes?.into_iter().collect()),
         })
     }
 }

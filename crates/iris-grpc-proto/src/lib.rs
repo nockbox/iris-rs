@@ -295,6 +295,13 @@ pub mod pb {
         }
     }
 
+    #[cfg(feature = "private-api")]
+    pub mod private {
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/nockchain.private.v1.rs"));
+        }
+    }
+
     pub const FILE_DESCRIPTOR_SET: &[u8] =
         include_bytes!(concat!(env!("OUT_DIR"), "/nockchain_descriptor.bin"));
 }

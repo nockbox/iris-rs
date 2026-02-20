@@ -21,9 +21,16 @@ async function main() {
   // expose to the REPL
   (globalThis as any).wasm = wasm;
   (globalThis as any).guard = guard;
-  console.log("wasm exports:", Object.keys(wasm));
 
-  repl.start({ prompt: "wasm> " });
+  const replServer = repl.start({ prompt: "wasm> " });
+
+  process.on("uncaughtException", (err: any) => {
+    console.error("Uncaught Exception:", err);
+  });
+
+  process.on("unhandledRejection", (reason: any, promise: any) => {
+    console.error("Unhandled Rejection:", reason);
+  });
 }
 
 main().catch((e) => {

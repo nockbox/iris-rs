@@ -408,7 +408,7 @@ impl_nounable_for_tuple!(
 impl<T: NounEncode, const N: usize> NounEncode for [T; N] {
     fn to_noun(&self) -> Noun {
         match self.split_last() {
-            None => unreachable!(),
+            None => self[0].to_noun(),
             Some((last, rest)) => {
                 let mut acc = last.to_noun();
                 for item in rest.iter().rev() {
@@ -439,7 +439,6 @@ impl<T: NounDecode, const N: usize> NounDecode for [T; N] {
     }
 }
 
-// TODO: always append ~ at the end
 impl<T: NounEncode> NounEncode for &[T] {
     fn to_noun(&self) -> Noun {
         match self.split_last() {

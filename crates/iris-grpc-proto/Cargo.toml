@@ -41,3 +41,4 @@ tonic-build = "0.12"
 
 [features]
 wasm = ["iris-ztd/wasm", "iris-nockchain-types/wasm", "tsify", "wasm-bindgen"]
+private-api = []

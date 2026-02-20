@@ -166,3 +166,64 @@ impl PublicNockchainGrpcClient {
         }
     }
 }
+
+#[cfg(feature = "private-api")]
+use crate::pb::common::v1::Wire;
+#[cfg(feature = "private-api")]
+use crate::pb::private::v1::nock_app_service_client::NockAppServiceClient;
+#[cfg(feature = "private-api")]
+use crate::pb::private::v1::{peek_response, poke_response, PeekRequest, PokeRequest};
+#[cfg(feature = "private-api")]
+use iris_ztd::{cue, jam, Noun};
+
+#[cfg(feature = "private-api")]
+#[derive(Clone)]
+pub struct PrivateNockchainGrpcClient {
+    client: NockAppServiceClient<Channel>,
+}
+
+#[cfg(feature = "private-api")]
+impl PrivateNockchainGrpcClient {
+    pub async fn connect<T: AsRef<str>>(address: T) -> Result<Self> {
+        let client = NockAppServiceClient::connect(address.as_ref().to_string()).await?;
+        Ok(Self { client })
+    }
+
+    pub async fn peek(&mut self, pid: i32, path: &Noun) -> Result<Noun> {
+        let path_jam = jam(path.clone());
+        let request = PeekRequest {
+            pid,
+            path: path_jam,
+        };
+
+        let response = self.client.peek(request).await?.into_inner();
+
+        match response.result {
+            Some(peek_response::Result::Data(data)) => cue(&data).ok_or_else(|| {
+                ClientError::ServerError("Failed to cue noun from peek response".into())
+            }),
+            Some(peek_response::Result::Error(err)) => Err(ClientError::ServerError(err.message)),
+            None => Err(ClientError::EmptyResponse),
+        }
+    }
+
+    pub async fn poke(&mut self, pid: i32, wire: Wire, payload: &Noun) -> Result<()> {
+        let payload_jam = jam(payload.clone());
+        let request = PokeRequest {
+            pid,
+            wire: Some(wire),
+            payload: payload_jam,
+        };
+
+        let response = self.client.poke(request).await?.into_inner();
+
+        match response.result {
+            Some(poke_response::Result::Acknowledged(true)) => Ok(()),
+            Some(poke_response::Result::Acknowledged(false)) => {
+                Err(ClientError::ServerError("Poke not acknowledged".into()))
+            }
+            Some(poke_response::Result::Error(err)) => Err(ClientError::ServerError(err.message)),
+            None => Err(ClientError::EmptyResponse),
+        }
+    }
+}

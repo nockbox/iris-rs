@@ -6,9 +6,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
 
     // Use glob pattern to compile all .proto files
-    let proto_files: Vec<_> = glob::glob("proto/**/*.proto")?
+    let mut proto_files: Vec<_> = glob::glob("proto/**/*.proto")?
         .filter_map(Result::ok)
         .collect();
+
+    // Remove private APIs if feature is not enabled
+    if std::env::var("CARGO_FEATURE_PRIVATE_API").is_err() {
+        proto_files.retain(|path| !path.components().any(|c| c.as_os_str() == "private"));
+    }
 
     for proto_file in proto_files.clone() {
         eprintln!("cargo:rerun-if-changed={}", proto_file.display());
@@ -34,6 +39,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(
             ".nockchain.common.v2",
             "#[cfg_attr(feature = \"wasm\", tsify(into_wasm_abi, from_wasm_abi, type_prefix = \"PbCom2\"))]")
+        .type_attribute(
+            ".nockchain.private.v1",
+            "#[cfg_attr(feature = \"wasm\", tsify(into_wasm_abi, from_wasm_abi, type_prefix = \"PbPri1\"))]")
         // Serialize u64 fields as strings to avoid JavaScript MAX_SAFE_INTEGER issues
         .field_attribute(
             "Belt.value",

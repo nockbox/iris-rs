@@ -378,3 +378,99 @@ fn build_nested_tuple_refs_indexed(indices: &[syn::Index]) -> proc_macro2::Token
 
     result
 }
+
+/// Helper to convert PascalCase to snake_case
+fn to_snake_case(s: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in s.char_indices() {
+        if c.is_uppercase() {
+            if i > 0 && !s.as_bytes()[i - 1].is_ascii_uppercase() {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Helper to convert PascalCase to lowerCamelCase
+fn to_lower_camel_case(s: &str) -> String {
+    let mut out = String::new();
+    let mut first = true;
+    for c in s.chars() {
+        if first {
+            out.push(c.to_ascii_lowercase());
+            first = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Attribute macro `#[wasm_noun_codec]` to attach tsify attributes and create js codec functions.
+/// Supports `#[wasm_noun_codec(no_hash)]` to skip generating the `hash` function.
+#[proc_macro_attribute]
+pub fn wasm_noun_codec(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as DeriveInput);
+    let name = &input.ident;
+    let name_str = name.to_string();
+
+    let attr_str = attr.to_string();
+    let no_hash = attr_str.contains("no_hash");
+
+    let snake_name = to_snake_case(&name_str);
+    let camel_name = to_lower_camel_case(&name_str);
+
+    let to_noun_snake = format_ident!("{}_to_noun", snake_name);
+    let from_noun_snake = format_ident!("{}_from_noun", snake_name);
+    let hash_snake = format_ident!("{}_hash", snake_name);
+
+    let to_noun_camel = format!("{}ToNoun", camel_name);
+    let from_noun_camel = format!("{}FromNoun", camel_name);
+    let hash_camel = format!("{}Hash", camel_name);
+
+    let mod_name = format_ident!("__wasm_noun_codec_{}", snake_name);
+
+    let crate_path = get_crate_path();
+
+    let hash_fn = if no_hash {
+        quote! {}
+    } else {
+        quote! {
+            #[wasm_bindgen(js_name = #hash_camel)]
+            pub fn #hash_snake(v: &#name) -> #crate_path::Digest {
+                #crate_path::Hashable::hash(v)
+            }
+        }
+    };
+
+    let expanded = quote! {
+        #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+        #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+        #input
+
+        #[cfg(feature = "wasm")]
+        mod #mod_name {
+            use super::*;
+            use wasm_bindgen::prelude::*;
+
+            #[wasm_bindgen(js_name = #to_noun_camel)]
+            pub fn #to_noun_snake(v: &#name) -> #crate_path::Noun {
+                #crate_path::NounEncode::to_noun(v)
+            }
+
+            #[wasm_bindgen(js_name = #from_noun_camel)]
+            pub fn #from_noun_snake(noun: &#crate_path::Noun) -> ::core::result::Result<#name, JsValue> {
+                #crate_path::NounDecode::from_noun(noun)
+                    .ok_or_else(|| JsValue::from_str("Failed to decode noun"))
+            }
+
+            #hash_fn
+        }
+    };
+
+    TokenStream::from(expanded)
+}

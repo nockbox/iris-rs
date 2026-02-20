@@ -166,7 +166,9 @@ impl Limbable for Base58Belts<5> {
         uint.to_be_bytes()
     }
     fn from_be_bytes(bytes: &[u8]) -> Self::UintType {
-        Self::UintType::from_be_slice(bytes)
+        let mut buf = [0u8; Self::BYTES];
+        buf[Self::BYTES - bytes.len()..].copy_from_slice(bytes);
+        Self::UintType::from_be_slice(&buf)
     }
     fn div_rem(a: Self::UintType, b: Self::UintType) -> (Self::UintType, Self::UintType) {
         let nz = NonZero::new(b).expect("division by zero");
@@ -191,7 +193,9 @@ impl Limbable for Base58Belts<6> {
         uint.to_be_bytes()
     }
     fn from_be_bytes(bytes: &[u8]) -> Self::UintType {
-        Self::UintType::from_be_slice(bytes)
+        let mut buf = [0u8; Self::BYTES];
+        buf[Self::BYTES - bytes.len()..].copy_from_slice(bytes);
+        Self::UintType::from_be_slice(&buf)
     }
     fn div_rem(a: Self::UintType, b: Self::UintType) -> (Self::UintType, Self::UintType) {
         let nz = NonZero::new(b).expect("division by zero");
@@ -216,7 +220,9 @@ impl Limbable for Base58Belts<7> {
         uint.to_be_bytes()
     }
     fn from_be_bytes(bytes: &[u8]) -> Self::UintType {
-        Self::UintType::from_be_slice(bytes)
+        let mut buf = [0u8; Self::BYTES];
+        buf[Self::BYTES - bytes.len()..].copy_from_slice(bytes);
+        Self::UintType::from_be_slice(&buf)
     }
     fn div_rem(a: Self::UintType, b: Self::UintType) -> (Self::UintType, Self::UintType) {
         let nz = NonZero::new(b).expect("division by zero");

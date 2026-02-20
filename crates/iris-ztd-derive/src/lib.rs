@@ -173,7 +173,7 @@ fn build_nested_tuple_indexed(indices: &[syn::Index]) -> proc_macro2::TokenStrea
 }
 
 /// Derive macro for implementing the `NounEncode` trait.
-#[proc_macro_derive(NounEncode)]
+#[proc_macro_derive(NounEncode, attributes(noun_tag))]
 pub fn derive_noun_encode(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
@@ -221,13 +221,90 @@ pub fn derive_noun_encode(input: TokenStream) -> TokenStream {
                 Fields::Unit => quote! { #crate_path::NounEncode::to_noun(&0u64) },
             }
         }
-        Data::Enum(_) => {
-            return syn::Error::new_spanned(
-                &input,
-                "NounEncode derive macro does not support enums yet",
-            )
-            .to_compile_error()
-            .into();
+        Data::Enum(data) => {
+            let mut match_arms = Vec::new();
+
+            for variant in &data.variants {
+                let variant_ident = &variant.ident;
+                let mut tag_value = None;
+
+                for attr in &variant.attrs {
+                    if attr.path().is_ident("noun_tag") {
+                        if let Ok(lit) = attr.parse_args::<syn::LitStr>() {
+                            tag_value = Some(lit.value());
+                        }
+                    }
+                }
+
+                let tag_value = tag_value.unwrap_or_else(|| variant_ident.to_string());
+
+                match &variant.fields {
+                    Fields::Unit => {
+                        match_arms.push(quote! {
+                            Self::#variant_ident => #crate_path::NounEncode::to_noun(&#tag_value),
+                        });
+                    }
+                    Fields::Unnamed(fields) => {
+                        let field_count = fields.unnamed.len();
+                        if field_count == 0 {
+                            match_arms.push(quote! {
+                                Self::#variant_ident => #crate_path::NounEncode::to_noun(&#tag_value),
+                            });
+                        } else if field_count == 1 {
+                            match_arms.push(quote! {
+                                Self::#variant_ident(v0) => {
+                                    let tag_noun = #crate_path::NounEncode::to_noun(&#tag_value);
+                                    let rest_noun = #crate_path::NounEncode::to_noun(v0);
+                                    #crate_path::NounEncode::to_noun(&(tag_noun, rest_noun))
+                                }
+                            });
+                        } else {
+                            let idents: Vec<_> = (0..field_count).map(|i| format_ident!("v{}", i)).collect();
+                            let ref_idents: Vec<_> = idents.iter().collect();
+                            let tuple_expr = build_nested_tuple_expr_for_idents(&ref_idents);
+                            match_arms.push(quote! {
+                                Self::#variant_ident( #( #idents ),* ) => {
+                                    let tag_noun = #crate_path::NounEncode::to_noun(&#tag_value);
+                                    let rest_noun = #crate_path::NounEncode::to_noun(&#tuple_expr);
+                                    #crate_path::NounEncode::to_noun(&(tag_noun, rest_noun))
+                                }
+                            });
+                        }
+                    }
+                    Fields::Named(fields) => {
+                        let field_names: Vec<_> = fields.named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
+                        if field_names.is_empty() {
+                            match_arms.push(quote! {
+                                Self::#variant_ident {} => #crate_path::NounEncode::to_noun(&#tag_value),
+                            });
+                        } else if field_names.len() == 1 {
+                            let field = field_names[0];
+                            match_arms.push(quote! {
+                                Self::#variant_ident { #field } => {
+                                    let tag_noun = #crate_path::NounEncode::to_noun(&#tag_value);
+                                    let rest_noun = #crate_path::NounEncode::to_noun(#field);
+                                    #crate_path::NounEncode::to_noun(&(tag_noun, rest_noun))
+                                }
+                            });
+                        } else {
+                            let tuple_expr = build_nested_tuple_expr_for_idents(&field_names);
+                            match_arms.push(quote! {
+                                Self::#variant_ident { #( #field_names ),* } => {
+                                    let tag_noun = #crate_path::NounEncode::to_noun(&#tag_value);
+                                    let rest_noun = #crate_path::NounEncode::to_noun(&#tuple_expr);
+                                    #crate_path::NounEncode::to_noun(&(tag_noun, rest_noun))
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+
+            quote! {
+                match self {
+                    #( #match_arms )*
+                }
+            }
         }
         Data::Union(_) => {
             return syn::Error::new_spanned(
@@ -251,7 +328,7 @@ pub fn derive_noun_encode(input: TokenStream) -> TokenStream {
 }
 
 /// Derive macro for implementing the `NounDecode` trait.
-#[proc_macro_derive(NounDecode)]
+#[proc_macro_derive(NounDecode, attributes(noun_tag))]
 pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
@@ -322,13 +399,94 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
                 },
             }
         }
-        Data::Enum(_) => {
-            return syn::Error::new_spanned(
-                &input,
-                "NounDecode derive macro does not support enums yet",
-            )
-            .to_compile_error()
-            .into();
+        Data::Enum(data) => {
+            let mut cell_match_arms = Vec::new();
+            let mut atom_match_arms = Vec::new();
+
+            for variant in &data.variants {
+                let variant_ident = &variant.ident;
+                let mut tag_value = None;
+
+                for attr in &variant.attrs {
+                    if attr.path().is_ident("noun_tag") {
+                        if let Ok(lit) = attr.parse_args::<syn::LitStr>() {
+                            tag_value = Some(lit.value());
+                        }
+                    }
+                }
+
+                let tag_value = tag_value.unwrap_or_else(|| variant_ident.to_string());
+
+                match &variant.fields {
+                    Fields::Unit => {
+                        atom_match_arms.push(quote! {
+                            #tag_value => Some(Self::#variant_ident),
+                        });
+                    }
+                    Fields::Unnamed(fields) => {
+                        let field_count = fields.unnamed.len();
+                        if field_count == 0 {
+                            atom_match_arms.push(quote! {
+                                #tag_value => Some(Self::#variant_ident()),
+                            });
+                        } else if field_count == 1 {
+                            cell_match_arms.push(quote! {
+                                #tag_value => {
+                                    Some(Self::#variant_ident(#crate_path::NounDecode::from_noun(&rest)?))
+                                }
+                            });
+                        } else {
+                            let idents: Vec<_> = (0..field_count).map(|i| format_ident!("v{}", i)).collect();
+                            cell_match_arms.push(quote! {
+                                #tag_value => {
+                                    let ( #( #idents ),* ) = #crate_path::NounDecode::from_noun(&rest)?;
+                                    Some(Self::#variant_ident( #( #idents ),* ))
+                                }
+                            });
+                        }
+                    }
+                    Fields::Named(fields) => {
+                        let field_names: Vec<_> = fields.named.iter().map(|f| &f.ident).collect();
+                        if field_names.is_empty() {
+                            atom_match_arms.push(quote! {
+                                #tag_value => Some(Self::#variant_ident {}),
+                            });
+                        } else {
+                            cell_match_arms.push(quote! {
+                                #tag_value => {
+                                    let ( #( #field_names ),* ) = #crate_path::NounDecode::from_noun(&rest)?;
+                                    Some(Self::#variant_ident { #( #field_names ),* })
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+
+            quote! {
+                match noun {
+                    #crate_path::Noun::Atom(atom) => {
+                        let a = atom.to_le_bytes();
+                        let s = core::str::from_utf8(&a).ok()?;
+                        match s {
+                            #( #atom_match_arms )*
+                            _ => None,
+                        }
+                    }
+                    #crate_path::Noun::Cell(ref a, rest) => {
+                        if let #crate_path::Noun::Atom(a) = &**a {
+                            let a = a.to_le_bytes();
+                            let tag = core::str::from_utf8(&a).ok()?;
+                            match tag {
+                                #( #cell_match_arms )*
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                }
+            }
         }
         Data::Union(_) => {
             return syn::Error::new_spanned(
@@ -374,6 +532,20 @@ fn build_nested_tuple_refs_indexed(indices: &[syn::Index]) -> proc_macro2::Token
 
     for index in iter {
         result = quote! { (&self.#index, #result) };
+    }
+
+    result
+}
+
+/// Build nested tuple expressions for idents used in destructuring: (a, &(b, &c))
+fn build_nested_tuple_expr_for_idents(idents: &[&syn::Ident]) -> proc_macro2::TokenStream {
+    let mut iter = idents.iter().rev();
+    let last = iter.next().unwrap();
+
+    let mut result = quote! { #last };
+
+    for ident in iter {
+        result = quote! { (#ident, &#result) };
     }
 
     result

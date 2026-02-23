@@ -259,7 +259,8 @@ pub fn derive_noun_encode(input: TokenStream) -> TokenStream {
                                 }
                             });
                         } else {
-                            let idents: Vec<_> = (0..field_count).map(|i| format_ident!("v{}", i)).collect();
+                            let idents: Vec<_> =
+                                (0..field_count).map(|i| format_ident!("v{}", i)).collect();
                             let ref_idents: Vec<_> = idents.iter().collect();
                             let tuple_expr = build_nested_tuple_expr_for_idents(&ref_idents);
                             match_arms.push(quote! {
@@ -272,7 +273,11 @@ pub fn derive_noun_encode(input: TokenStream) -> TokenStream {
                         }
                     }
                     Fields::Named(fields) => {
-                        let field_names: Vec<_> = fields.named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
+                        let field_names: Vec<_> = fields
+                            .named
+                            .iter()
+                            .map(|f| f.ident.as_ref().unwrap())
+                            .collect();
                         if field_names.is_empty() {
                             match_arms.push(quote! {
                                 Self::#variant_ident {} => #crate_path::NounEncode::to_noun(&#tag_value),
@@ -436,7 +441,8 @@ pub fn derive_noun_decode(input: TokenStream) -> TokenStream {
                                 }
                             });
                         } else {
-                            let idents: Vec<_> = (0..field_count).map(|i| format_ident!("v{}", i)).collect();
+                            let idents: Vec<_> =
+                                (0..field_count).map(|i| format_ident!("v{}", i)).collect();
                             cell_match_arms.push(quote! {
                                 #tag_value => {
                                     let ( #( #idents ),* ) = #crate_path::NounDecode::from_noun(&rest)?;

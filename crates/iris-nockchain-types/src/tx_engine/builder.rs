@@ -11,10 +11,11 @@ use alloc::{boxed::Box, format, string::ToString};
 
 use super::note::Note;
 use super::v1::{
-    InputDisplay, LockRoot, NockchainTx, NoteData, Pkh, SeedV1 as Seed, SeedsV1 as Seeds,
-    SpendCondition, SpendV1 as Spend, SpendsV1 as Spends, TransactionDisplay, Witness,
+    words_for_unordered_spends, InputDisplay, LockRoot, NockchainTx, NoteData, Pkh, SeedV1 as Seed,
+    SeedsV1 as Seeds, SpendCondition, SpendV1 as Spend, SpendsV1 as Spends, TransactionDisplay,
+    Witness,
 };
-use super::{ExpectedVersion, Name, Version};
+use super::{ExpectedVersion, Name, TxEngineSettings, Version};
 use crate::{Nicks, RawTx};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -293,15 +294,15 @@ impl SpendBuilder {
         false
     }
 
-    fn unclamped_fee(&self, fee_per_word: Nicks) -> Nicks {
-        let mut fee = self.spend.unclamped_fee(fee_per_word);
+    fn missing_unlocks_fee(&self, settings: &TxEngineSettings) -> Nicks {
+        let mut fee = Nicks(0);
 
         for mu in self.missing_unlocks() {
             #[allow(clippy::single_match)]
             match mu {
                 MissingUnlocks::Pkh { num_sigs, .. } => {
                     // Heuristic for missing signatures. It is perhaps 30, but perhaps not.
-                    fee += fee_per_word * 35 * num_sigs;
+                    fee += settings.cost_per_word * 35 * num_sigs / settings.witness_word_div;
                 }
                 // TODO: handle hax
                 _ => (),
@@ -316,22 +317,23 @@ impl SpendBuilder {
 pub struct TxBuilder {
     spends: BTreeMap<Name, SpendBuilder>,
     fee_pool: Vec<SpendBuilder>,
-    fee_per_word: Nicks,
+    settings: TxEngineSettings,
 }
 
 impl TxBuilder {
     /// Create an empty TxBuilder
-    pub fn new(fee_per_word: Nicks) -> Self {
+    pub fn new(settings: TxEngineSettings) -> Self {
         Self {
             spends: BTreeMap::new(),
             fee_pool: vec![],
-            fee_per_word,
+            settings,
         }
     }
 
     pub fn from_tx(
         tx: RawTx,
         mut notes: BTreeMap<Name, (Note, Option<SpendCondition>)>,
+        settings: TxEngineSettings,
     ) -> Result<Self, BuildError> {
         let RawTx::V1(tx) = tx else {
             return Err(BuildError::InvalidVersion);
@@ -352,7 +354,7 @@ impl TxBuilder {
                 })
                 .collect::<Result<BTreeMap<_, _>, _>>()?,
             fee_pool: vec![],
-            fee_per_word: (1 << 15).into(),
+            settings,
         })
     }
 
@@ -531,11 +533,18 @@ impl TxBuilder {
     pub fn calc_fee(&self) -> Nicks {
         let mut fee = Nicks(0);
 
+        let (sw, ww) = words_for_unordered_spends(
+            self.spends.values().map(|v| (v.note.name(), &v.spend)),
+            &self.settings,
+        );
+        fee += self.settings.cost_per_word * sw
+            + self.settings.cost_per_word * ww / self.settings.witness_word_div;
+
         for s in self.spends.values() {
-            fee += s.unclamped_fee(self.fee_per_word);
+            fee += s.missing_unlocks_fee(&self.settings);
         }
 
-        fee.max(Spend::MIN_FEE)
+        fee.max(self.settings.min_fee)
     }
 
     pub fn recalc_and_set_fee(&mut self, include_lock_data: bool) -> Result<&mut Self, BuildError> {
@@ -549,6 +558,29 @@ impl TxBuilder {
         adjust_fee: bool,
         include_lock_data: bool,
     ) -> Result<&mut Self, BuildError> {
+        let bythos_active =
+            self.settings.tx_engine_version == Version::V1 && self.settings.tx_engine_patch == 1;
+
+        // On bythos, we need to track number of refunds, so that we can do correct fee adjustment in connection to refund lock-root
+        let mut refund_counts = BTreeMap::<Digest, usize>::new();
+
+        for s in self.spends.values() {
+            if let Some(rl) = &s.refund_lock {
+                let rlh = rl.hash();
+                let refunds = s
+                    .spend
+                    .seeds()
+                    .0
+                    .iter()
+                    .filter(|v| v.lock_root.hash() == rlh)
+                    .count();
+                refund_counts
+                    .entry(rlh)
+                    .and_modify(|v| *v += refunds)
+                    .or_insert(refunds);
+            }
+        }
+
         let cur_fee = self.cur_fee();
 
         let mut spends = self.spends.values_mut().collect::<Vec<_>>();
@@ -585,8 +617,9 @@ impl TxBuilder {
                         s.compute_refund(include_lock_data);
 
                         // Eliminate refund seed words, if the refund is now gone.
+                        // Important to note, that node_data_words are not part of witness.
                         if adjust_fee && s.cur_refund().is_none() {
-                            fee_left -= fee_left.min(self.fee_per_word * words);
+                            fee_left -= fee_left.min(self.settings.cost_per_word * words);
                         }
                     }
                 }
@@ -602,7 +635,16 @@ impl TxBuilder {
                 r.compute_refund(include_lock_data);
                 let rs = r.cur_refund().expect("Fee pool entry must have refund");
                 if adjust_fee {
-                    fee_left += r.unclamped_fee(self.fee_per_word);
+                    let (mut sw, ww) = r.spend.calc_words();
+                    // If we are on Bythos, then seed words are merged by lock root, i.e. we don't need to pay for this one refund pool entry.
+                    let refunds = refund_counts.entry(rs.lock_root.hash()).or_default();
+                    if bythos_active && *refunds > 0 {
+                        sw = 0;
+                    }
+                    *refunds += 1;
+                    fee_left += self.settings.cost_per_word * sw
+                        + self.settings.cost_per_word * ww / self.settings.witness_word_div;
+                    fee_left += r.missing_unlocks_fee(&self.settings);
                 }
                 let sub_refund = rs.gift.min(fee_left);
                 if sub_refund > 0 {
@@ -648,7 +690,8 @@ impl TxBuilder {
             let mut return_to_pool = vec![];
 
             for s in spends {
-                if s.refund_lock.is_some() {
+                if let Some(rl) = &s.refund_lock {
+                    let rlh = rl.hash();
                     let add_refund = s.spend.fee().min(refund_left);
 
                     if add_refund > 0 {
@@ -664,8 +707,19 @@ impl TxBuilder {
                         // fee shall disappear. The only case we don't handle here is whenever we
                         // reach the MIN_FEE (256 nicks). Hence, TODO: handle MIN_FEE case. This is
                         // irrelevant for the current consensus version with high fees.
-                        refund_left =
-                            refund_left.saturating_sub(s.unclamped_fee(self.fee_per_word));
+                        let (mut sw, ww) = s.spend.calc_words();
+                        // If we are on Bythos, then seed words are merged by lock root, i.e. we don't need to pay for this one refund pool entry.
+                        let refunds = refund_counts.entry(rlh).or_default();
+                        if bythos_active && *refunds > 1 {
+                            sw = 0;
+                        }
+                        *refunds = refunds
+                            .checked_sub(1)
+                            .expect("Refunds should be at least 1");
+                        let mut to_refund = self.settings.cost_per_word * sw
+                            + self.settings.cost_per_word * ww / self.settings.witness_word_div;
+                        to_refund += s.missing_unlocks_fee(&self.settings);
+                        refund_left = refund_left.saturating_sub(to_refund);
                     }
                 }
             }
@@ -779,7 +833,6 @@ mod tests {
             .try_into()
             .unwrap();
         let gift = Nicks(1234567);
-        let fee = Nicks(2850816);
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
@@ -790,28 +843,39 @@ mod tests {
             ]
             .into(),
         );
-        let tx = TxBuilder::new(Nicks(1))
-            .simple_spend_base(
-                vec![(note.clone(), Some(spend_condition.clone()))],
-                recipient,
-                gift,
-                refund_pkh,
-                true,
-            )
-            .unwrap()
-            .set_fee_and_balance_refund(fee, false, true)
-            .unwrap()
-            .sign(&private_key)
-            .validate()
-            .unwrap()
-            .build();
+        for (settings, fee, expected_id) in [
+            (
+                TxEngineSettings::v1_default(),
+                Nicks(2850816),
+                "3pmkA1knKhJzmd28t5TULP9DADK7GhWsHaNSTpPcGcN4nxzrWsDK2xe",
+            ),
+            (
+                TxEngineSettings::v1_bythos_default(),
+                Nicks(675840),
+                "BzEPGBGvTfqo4saYmXLem7NgzmGzZdKNk2EUwWBfhgd1yzkdTeA8yQN",
+            ),
+        ] {
+            let tx = TxBuilder::new(settings)
+                .simple_spend_base(
+                    vec![(note.clone(), Some(spend_condition.clone()))],
+                    recipient,
+                    gift,
+                    refund_pkh,
+                    true,
+                )
+                .unwrap()
+                .set_fee_and_balance_refund(fee, false, true)
+                .unwrap()
+                .sign(&private_key)
+                .validate()
+                .unwrap()
+                .build();
 
-        assert_eq!(
-            tx.id.to_string(),
-            "3pmkA1knKhJzmd28t5TULP9DADK7GhWsHaNSTpPcGcN4nxzrWsDK2xe",
-        );
+            assert_eq!(tx.id.to_string(), expected_id);
+        }
 
-        let mut tx = TxBuilder::new(Nicks(1 << 17));
+        let fee = Nicks(2850816);
+        let mut tx = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(1 << 17)));
 
         tx.simple_spend_base(
             vec![(note.clone(), Some(spend_condition.clone()))],
@@ -827,8 +891,8 @@ mod tests {
 
         assert!(tx.validate().is_err());
 
-        let fee_per_word = Nicks(40000);
-        let mut builder = TxBuilder::new(fee_per_word);
+        let settings = TxEngineSettings::v1_with_word_cost(Nicks(40000));
+        let mut builder = TxBuilder::new(settings);
 
         builder
             .simple_spend(
@@ -844,7 +908,7 @@ mod tests {
 
         let tx = builder.sign(&private_key).build();
 
-        assert_eq!(tx.to_raw_tx().spends.fee(fee_per_word), Nicks(2520000));
+        assert_eq!(tx.to_raw_tx().spends.fee(&settings), Nicks(2520000));
         assert_eq!(fee1, Nicks(2520000));
     }
 
@@ -916,7 +980,7 @@ mod tests {
             .into_iter()
             .map(|v| (v, Some(spend_condition.clone())))
             .collect::<Vec<_>>();
-        let mut builder = TxBuilder::new(Nicks(8));
+        let mut builder = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(8)));
 
         builder
             .simple_spend_base(notes, recipient, gift, refund_pkh, false)
@@ -1028,7 +1092,7 @@ mod tests {
         let gift = Nicks(4294967296 * 3 - 65536 * 100);
         let refund_pkh = public_key.hash();
 
-        let tx = TxBuilder::new(Nicks(1 << 15))
+        let tx = TxBuilder::new(TxEngineSettings::v1_default())
             .simple_spend_base(
                 notes
                     .into_iter()
@@ -1126,7 +1190,7 @@ mod tests {
             ]
             .into(),
         );
-        let mut builder = TxBuilder::new(Nicks(1));
+        let mut builder = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(1)));
 
         builder
             .simple_spend_base(
@@ -1199,7 +1263,7 @@ mod tests {
             ]
             .into(),
         );
-        let mut builder = TxBuilder::new(Nicks(1));
+        let mut builder = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(1)));
 
         builder
             .simple_spend_base(
@@ -1264,7 +1328,7 @@ mod tests {
             ]
             .into(),
         );
-        let tx = TxBuilder::new(Nicks(1))
+        let tx = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(1)))
             .simple_spend_base(
                 vec![(note.clone(), Some(spend_condition.clone()))],
                 recipient,

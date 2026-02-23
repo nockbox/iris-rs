@@ -32,6 +32,10 @@ impl<K: Hashable + NounEncode, V: Hashable + NounEncode> ZEntry for ZMapEntry<K,
         &self.value
     }
 
+    fn value_mut(&mut self) -> &mut Self::Value {
+        &mut self.value
+    }
+
     fn pair(&self) -> Self::BorrowPair<'_> {
         (&self.key, &self.value)
     }

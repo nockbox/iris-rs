@@ -20,6 +20,7 @@ pub trait ZEntry {
 
     fn key(&self) -> &Self::Key;
     fn value(&self) -> &Self::Value;
+    fn value_mut(&mut self) -> &mut Self::Value;
     fn pair(&self) -> Self::BorrowPair<'_>;
 
     fn into_key(self) -> Self::Key;
@@ -92,6 +93,30 @@ impl<E: ZEntry> ZBase<E> {
         E::Key: Borrow<Q>,
     {
         self.get_entry(key).map(|e| e.value())
+    }
+
+    pub fn get_mut<Q: NounEncode + ?Sized>(&mut self, key: &Q) -> Option<&mut E::Value>
+    where
+        E::Key: Borrow<Q>,
+    {
+        // No get_entry_mut, because we want keys to be immutable
+        // TODO: disallow on ZSet, because ZSet's value is its key
+        Self::get_inner_mut(self.root.0.as_mut()?, key).map(|e| e.value_mut())
+    }
+
+    fn get_inner_mut<'a, Q: NounEncode + ?Sized>(n: &'a mut Node<E>, key: &Q) -> Option<&'a mut E>
+    where
+        E::Key: Borrow<Q>,
+    {
+        if Self::tip_eq(&key, n.entry.key()) {
+            return Some(&mut n.entry);
+        }
+        let go_left = Self::gor_tip(&key, n.entry.key());
+        if go_left {
+            Self::get_inner_mut(n.left.as_mut()?, key)
+        } else {
+            Self::get_inner_mut(n.right.as_mut()?, key)
+        }
     }
 
     pub fn get_entry<Q: NounEncode + ?Sized>(&self, key: &Q) -> Option<&E>

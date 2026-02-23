@@ -28,6 +28,10 @@ impl<T: Hashable + NounEncode> ZEntry for ZSetEntry<T> {
         &self.key
     }
 
+    fn value_mut(&mut self) -> &mut Self::Value {
+        &mut self.key
+    }
+
     fn pair(&self) -> Self::BorrowPair<'_> {
         &self.key
     }

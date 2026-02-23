@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::note::{BlockHeight, ExpectedVersion, Name, Source, Version};
 use super::v0::LegacySignature;
-use super::TxId;
+use super::{TxEngineSettings, TxId};
 use crate::Nicks;
 
 fn noun_words(n: &Noun) -> u64 {
@@ -85,6 +85,16 @@ impl NoteData {
         let mut ret = Self::empty();
         ret.push_pkh(pkh);
         ret
+    }
+
+    pub fn fee_words(&self) -> u64 {
+        let mut w = 1;
+
+        for (_, v) in &self.0 {
+            w += 1 + noun_words(v);
+        }
+
+        w
     }
 }
 
@@ -195,7 +205,7 @@ impl SeedV1 {
     }
 
     pub fn note_data_words(&self) -> u64 {
-        noun_words(&self.note_data.to_noun())
+        self.note_data.fee_words()
     }
 }
 
@@ -350,21 +360,9 @@ impl AsRef<SpendV1> for SpendV1 {
 }
 
 impl SpendV1 {
-    pub const MIN_FEE: Nicks = Nicks(256);
-
-    pub fn fee_for_many<T: AsRef<SpendV1>>(
-        spends: impl Iterator<Item = T>,
-        per_word: Nicks,
-    ) -> Nicks {
-        let fee = spends
-            .map(|v| v.as_ref().unclamped_fee(per_word))
-            .sum::<Nicks>();
-        fee.max(Self::MIN_FEE)
-    }
-
-    pub fn unclamped_fee(&self, per_word: Nicks) -> Nicks {
+    pub fn unclamped_fee(&self, settings: &TxEngineSettings) -> Nicks {
         let (a, b) = self.calc_words();
-        per_word * (a + b)
+        settings.cost_per_word * (a + b)
     }
 
     pub fn calc_words(&self) -> (u64, u64) {
@@ -662,13 +660,82 @@ pub type LockTim = super::v0::Timelock;
 #[iris_ztd::wasm_noun_codec]
 pub struct Hax(pub ZSet<Digest>);
 
+pub fn words_for_unordered_spends<'a>(
+    spends: impl Iterator<Item = (Name, &'a SpendV1)> + 'a,
+    settings: &TxEngineSettings,
+) -> (u64, u64) {
+    let spends = spends.collect::<ZMap<Name, &'a SpendV1>>();
+    words_for_ordered_spends(spends.into_iter().map(|(_, v)| v), settings)
+}
+
+pub fn words_for_ordered_spends<'a>(
+    spends: impl Iterator<Item = &'a SpendV1> + 'a,
+    settings: &TxEngineSettings,
+) -> (u64, u64) {
+    if settings.tx_engine_version == Version::V0 {
+        panic!("fee() called on v0 settings");
+    }
+
+    let mut sw = 0;
+    let mut ww = 0;
+
+    if settings.tx_engine_patch == 0 {
+        for spend in spends {
+            let (s, w) = spend.calc_words();
+            sw += s;
+            ww += w;
+        }
+    } else {
+        let mut merged_note_data: ZMap<Digest, NoteData> = ZMap::new();
+
+        for spend in spends {
+            let (_, w) = spend.calc_words();
+            ww += w;
+            for seed in &spend.seeds().0 {
+                if let Some(note_data) = merged_note_data.get_mut(&seed.lock_root.hash()) {
+                    for (k, v) in seed.note_data.0.clone() {
+                        note_data.0.insert(k, v);
+                    }
+                } else {
+                    merged_note_data.insert(seed.lock_root.hash(), seed.note_data.clone());
+                }
+            }
+        }
+
+        for (_, note_data) in merged_note_data {
+            sw += note_data.fee_words();
+        }
+    }
+
+    (sw, ww)
+}
+
 #[derive(Debug, Clone, Default, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
 #[iris_ztd::wasm_noun_codec]
 pub struct SpendsV1(pub ZMap<Name, SpendV1>);
 
 impl SpendsV1 {
-    pub fn fee(&self, per_word: Nicks) -> Nicks {
-        SpendV1::fee_for_many(self.0.iter().map(|(_k, v)| v), per_word)
+    pub fn fee_for_many<T: AsRef<SpendV1>>(
+        spends: impl Iterator<Item = T>,
+        settings: &TxEngineSettings,
+    ) -> Nicks {
+        let fee = spends
+            .map(|v| v.as_ref().unclamped_fee(settings))
+            .sum::<Nicks>();
+        fee.max(settings.min_fee)
+    }
+
+    pub fn fee_words(&self, settings: &TxEngineSettings) -> (u64, u64) {
+        words_for_ordered_spends(self.0.iter().map(|(_, v)| v), settings)
+    }
+
+    pub fn unclamped_fee(&self, settings: &TxEngineSettings) -> Nicks {
+        let (sw, ww) = self.fee_words(settings);
+        settings.cost_per_word * sw + settings.cost_per_word * ww / settings.witness_word_div
+    }
+
+    pub fn fee(&self, settings: &TxEngineSettings) -> Nicks {
+        core::cmp::max(settings.min_fee, self.unclamped_fee(settings))
     }
 
     pub fn split_witness(&self) -> (SpendsV1, WitnessData) {

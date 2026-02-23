@@ -289,7 +289,7 @@ impl<const V: u32> TryFrom<Version> for ExpectedVersion<V> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
 #[iris_ztd::wasm_noun_codec]
 #[cfg_attr(feature = "wasm", tsify(type = "0 | 1 | 2"))]
 #[repr(u32)]

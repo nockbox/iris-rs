@@ -11,8 +11,8 @@ use iris_nockchain_types::{
     note::{Name, Note, Version},
     tx::RawTx,
     v0,
-    v1::{self, NockchainTx, NoteData, SeedV1 as Seed, SpendCondition},
-    BlockHeight, Nicks, Source, SpendBuilder,
+    v1::{self, NockchainTx, NoteData, RawTxV1, SeedV1 as Seed, SpendCondition},
+    BlockHeight, Nicks, Source, SpendBuilder, TxEngineSettings,
 };
 use iris_ztd::{cue, Digest, ZSet, U256};
 use serde::{Deserialize, Serialize};
@@ -60,6 +60,32 @@ pub fn note_from_protobuf(value: pb::Note) -> Result<Note, JsValue> {
     value
         .try_into()
         .map_err(|e| JsValue::from_str(&format!("{}", e)))
+}
+
+#[wasm_bindgen(js_name = nockchainTxToRaw)]
+pub fn nockchain_tx_to_raw(tx: NockchainTx) -> RawTx {
+    RawTx::V1(tx.to_raw_tx())
+}
+
+#[wasm_bindgen(js_name = rawTxToNockchainTx)]
+pub fn raw_tx_to_nockchain_tx(tx: RawTxV1) -> NockchainTx {
+    tx.to_nockchain_tx()
+}
+
+#[wasm_bindgen(js_name = rawTxToProtobuf)]
+pub fn raw_tx_to_protobuf(tx: RawTxV1) -> pb::RawTransaction {
+    tx.into()
+}
+
+#[wasm_bindgen(js_name = rawTxFromProtobuf)]
+pub fn raw_tx_from_protobuf(tx: pb::RawTransaction) -> Result<RawTx, JsValue> {
+    tx.try_into()
+        .map_err(|e| JsValue::from_str(&format!("{}", e)))
+}
+
+#[wasm_bindgen(js_name = rawTxOutputs)]
+pub fn raw_tx_outputs(tx: RawTx) -> Vec<Note> {
+    tx.outputs()
 }
 
 // Helper to create V1 note
@@ -156,9 +182,9 @@ pub struct WasmTxBuilder {
 impl WasmTxBuilder {
     /// Create an empty transaction builder
     #[wasm_bindgen(constructor)]
-    pub fn new(fee_per_word: Nicks) -> Self {
+    pub fn new(settings: TxEngineSettings) -> Self {
         Self {
-            builder: TxBuilder::new(fee_per_word),
+            builder: TxBuilder::new(settings),
         }
     }
 
@@ -168,6 +194,7 @@ impl WasmTxBuilder {
         tx: RawTx,
         notes: Vec<Note>,
         spend_conditions: Vec<SpendCondition>,
+        settings: TxEngineSettings,
     ) -> Result<Self, JsValue> {
         if notes.len() != spend_conditions.len() {
             return Err(JsValue::from_str(
@@ -182,7 +209,8 @@ impl WasmTxBuilder {
             .collect();
         let internal_notes = internal_notes.map_err(|e| JsValue::from_str(&e))?;
 
-        let builder = TxBuilder::from_tx(tx, internal_notes).map_err(|e| e.to_string())?;
+        let builder =
+            TxBuilder::from_tx(tx, internal_notes, settings).map_err(|e| e.to_string())?;
 
         Ok(Self { builder })
     }

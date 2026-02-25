@@ -353,8 +353,11 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let bytes = self.to_bytes_arr();
+        let bytes = bytes.as_ref();
+        let start = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
+        let bytes = &bytes[start..];
         let mut buf = <Self as Limbable>::bs58_buf();
-        let len = bs58::encode(bytes.as_ref())
+        let len = bs58::encode(bytes)
             .onto(buf.as_mut())
             .map_err(|_| fmt::Error)?;
         let s = core::str::from_utf8(&buf.as_ref()[..len]).map_err(|_| fmt::Error)?;

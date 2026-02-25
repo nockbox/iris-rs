@@ -1056,6 +1056,10 @@ mod tests {
         "../../test_vectors/45x6JVbHdgtWbGhJFEjYUoryo2axyq34CFyBfKnknEkbgUM6dwEnPSz.txo"
     );
 
+    const TX2: &[u8] = include_bytes!(
+        "../../test_vectors/6bh1qizhspMEMeLWpB5bf6GRgcxKxPZyuYRpGBaV2Dc1kLPoyFRRbBf.tx"
+    );
+
     #[test]
     fn check_tx_v0_v1() {
         let noun = iris_ztd::cue(TX1).unwrap();
@@ -1072,6 +1076,17 @@ mod tests {
         tx_outs.sort_by_key(|note| note.name);
 
         assert_eq!(outs, tx_outs);
+    }
+
+    #[test]
+    fn check_1padding() {
+        let noun = iris_ztd::cue(TX2).unwrap();
+        let tx: NockchainTx = NounDecode::from_noun(&noun).unwrap();
+        let id = tx.to_raw_tx().calc_id();
+        assert_eq!(
+            id.to_string(),
+            "qX7A68ALk3uoUF1zeYQ6YnCxRD8oFLdqr53D6Q988kDbZtS7eaRTm"
+        );
     }
 
     #[test]

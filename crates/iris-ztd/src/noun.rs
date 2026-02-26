@@ -47,6 +47,15 @@ where
     T::from_noun(&r).ok_or_else(|| DeError::custom("unable to parse noun"))
 }
 
+/// Nock-native data structure
+///
+/// A Noun is an Atom or a Cell.
+///
+/// A Cell is a pair of Nouns.
+///
+/// An Atom is a natural number.
+///
+/// Specific to iris, serialized atoms are encoded as little-endian hex strings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(
@@ -506,6 +515,7 @@ impl NounDecode for String {
     }
 }
 
+/// Jam a noun into bytes vec
 pub fn jam(noun: Noun) -> Vec<u8> {
     fn met0_u64_to_usize(value: u64) -> usize {
         (u64::BITS - value.leading_zeros()) as usize
@@ -600,6 +610,7 @@ pub fn jam(noun: Noun) -> Vec<u8> {
     buffer.into_vec()
 }
 
+/// Cue jammed bytes into Noun (see `jam`)
 pub fn cue(bytes: &[u8]) -> Option<Noun> {
     cue_bitslice(BitSlice::from_slice(bytes))
 }

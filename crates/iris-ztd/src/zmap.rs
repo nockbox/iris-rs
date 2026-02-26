@@ -216,4 +216,14 @@ mod tests {
         let zm_decode = ZMap::<String, u64>::from_noun(&zm_noun).unwrap();
         assert_eq!(Vec::from(zm), Vec::from(zm_decode));
     }
+
+    #[test]
+    fn test_zmap_serde() {
+        let mut zm = ZMap::<String, (u64, u64)>::new();
+        zm.insert("ver".to_string(), (10, 12));
+        zm.insert("ve2".to_string(), (11, 13));
+        let json = serde_json::to_string(&zm).unwrap();
+        let zm2: ZMap<String, (u64, u64)> = serde_json::from_str(&json).unwrap();
+        assert_eq!(zm, zm2);
+    }
 }

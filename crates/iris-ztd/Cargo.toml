@@ -24,6 +24,9 @@ arrayvec = "0.7"
 tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
 
+[dev-dependencies]
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+
 [features]
 default = ["alloc"]
 alloc = ["bs58/alloc", "bitvec/alloc", "serde/alloc", "serde/rc"]

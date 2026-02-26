@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::ToString;
 use core::borrow::Borrow;
+use serde::de::{SeqAccess, Visitor};
 
 use crate::Zeroable;
 use crate::{Digest, Hashable, Noun, NounDecode, NounEncode};
@@ -375,8 +376,32 @@ where
     where
         D: serde::Deserializer<'de>,
     {
-        use alloc::vec::Vec;
-        let vec = Vec::<E::Pair>::deserialize(deserializer)?;
-        Ok(vec.into())
+        struct ZBaseVisitor<E>(core::marker::PhantomData<E>);
+
+        impl<'de, E: ZEntry> Visitor<'de> for ZBaseVisitor<E>
+        where
+            E::Pair: serde::Deserialize<'de>,
+        {
+            type Value = ZBase<E>;
+
+            fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+                f.write_str("a sequence")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut out = ZBase::new();
+
+                while let Some(pair) = seq.next_element::<E::Pair>()? {
+                    out.insert_entry(E::from_pair(pair));
+                }
+
+                Ok(out)
+            }
+        }
+
+        deserializer.deserialize_seq(ZBaseVisitor(core::marker::PhantomData))
     }
 }

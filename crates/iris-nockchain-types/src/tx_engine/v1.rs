@@ -860,9 +860,10 @@ impl RawTxV1 {
 
     pub fn to_nockchain_tx(&self) -> NockchainTx {
         let (spends, witness_data) = self.spends.split_witness();
+        let id = (&Version::V1, &spends).hash();
         NockchainTx {
             version: Version::V1,
-            id: self.id,
+            id,
             spends,
             display: TransactionDisplay::default(),
             witness_data,
@@ -893,10 +894,11 @@ impl NockchainTx {
         );
 
         let spends = self.spends.apply_witness(&self.witness_data);
+        let id = (&Version::V1, &spends).hash();
 
         RawTxV1 {
             version: ExpectedVersion,
-            id: self.id,
+            id,
             spends,
         }
     }

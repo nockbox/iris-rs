@@ -437,6 +437,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
+name = "gloo-utils"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5555354113b18c547c1d3a98fbf7fb32a9ff4f6fa112ce823a21641a0ba3aa"
+dependencies = [
+ "js-sys",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -630,18 +643,21 @@ dependencies = [
 
 [[package]]
 name = "iris-crypto"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "argon2",
  "arrayvec",
  "bip39",
  "bs58",
+ "crypto-bigint",
  "hex",
  "hmac",
  "ibig",
  "iris-ztd",
  "iris-ztd-derive",
  "serde",
+ "serde_json",
+ "serdect",
  "sha2",
  "tsify",
  "wasm-bindgen",
@@ -649,7 +665,7 @@ dependencies = [
 
 [[package]]
 name = "iris-grpc-proto"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "bip39",
  "glob",
@@ -673,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "iris-nockchain-types"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "bip39",
  "bs58",
@@ -690,7 +706,7 @@ dependencies = [
 
 [[package]]
 name = "iris-wasm"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "bip39",
  "getrandom 0.2.16",
@@ -710,7 +726,7 @@ dependencies = [
 
 [[package]]
 name = "iris-ztd"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "arrayref",
  "arrayvec",
@@ -721,13 +737,14 @@ dependencies = [
  "iris-ztd-derive",
  "num-traits",
  "serde",
+ "serde_json",
  "tsify",
  "wasm-bindgen",
 ]
 
 [[package]]
 name = "iris-ztd-derive"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -1089,17 +1106,6 @@ checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
  "serde_derive",
-]
-
-[[package]]
-name = "serde-wasm-bindgen"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
-dependencies = [
- "js-sys",
- "serde",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -1540,8 +1546,9 @@ version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ec5505497c87f1c050b4392d3f11b49a04537fcb9dc0da57bc0af168a6331f2"
 dependencies = [
+ "gloo-utils",
  "serde",
- "serde-wasm-bindgen",
+ "serde_json",
  "tsify-macros",
  "wasm-bindgen",
 ]

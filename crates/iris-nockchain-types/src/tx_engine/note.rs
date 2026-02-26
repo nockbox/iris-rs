@@ -1,15 +1,57 @@
 use alloc::{boxed::Box, format, string::ToString};
 use core::convert::TryFrom;
 use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode, ZMap};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 /// 64-bit unsigned integer representing the number of assets.
-#[derive(Debug, Clone, Copy, Eq, Ord, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Eq, Ord, NounEncode, NounDecode, Hashable)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi, type = "string"))]
-#[serde(transparent)]
 #[allow(clippy::derive_ord_xor_partial_ord)]
 pub struct Nicks(pub u64);
+
+impl Serialize for Nicks {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
+
+struct NicksVisitor;
+
+impl<'de> de::Visitor<'de> for NicksVisitor {
+    type Value = Nicks;
+
+    fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.write_str("a u64 encoded as a string")
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Nicks, E>
+    where
+        E: de::Error,
+    {
+        let n = v.parse::<u64>().map_err(E::custom)?;
+        Ok(Nicks(n))
+    }
+
+    fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Nicks, E>
+    where
+        E: de::Error,
+    {
+        self.visit_str(v)
+    }
+}
+
+impl<'de> Deserialize<'de> for Nicks {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(NicksVisitor)
+    }
+}
 
 impl Nicks {
     pub fn saturating_sub(self, other: Self) -> Self {

@@ -161,40 +161,16 @@ impl Hashable for PublicKey {
     }
 }
 
-mod u256_be_bytes {
-    use iris_ztd::U256;
-    use serde::{self, Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(val: &U256, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let bytes = val.to_be_bytes();
-        serde::Serialize::serialize(&bytes[..], serializer)
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<U256, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let bytes: &[u8] = Deserialize::deserialize(deserializer)?;
-        if bytes.len() != 32 {
-            return Err(serde::de::Error::custom("expected 32 bytes for U256"));
-        }
-        Ok(U256::from_be_slice(bytes))
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Signature {
-    #[serde(with = "u256_be_bytes")]
-    #[cfg_attr(feature = "wasm", tsify(type = "Uint8Array"))]
-    pub c: U256, // challenge
-    #[serde(with = "u256_be_bytes")]
-    #[cfg_attr(feature = "wasm", tsify(type = "Uint8Array"))]
-    pub s: U256, // signature scalar
+    /// Challenge part in little-endian hex
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub c: U256,
+    /// Signature scalar in little-endian hex
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub s: U256,
 }
 
 // Aggregate signature of the same challenge
@@ -513,5 +489,18 @@ mod tests {
             s: U256::from_str_radix_vartime(s_hex, 16).unwrap(),
         };
         assert!(pubkey.verify(&digest, &signature));
+    }
+
+    #[test]
+    fn test_serde() {
+        let c_hex = "6f3cd43cd8709f4368aed04cd84292ab1c380cb645aaa7d010669d70375cbe88";
+        let s_hex = "5197ab182e307a350b5cf3606d6e99a6f35b0d382c8330dde6e51fb6ef8ebb8c";
+        let signature = Signature {
+            c: U256::from_str_radix_vartime(c_hex, 16).unwrap(),
+            s: U256::from_str_radix_vartime(s_hex, 16).unwrap(),
+        };
+        let json = serde_json::to_string(&signature).unwrap();
+        let sig: Signature = serde_json::from_str(&json).unwrap();
+        assert_eq!(signature, sig);
     }
 }

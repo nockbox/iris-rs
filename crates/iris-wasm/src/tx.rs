@@ -62,16 +62,24 @@ pub fn note_from_protobuf(value: pb::Note) -> Result<Note, JsValue> {
         .map_err(|e| JsValue::from_str(&format!("{}", e)))
 }
 
+/// Convert NockchainTx into RawTx by recombining witness_data with the transaction, and
+/// recalculating the transaction ID.
 #[wasm_bindgen(js_name = nockchainTxToRaw)]
 pub fn nockchain_tx_to_raw(tx: NockchainTx) -> RawTx {
     RawTx::V1(tx.to_raw_tx())
 }
 
+/// Lossily convert raw transaction into a nockchain transaction, splitting witness away.
 #[wasm_bindgen(js_name = rawTxToNockchainTx)]
 pub fn raw_tx_to_nockchain_tx(tx: RawTxV1) -> NockchainTx {
     tx.to_nockchain_tx()
 }
 
+/// Convert raw transaction into protobuf format.
+///
+/// Protobuf format is the one used by the Nockchain's gRPC interface, and the initial iris
+/// extension format. The new iris transaction signing API moves away from this format to use
+/// `NockchainTx`, as it includes the necessary spend condition and note information.
 #[wasm_bindgen(js_name = rawTxToProtobuf)]
 pub fn raw_tx_to_protobuf(tx: RawTxV1) -> pb::RawTransaction {
     tx.into()

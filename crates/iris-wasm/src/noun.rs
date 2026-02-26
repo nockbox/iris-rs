@@ -2,16 +2,19 @@ use iris_ztd::{cue as cue_internal, jam as jam_internal, Belt, Noun, NounDecode,
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
+/// Cue a jammed Uint8Array into a Noun (see `jam`).
 #[wasm_bindgen]
 pub fn cue(jam: &[u8]) -> Result<Noun, JsValue> {
     cue_internal(jam).ok_or_else(|| JsValue::from_str("unable to parse jam"))
 }
 
+/// Encode a Noun as a Uint8Array of bytes.
 #[wasm_bindgen]
 pub fn jam(noun: Noun) -> Result<Vec<u8>, JsValue> {
     Ok(jam_internal(noun))
 }
 
+/// Convert string to an Atom.
 #[wasm_bindgen]
 pub fn tas(s: &str) -> Noun {
     let bytes = s.as_bytes();
@@ -19,6 +22,7 @@ pub fn tas(s: &str) -> Noun {
     Noun::Atom(a)
 }
 
+/// Convert an Atom into a string.
 #[wasm_bindgen]
 pub fn untas(noun: Noun) -> Result<String, JsValue> {
     match noun {
@@ -28,11 +32,19 @@ pub fn untas(noun: Noun) -> Result<String, JsValue> {
     }
 }
 
+/// Convert a string to sequence of Belts.
+///
+/// This is equivalent to `atom_to_belts(tas(s))`.
+///
+/// Belts are Atoms that fit the goldilocks prime field.
+///
+/// If a transaction contains non-based (not-fitting) atoms, it will be rejected.
 #[wasm_bindgen]
 pub fn tas_belts(s: &str) -> Noun {
     atom_to_belts(tas(s)).unwrap()
 }
 
+/// Convert an Atom to belts.
 #[wasm_bindgen]
 pub fn atom_to_belts(atom: Noun) -> Result<Noun, JsValue> {
     match atom {
@@ -41,6 +53,7 @@ pub fn atom_to_belts(atom: Noun) -> Result<Noun, JsValue> {
     }
 }
 
+/// Convert a sequence of belts back into one atom.
 #[wasm_bindgen]
 pub fn belts_to_atom(noun: Noun) -> Result<Noun, JsValue> {
     // Append tail so that this is parsed as list

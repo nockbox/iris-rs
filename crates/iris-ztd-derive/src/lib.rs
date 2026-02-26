@@ -635,11 +635,13 @@ pub fn wasm_noun_codec(attr: TokenStream, item: TokenStream) -> TokenStream {
             use super::*;
             use wasm_bindgen::prelude::*;
 
+            /// Convert into `Noun`.
             #[wasm_bindgen(js_name = #to_noun_camel)]
             pub fn #to_noun_snake(v: &#name) -> #crate_path::Noun {
                 #crate_path::NounEncode::to_noun(v)
             }
 
+            /// Convert from `Noun`.
             #[wasm_bindgen(js_name = #from_noun_camel)]
             pub fn #from_noun_snake(noun: &#crate_path::Noun) -> ::core::result::Result<#name, JsValue> {
                 #crate_path::NounDecode::from_noun(noun)

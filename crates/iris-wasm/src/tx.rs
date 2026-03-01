@@ -3,7 +3,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use std::collections::BTreeMap;
 
-use iris_crypto::PrivateKey;
+use iris_crypto::PrivateKey as CryptoPrivateKey;
 use iris_grpc_proto::pb::common::v1 as pb_v1;
 use iris_grpc_proto::pb::common::v2 as pb;
 use iris_nockchain_types::{
@@ -181,6 +181,101 @@ pub struct TxNotes {
 // Wasm Transaction Builder
 // ============================================================================
 
+enum PrivateKeyBackend {
+    Bytes(BytesPrivateKeyBackend),
+}
+
+struct BytesPrivateKeyBackend {
+    signing_key: CryptoPrivateKey,
+    public_key_bytes: [u8; 97],
+}
+
+#[wasm_bindgen(js_name = PrivateKey)]
+pub struct WasmPrivateKey {
+    backend: PrivateKeyBackend,
+}
+
+#[wasm_bindgen(js_class = PrivateKey)]
+impl WasmPrivateKey {
+    /// Construct a wasm `PrivateKey` from 32-byte private key material.
+    ///
+    /// This object is created in JavaScript and then passed into Rust signing APIs.
+    ///
+    /// # JavaScript example
+    ///
+    /// ```javascript
+    /// import init, { PrivateKey, TxBuilder } from "iris-wasm";
+    ///
+    /// await init();
+    ///
+    /// const keyBytes = Uint8Array.from([
+    ///   // 32 bytes
+    /// ]);
+    ///
+    /// const key = PrivateKey.fromBytes(keyBytes);
+    ///
+    /// const builder = new TxBuilder(settings);
+    /// // ... configure builder ...
+    /// await builder.sign(key);
+    /// ```
+    #[wasm_bindgen(constructor)]
+    pub fn new(signing_key_bytes: &[u8]) -> Result<Self, JsValue> {
+        Self::from_bytes(signing_key_bytes)
+    }
+
+    /// Construct a bytes-backed key.
+    #[wasm_bindgen(js_name = fromBytes)]
+    pub fn from_bytes(signing_key_bytes: &[u8]) -> Result<Self, JsValue> {
+        if signing_key_bytes.len() != 32 {
+            return Err(JsValue::from_str("Private key must be 32 bytes"));
+        }
+
+        let signing_key = CryptoPrivateKey(U256::from_be_slice(signing_key_bytes));
+        let public_key_bytes = signing_key.public_key().to_be_bytes();
+
+        Ok(Self {
+            backend: PrivateKeyBackend::Bytes(BytesPrivateKeyBackend {
+                signing_key,
+                public_key_bytes,
+            }),
+        })
+    }
+
+    /// Return this key's public key as 97-byte uncompressed bytes.
+    #[wasm_bindgen(getter, js_name = publicKey)]
+    pub fn public_key(&self) -> Vec<u8> {
+        match &self.backend {
+            PrivateKeyBackend::Bytes(bytes_backend) => bytes_backend.public_key_bytes.to_vec(),
+        }
+    }
+
+    /// Return the derivation path for this key backend, if available.
+    ///
+    /// Bytes-backed keys return `undefined` in JavaScript.
+    #[wasm_bindgen(getter, js_name = derivationPath)]
+    pub fn derivation_path(&self) -> Option<String> {
+        match &self.backend {
+            PrivateKeyBackend::Bytes(_) => None,
+        }
+    }
+
+    /// Return the backend kind for debugging and feature checks.
+    #[wasm_bindgen(js_name = backendKind)]
+    pub fn backend_kind(&self) -> String {
+        match &self.backend {
+            PrivateKeyBackend::Bytes(_) => "bytes".to_string(),
+        }
+    }
+}
+
+impl WasmPrivateKey {
+    fn signing_key(&self) -> &CryptoPrivateKey {
+        match &self.backend {
+            PrivateKeyBackend::Bytes(bytes_backend) => &bytes_backend.signing_key,
+        }
+    }
+}
+
 #[wasm_bindgen(js_name = TxBuilder)]
 pub struct WasmTxBuilder {
     builder: TxBuilder,
@@ -301,13 +396,8 @@ impl WasmTxBuilder {
     }
 
     #[wasm_bindgen]
-    pub fn sign(&mut self, signing_key_bytes: &[u8]) -> Result<(), JsValue> {
-        if signing_key_bytes.len() != 32 {
-            return Err(JsValue::from_str("Private key must be 32 bytes"));
-        }
-        let signing_key = PrivateKey(U256::from_be_slice(signing_key_bytes));
-
-        self.builder.sign(&signing_key);
+    pub async fn sign(&mut self, signing_key: &WasmPrivateKey) -> Result<(), JsValue> {
+        self.builder.sign(signing_key.signing_key());
 
         Ok(())
     }
@@ -426,12 +516,8 @@ impl WasmSpendBuilder {
         Ok(self.builder.add_preimage(preimage))
     }
 
-    pub fn sign(&mut self, signing_key_bytes: &[u8]) -> Result<bool, JsValue> {
-        if signing_key_bytes.len() != 32 {
-            return Err(JsValue::from_str("Private key must be 32 bytes"));
-        }
-        let signing_key = PrivateKey(U256::from_be_slice(signing_key_bytes));
-        Ok(self.builder.sign(&signing_key))
+    pub async fn sign(&mut self, signing_key: &WasmPrivateKey) -> Result<bool, JsValue> {
+        Ok(self.builder.sign(signing_key.signing_key()))
     }
 
     fn from_internal(internal: &SpendBuilder) -> Self {

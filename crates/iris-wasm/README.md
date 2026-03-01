@@ -100,16 +100,16 @@ http://localhost:8000/crates/iris-wasm/examples/grpc-web-demo.html
 ```javascript
 import init, {
   GrpcClient,
+  PrivateKey,
   deriveMasterKeyFromMnemonic,
-  WasmTxBuilder,
-  WasmNote,
-  WasmVersion,
-  WasmName,
-  WasmDigest,
-  WasmSpendCondition,
-  WasmPkh,
-  WasmLockPrimitive,
-  WasmLockTim
+  txEngineSettingsV1Default,
+  TxBuilder,
+  Note,
+  Digest,
+  SpendCondition,
+  Pkh,
+  LockPrimitive,
+  LockTim
 } from './pkg/iris_wasm.js';
 
 // Initialize the WASM module

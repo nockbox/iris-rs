@@ -160,6 +160,7 @@
         import init, {
             GrpcClient,
             deriveMasterKeyFromMnemonic,
+            PrivateKey,
             hashPublicKey,
             TxBuilder,
             Note,
@@ -286,7 +287,9 @@
                     feeAmount,
                     refundDigest
                 );
-                const rawTx = builder.sign(privateKeyBytes);
+                const privateKey = PrivateKey.fromBytes(privateKeyBytes);
+                await builder.sign(privateKey);
+                const rawTx = builder.build();
                 log('Transaction built successfully!', 'success');
                 log('Transaction ID: ' + rawTx.id.value, 'info');
 

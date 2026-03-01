@@ -50,6 +50,11 @@ pub fn note_hash(note: Note) -> Digest {
     note.hash()
 }
 
+#[wasm_bindgen(js_name = spendConditionFirstName)]
+pub fn spend_condition_first_name(value: SpendCondition) -> Digest {
+    value.first_name()
+}
+
 #[wasm_bindgen]
 pub fn note_to_protobuf(note: Note) -> pb::Note {
     note.into()

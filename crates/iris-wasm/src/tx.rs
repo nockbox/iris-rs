@@ -50,6 +50,18 @@ pub fn note_hash(note: Note) -> Digest {
     note.hash()
 }
 
+/// Return default transaction engine settings for V1 signing.
+#[wasm_bindgen(js_name = txEngineSettingsV1Default)]
+pub fn tx_engine_settings_v1_default() -> TxEngineSettings {
+    TxEngineSettings::v1_default()
+}
+
+/// Return default transaction engine settings for V1 Bythos signing.
+#[wasm_bindgen(js_name = txEngineSettingsV1BythosDefault)]
+pub fn tx_engine_settings_v1_bythos_default() -> TxEngineSettings {
+    TxEngineSettings::v1_bythos_default()
+}
+
 #[wasm_bindgen]
 pub fn note_to_protobuf(note: Note) -> pb::Note {
     note.into()

@@ -62,6 +62,11 @@ pub fn tx_engine_settings_v1_bythos_default() -> TxEngineSettings {
     TxEngineSettings::v1_bythos_default()
 }
 
+#[wasm_bindgen(js_name = spendConditionFirstName)]
+pub fn spend_condition_first_name(value: SpendCondition) -> Digest {
+    value.first_name()
+}
+
 #[wasm_bindgen]
 pub fn note_to_protobuf(note: Note) -> pb::Note {
     note.into()

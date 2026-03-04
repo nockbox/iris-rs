@@ -67,6 +67,22 @@ pub fn spend_condition_first_name(value: SpendCondition) -> Digest {
     value.first_name()
 }
 
+/// Convert protobuf spend condition to native SpendCondition.
+/// Accepts the protobuf format used by the Nockchain gRPC interface and external dApps
+#[wasm_bindgen(js_name = spendConditionFromProtobuf)]
+pub fn spend_condition_from_protobuf(value: pb::SpendCondition) -> Result<SpendCondition, JsValue> {
+    value
+        .try_into()
+        .map_err(|e| JsValue::from_str(&format!("{}", e)))
+}
+
+/// Convert native SpendCondition to protobuf format.
+/// Returns the protobuf format used by the Nockchain gRPC interface and external dApps.
+#[wasm_bindgen(js_name = spendConditionToProtobuf)]
+pub fn spend_condition_to_protobuf(value: SpendCondition) -> pb::SpendCondition {
+    value.into()
+}
+
 #[wasm_bindgen]
 pub fn note_to_protobuf(note: Note) -> pb::Note {
     note.into()

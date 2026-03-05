@@ -181,6 +181,9 @@ fn rewrite_generated_files(out_dir: &std::path::Path) -> Result<(), Box<dyn std:
     let re_opt_mod = Regex::new(r#"(?m)^(\s*)(?:(#\[cfg_attr\(feature = "wasm", tsify\(type = "[^"]+"\)\)\])\s*)?pub (\w+): ::core::option::Option<(\w+)::(\w+)>"#).unwrap();
     let re_vec_mod = Regex::new(r#"(?m)^(\s*)(?:(#\[cfg_attr\(feature = "wasm", tsify\(type = "[^"]+"\)\)\])\s*)?pub (\w+): ::prost::alloc::vec::Vec<(\w+)::(\w+)>"#).unwrap();
 
+    // --- Local Regexes (for missing module prefixes on fields: Option<Type>) ---
+    let re_opt_local = Regex::new(r#"(?m)^(\s*)(?:(#\[cfg_attr\(feature = "wasm", tsify\(type = "[^"]+"\)\)\])\s*)?pub (\w+): ::core::option::Option<(\w+)>"#).unwrap();
+
     // Regex to find the base prefix at the top of the file
     let re_base_prefix = Regex::new(r#"type_prefix = "([^"]+)""#).unwrap();
 
@@ -408,6 +411,30 @@ fn rewrite_generated_files(out_dir: &std::path::Path) -> Result<(), Box<dyn std:
 
                 format!(
                     "{indent}#[cfg_attr(feature = \"wasm\", tsify(type = \"{full_type}[]\"))]\n{indent}pub {field}: ::prost::alloc::vec::Vec<{mod_name}::{type_name}>"
+                )
+            }).to_string();
+
+            // Option<Type> (local)
+            new_content = re_opt_local.replace_all(&new_content, |caps: &regex::Captures| {
+                if caps.get(2).is_some() { return caps[0].to_string(); }
+                let indent = &caps[1];
+                let field = &caps[3];
+                let type_name = &caps[4];
+
+                if matches!(type_name, "String" | "bool" | "u32" | "i32" | "u64" | "i64" | "f32" | "f64" | "Vec" | "Option") {
+                    return caps[0].to_string();
+                }
+
+                // Look for current mod to build full type Name
+                let full_type = if let Some(mod_name) = &current_mod {
+                    let mod_pascal = to_pascal_case(mod_name);
+                    format!("{base_prefix}{mod_pascal}{type_name}")
+                } else {
+                    format!("{base_prefix}{type_name}")
+                };
+
+                format!(
+                    "{indent}#[cfg_attr(feature = \"wasm\", tsify(type = \"{full_type} | undefined\"))]\n{indent}pub {field}: ::core::option::Option<{type_name}>"
                 )
             }).to_string();
 

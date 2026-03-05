@@ -643,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "iris-crypto"
-version = "0.2.0-alpha.3"
+version = "0.2.0-alpha.4"
 dependencies = [
  "argon2",
  "arrayvec",
@@ -665,7 +665,7 @@ dependencies = [
 
 [[package]]
 name = "iris-grpc-proto"
-version = "0.2.0-alpha.3"
+version = "0.2.0-alpha.4"
 dependencies = [
  "bip39",
  "glob",
@@ -689,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "iris-nockchain-types"
-version = "0.2.0-alpha.3"
+version = "0.2.0-alpha.4"
 dependencies = [
  "bip39",
  "bs58",
@@ -706,7 +706,7 @@ dependencies = [
 
 [[package]]
 name = "iris-wasm"
-version = "0.2.0-alpha.3"
+version = "0.2.0-alpha.4"
 dependencies = [
  "bip39",
  "getrandom 0.2.16",
@@ -726,7 +726,7 @@ dependencies = [
 
 [[package]]
 name = "iris-ztd"
-version = "0.2.0-alpha.3"
+version = "0.2.0-alpha.4"
 dependencies = [
  "arrayref",
  "arrayvec",
@@ -744,7 +744,7 @@ dependencies = [
 
 [[package]]
 name = "iris-ztd-derive"
-version = "0.2.0-alpha.3"
+version = "0.2.0-alpha.4"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

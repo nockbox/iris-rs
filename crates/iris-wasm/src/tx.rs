@@ -22,32 +22,16 @@ use wasm_bindgen::prelude::*;
 // Wasm Types - Adapters and Helpers
 // ============================================================================
 
-#[wasm_bindgen]
-pub fn digest_to_hex(d: Digest) -> String {
-    d.to_string()
-}
-
-#[wasm_bindgen]
-pub fn hex_to_digest(s: &str) -> Result<Digest, JsValue> {
-    s.try_into().map_err(|e: &str| JsValue::from_str(e))
-}
-
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = digestToProtobuf)]
 pub fn digest_to_protobuf(d: Digest) -> pb_v1::Hash {
     d.into()
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = digestFromProtobuf)]
 pub fn digest_from_protobuf(value: pb_v1::Hash) -> Result<Digest, JsValue> {
     value
         .try_into()
         .map_err(|e| JsValue::from_str(&format!("{}", e)))
-}
-
-#[wasm_bindgen]
-pub fn note_hash(note: Note) -> Digest {
-    use iris_ztd::Hashable;
-    note.hash()
 }
 
 /// Return default transaction engine settings for V1 signing.
@@ -60,11 +44,6 @@ pub fn tx_engine_settings_v1_default() -> TxEngineSettings {
 #[wasm_bindgen(js_name = txEngineSettingsV1BythosDefault)]
 pub fn tx_engine_settings_v1_bythos_default() -> TxEngineSettings {
     TxEngineSettings::v1_bythos_default()
-}
-
-#[wasm_bindgen(js_name = spendConditionFirstName)]
-pub fn spend_condition_first_name(value: SpendCondition) -> Digest {
-    value.first_name()
 }
 
 /// Convert protobuf spend condition to native SpendCondition.
@@ -83,29 +62,16 @@ pub fn spend_condition_to_protobuf(value: SpendCondition) -> pb::SpendCondition 
     value.into()
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = noteToProtobuf)]
 pub fn note_to_protobuf(note: Note) -> pb::Note {
     note.into()
 }
 
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = noteFromProtobuf)]
 pub fn note_from_protobuf(value: pb::Note) -> Result<Note, JsValue> {
     value
         .try_into()
         .map_err(|e| JsValue::from_str(&format!("{}", e)))
-}
-
-/// Convert NockchainTx into RawTx by recombining witness_data with the transaction, and
-/// recalculating the transaction ID.
-#[wasm_bindgen(js_name = nockchainTxToRaw)]
-pub fn nockchain_tx_to_raw(tx: NockchainTx) -> RawTx {
-    RawTx::V1(tx.to_raw_tx())
-}
-
-/// Lossily convert raw transaction into a nockchain transaction, splitting witness away.
-#[wasm_bindgen(js_name = rawTxToNockchainTx)]
-pub fn raw_tx_to_nockchain_tx(tx: RawTxV1) -> NockchainTx {
-    tx.to_nockchain_tx()
 }
 
 /// Convert raw transaction into protobuf format.
@@ -122,85 +88,6 @@ pub fn raw_tx_to_protobuf(tx: RawTxV1) -> pb::RawTransaction {
 pub fn raw_tx_from_protobuf(tx: pb::RawTransaction) -> Result<RawTx, JsValue> {
     tx.try_into()
         .map_err(|e| JsValue::from_str(&format!("{}", e)))
-}
-
-#[wasm_bindgen(js_name = rawTxOutputs)]
-pub fn raw_tx_outputs(tx: RawTx) -> Vec<Note> {
-    tx.outputs()
-}
-
-// Helper to create V1 note
-#[wasm_bindgen]
-pub fn create_note_v1(
-    version: Version,
-    origin_page: BlockHeight,
-    name: Name,
-    note_data: NoteData,
-    assets: Nicks,
-) -> Result<Note, JsValue> {
-    let internal = Note::V1(v1::NoteV1::new(
-        version,
-        origin_page,
-        name,
-        note_data,
-        assets,
-    ));
-    Ok(internal)
-}
-
-// Helper to create V0 note
-#[wasm_bindgen]
-pub fn create_note_v0(
-    origin_page: BlockHeight,
-    sig_m: u64,
-    sig_pubkeys: Vec<js_sys::Uint8Array>,
-    source_hash: Digest,
-    is_coinbase: bool,
-    timelock: Option<v0::Timelock>,
-    assets: Nicks,
-) -> Result<Note, JsValue> {
-    use iris_crypto::PublicKey;
-    // use iris_ztd::Hashable; // import Hashable trait if needed? No, Name::new_v0 needs traits probably.
-
-    // Parse public keys from byte arrays
-    let pubkeys: Result<ZSet<PublicKey>, JsValue> = sig_pubkeys
-        .iter()
-        .map(|arr| {
-            let bytes = arr.to_vec();
-            if bytes.len() != 97 {
-                return Err(JsValue::from_str(&format!(
-                    "Public key must be 97 bytes, got {}",
-                    bytes.len()
-                )));
-            }
-            let mut arr = [0u8; 97];
-            arr.copy_from_slice(&bytes);
-            Ok(PublicKey::from_be_bytes(&arr))
-        })
-        .collect();
-    let pubkeys = pubkeys?;
-
-    let sig = v0::Sig { m: sig_m, pubkeys };
-
-    let source = Source {
-        hash: source_hash,
-        is_coinbase,
-    };
-
-    let timelock_intent = v0::TimelockIntent { tim: timelock };
-
-    let name = Name::new_v0(sig.clone(), source, timelock_intent);
-
-    let internal = Note::V0(v0::NoteV0::new(
-        Version::V0,
-        origin_page,
-        timelock_intent,
-        name,
-        sig,
-        source,
-        assets,
-    ));
-    Ok(internal)
 }
 
 #[derive(Serialize, Deserialize, tsify::Tsify)]

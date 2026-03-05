@@ -6,11 +6,16 @@ if [ -z "${NO_PACK:-}" ]; then
     echo "Building WASM..."
     rm -rf pkg
     wasm-pack build --target web --out-dir pkg --scope nockbox
+
+    # Rename original d.ts
+    if [ -f pkg/iris_wasm.d.ts ] && [ ! -f pkg/iris_wasm.d.ts.orig ]; then
+        mv pkg/iris_wasm.d.ts pkg/iris_wasm.d.ts.orig
+    fi
 fi
 
 # 2. Filter and Patch
 echo "Patching Type Definitions..."
-node scripts/patch-dts.js
+node scripts/patch-dts.js pkg/iris_wasm.d.ts.orig pkg/iris_wasm.d.ts
 
 # 3. Generate Guards
 echo "Generating Type Guards..."
@@ -18,7 +23,7 @@ npx ts-auto-guard pkg/iris_wasm.d.ts --export-all --project tsconfig.json --guar
 
 # 4. Post-process Guards
 echo "Filtering Guards..."
-node scripts/filter-guards.js pkg/iris_wasm.guard.ts pkg/iris_wasm.guard.ts
+node scripts/filter-guards.js pkg/iris_wasm.d.ts pkg/iris_wasm.d.ts pkg/iris_wasm.guard.ts pkg/iris_wasm.guard.ts
 
 # 5. Update package.json
 echo "Updating package.json..."

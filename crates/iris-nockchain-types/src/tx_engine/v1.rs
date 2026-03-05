@@ -26,6 +26,7 @@ pub struct Pkh {
     pub hashes: ZSet<Digest>,
 }
 
+#[iris_ztd::wasm_member_methods]
 impl Pkh {
     pub fn new(m: u64, hashes: Vec<Digest>) -> Self {
         Self {
@@ -65,20 +66,10 @@ impl Hashable for NoteData {
     }
 }
 
+#[iris_ztd::wasm_member_methods]
 impl NoteData {
     pub fn empty() -> Self {
         Self(ZMap::new())
-    }
-
-    pub fn push_pkh(&mut self, pkh: Pkh) {
-        self.0
-            .insert("lock".to_string(), (0, ("pkh", &pkh), 0).to_noun());
-    }
-
-    // TODO: support 2,4,8,16-way spend conditions.
-    pub fn push_lock(&mut self, spend_condition: SpendCondition) {
-        self.0
-            .insert("lock".to_string(), (0, spend_condition).to_noun());
     }
 
     pub fn from_pkh(pkh: Pkh) -> Self {
@@ -95,6 +86,19 @@ impl NoteData {
         }
 
         w
+    }
+}
+
+impl NoteData {
+    // TODO: support 2,4,8,16-way spend conditions.
+    pub fn push_lock(&mut self, spend_condition: SpendCondition) {
+        self.0
+            .insert("lock".to_string(), (0, spend_condition).to_noun());
+    }
+
+    pub fn push_pkh(&mut self, pkh: Pkh) {
+        self.0
+            .insert("lock".to_string(), (0, ("pkh", &pkh), 0).to_noun());
     }
 }
 
@@ -183,6 +187,7 @@ pub struct SeedV1 {
     pub parent_hash: Digest,
 }
 
+#[iris_ztd::wasm_member_methods]
 impl SeedV1 {
     pub fn new_single_pkh(
         pkh: Digest,
@@ -287,6 +292,7 @@ pub struct Spend1V1 {
     pub fee: Nicks,
 }
 
+#[iris_ztd::wasm_member_methods]
 impl Spend1V1 {
     pub fn sig_hash(&self) -> Digest {
         (&self.seeds.sig_hash(), self.fee).hash()
@@ -359,35 +365,11 @@ impl AsRef<SpendV1> for SpendV1 {
     }
 }
 
+#[iris_ztd::wasm_member_methods]
 impl SpendV1 {
     pub fn unclamped_fee(&self, settings: &TxEngineSettings) -> Nicks {
         let (a, b) = self.calc_words();
         settings.cost_per_word * (a + b)
-    }
-
-    pub fn calc_words(&self) -> (u64, u64) {
-        match self {
-            SpendV1::S0 { spend, .. } => {
-                let seed_words: u64 = spend
-                    .seeds
-                    .0
-                    .iter()
-                    .map(|seed| seed.note_data_words())
-                    .sum();
-                let sig_words = noun_words(&spend.signature.to_noun());
-                (seed_words, sig_words)
-            }
-            SpendV1::S1 { spend, .. } => {
-                let seed_words: u64 = spend
-                    .seeds
-                    .0
-                    .iter()
-                    .map(|seed| seed.note_data_words())
-                    .sum();
-                let witness_words = noun_words(&spend.witness.to_noun());
-                (seed_words, witness_words)
-            }
-        }
     }
 
     pub fn new_legacy(seeds: SeedsV1, fee: Nicks) -> Self {
@@ -419,13 +401,7 @@ impl SpendV1 {
         }
     }
 
-    pub fn fee_mut(&mut self) -> &mut Nicks {
-        match self {
-            SpendV1::S0 { spend, .. } => &mut spend.fee,
-            SpendV1::S1 { spend, .. } => &mut spend.fee,
-        }
-    }
-
+    #[transform_output(SeedsV1, out.clone())]
     pub fn seeds(&self) -> &SeedsV1 {
         match self {
             SpendV1::S0 { spend, .. } => &spend.seeds,
@@ -433,17 +409,51 @@ impl SpendV1 {
         }
     }
 
-    pub fn seeds_mut(&mut self) -> &mut SeedsV1 {
-        match self {
-            SpendV1::S0 { spend, .. } => &mut spend.seeds,
-            SpendV1::S1 { spend, .. } => &mut spend.seeds,
-        }
-    }
-
     pub fn sig_hash(&self) -> Digest {
         match self {
             SpendV1::S0 { spend, .. } => spend.sig_hash(),
             SpendV1::S1 { spend, .. } => spend.sig_hash(),
+        }
+    }
+}
+
+impl SpendV1 {
+    pub fn calc_words(&self) -> (u64, u64) {
+        match self {
+            SpendV1::S0 { spend, .. } => {
+                let seed_words: u64 = spend
+                    .seeds
+                    .0
+                    .iter()
+                    .map(|seed| seed.note_data_words())
+                    .sum();
+                let sig_words = noun_words(&spend.signature.to_noun());
+                (seed_words, sig_words)
+            }
+            SpendV1::S1 { spend, .. } => {
+                let seed_words: u64 = spend
+                    .seeds
+                    .0
+                    .iter()
+                    .map(|seed| seed.note_data_words())
+                    .sum();
+                let witness_words = noun_words(&spend.witness.to_noun());
+                (seed_words, witness_words)
+            }
+        }
+    }
+
+    pub fn fee_mut(&mut self) -> &mut Nicks {
+        match self {
+            SpendV1::S0 { spend, .. } => &mut spend.fee,
+            SpendV1::S1 { spend, .. } => &mut spend.fee,
+        }
+    }
+
+    pub fn seeds_mut(&mut self) -> &mut SeedsV1 {
+        match self {
+            SpendV1::S0 { spend, .. } => &mut spend.seeds,
+            SpendV1::S1 { spend, .. } => &mut spend.seeds,
         }
     }
 
@@ -566,6 +576,7 @@ pub struct MerkleProof {
 #[iris_ztd::wasm_noun_codec]
 pub struct SpendCondition(pub Vec<LockPrimitive>);
 
+#[iris_ztd::wasm_member_methods]
 impl SpendCondition {
     pub fn new_pkh(pkh: Pkh) -> Self {
         SpendCondition([LockPrimitive::Pkh(pkh)].into())
@@ -575,6 +586,7 @@ impl SpendCondition {
         (true, self.hash()).hash()
     }
 
+    #[transform_output(Vec<Pkh>, out.cloned().collect())]
     pub fn pkh(&self) -> impl Iterator<Item = &Pkh> + '_ {
         self.0.iter().filter_map(|v| {
             if let LockPrimitive::Pkh(p) = v {
@@ -585,6 +597,7 @@ impl SpendCondition {
         })
     }
 
+    #[transform_output(Vec<LockTim>, out.cloned().collect())]
     pub fn tim(&self) -> impl Iterator<Item = &LockTim> + '_ {
         self.0.iter().filter_map(|v| {
             if let LockPrimitive::Tim(t) = v {
@@ -595,6 +608,7 @@ impl SpendCondition {
         })
     }
 
+    #[transform_output(Vec<Hax>, out.cloned().collect())]
     pub fn hax(&self) -> impl Iterator<Item = &Hax> + '_ {
         self.0.iter().filter_map(|v| {
             if let LockPrimitive::Hax(h) = v {
@@ -729,15 +743,6 @@ impl SpendsV1 {
         words_for_ordered_spends(self.0.iter().map(|(_, v)| v), settings)
     }
 
-    pub fn unclamped_fee(&self, settings: &TxEngineSettings) -> Nicks {
-        let (sw, ww) = self.fee_words(settings);
-        settings.cost_per_word * sw + settings.cost_per_word * ww / settings.witness_word_div
-    }
-
-    pub fn fee(&self, settings: &TxEngineSettings) -> Nicks {
-        core::cmp::max(settings.min_fee, self.unclamped_fee(settings))
-    }
-
     pub fn split_witness(&self) -> (SpendsV1, WitnessData) {
         let mut spends = SpendsV1(ZMap::new());
         let mut witness_data = WitnessData::default();
@@ -755,6 +760,18 @@ impl SpendsV1 {
             }
         }
         (spends, witness_data)
+    }
+}
+
+#[iris_ztd::wasm_member_methods]
+impl SpendsV1 {
+    pub fn unclamped_fee(&self, settings: &TxEngineSettings) -> Nicks {
+        let (sw, ww) = self.fee_words(settings);
+        settings.cost_per_word * sw + settings.cost_per_word * ww / settings.witness_word_div
+    }
+
+    pub fn fee(&self, settings: &TxEngineSettings) -> Nicks {
+        core::cmp::max(settings.min_fee, self.unclamped_fee(settings))
     }
 
     pub fn apply_witness(&self, witness_data: &WitnessData) -> SpendsV1 {
@@ -782,6 +799,7 @@ pub struct RawTxV1 {
     pub spends: SpendsV1,
 }
 
+#[iris_ztd::wasm_member_methods]
 impl RawTxV1 {
     pub fn new(spends: SpendsV1) -> Self {
         let id = (Version::V1, &spends).hash();
@@ -885,6 +903,7 @@ pub struct NockchainTx {
     pub witness_data: WitnessData,
 }
 
+#[iris_ztd::wasm_member_methods]
 impl NockchainTx {
     pub fn to_raw_tx(&self) -> RawTxV1 {
         assert_eq!(

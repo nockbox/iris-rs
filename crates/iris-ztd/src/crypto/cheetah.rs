@@ -80,7 +80,14 @@ const CHEETAH_BS58_BUF: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi, type = "string"))]
+#[cfg_attr(
+    feature = "wasm",
+    tsify(
+        into_wasm_abi,
+        from_wasm_abi,
+        type = "string | { __tag_cheetah_point: undefined }"
+    )
+)]
 pub struct CheetahPoint {
     pub x: F6lt,
     pub y: F6lt,

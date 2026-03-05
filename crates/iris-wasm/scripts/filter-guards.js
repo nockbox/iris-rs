@@ -1,7 +1,9 @@
 const fs = require('fs');
 
-const inputFile = process.argv[2];
-const outputFile = process.argv[3];
+const dtsIn = process.argv[2];
+const dtsOut = process.argv[3];
+const guardIn = process.argv[4];
+const guardOut = process.argv[5];
 const excludes = ['InitInput', 'InitOutput', 'SyncInitInput', 'ExtendedKey'];
 const guardsToRemove = [
     'isReadableStreamType',
@@ -15,7 +17,7 @@ const guardsToRemove = [
     'isZMapEntry'
 ];
 
-let content = fs.readFileSync(inputFile, 'utf8');
+let content = fs.readFileSync(guardIn, 'utf8');
 
 let lines = content.split('\n');
 let newLines = [];
@@ -23,6 +25,42 @@ let skip = false;
 let braceCount = 0;
 let insideGuard = false;
 let currentGuardName = '';
+
+let dtsContent = fs.readFileSync(dtsIn, 'utf8');
+const tagTypeRegex = /export type ([A-Za-z0-9_]+) = string \| \{\s*__tag_[a-z0-9_]+:\s*undefined\s*\};/g;
+const taggedTypes = new Set();
+let match;
+while ((match = tagTypeRegex.exec(dtsContent)) !== null) {
+    taggedTypes.add(match[1]);
+}
+
+// Nockchain base58 atoms do not have 1-padding, so we need to use a different regex.
+const nockchainBase58Regex = "/^[A-HJ-NP-Za-km-z2-9][A-HJ-NP-Za-km-z1-9]*$/";
+
+// TODO: check string length for these
+const customGuardImplementations = {
+    'Nicks': 'return (typeof typedObj === "string" && /^[0-9]*$/.test(typedObj))',
+    'Digest': `return (typeof typedObj === "string" && ${nockchainBase58Regex}.test(typedObj))`,
+    'CheetahPoint': `return (typeof typedObj === "string" && ${nockchainBase58Regex}.test(typedObj))`,
+    // These are mere type aliases, but we need to handle them all the same.
+    'TxId': `return (typeof typedObj === "string" && ${nockchainBase58Regex}.test(typedObj))`,
+    'PublicKey': `return (typeof typedObj === "string" && ${nockchainBase58Regex}.test(typedObj))`,
+};
+
+let insideTaggedGuard = false;
+let currentTaggedGuardName = '';
+
+// Re-write dtsContent and save it
+if (taggedTypes.size > 0) {
+    console.log("Replacing", taggedTypes);
+    const dtsReplaced = dtsContent.replace(
+        /export type ([A-Za-z0-9_]+) = string \| \{\s*__tag_[a-z0-9_]+:\s*undefined\s*\};/g,
+        'export type $1 = string;'
+    );
+    fs.writeFileSync(dtsOut, dtsReplaced);
+} else {
+    fs.writeFileSync(dtsOut, dtsContent);
+}
 
 for (let i = 0; i < lines.length; i++) {
     let line = lines[i];
@@ -106,6 +144,48 @@ for (let i = 0; i < lines.length; i++) {
         line = line.replace(/as .+$/, 'as any');
     }
 
+    if (!insideTaggedGuard) {
+        let matchedTaggedGuard = false;
+        for (const typeName of Array.from(taggedTypes).concat(Object.keys(customGuardImplementations))) {
+            if (line.trim().startsWith(`export function is${typeName}(`)) {
+                console.log("Patching", typeName);
+                if (!customGuardImplementations[typeName]) {
+                    throw new Error(`Missing custom guard implementation for tagged type: ${typeName}`);
+                }
+                insideTaggedGuard = true;
+                currentTaggedGuardName = typeName;
+                braceCount = 0;
+                for (const char of line) {
+                    if (char === '{') braceCount++;
+                    if (char === '}') braceCount--;
+                }
+                matchedTaggedGuard = true;
+
+                // Add the start of the function and the custom body
+                newLines.push(line);
+                newLines.push(`    const typedObj = obj as any;`);
+                newLines.push(`    ${customGuardImplementations[typeName]};`);
+                break;
+            }
+        }
+
+        if (matchedTaggedGuard) continue;
+    }
+
+    if (insideTaggedGuard) {
+        for (const char of line) {
+            if (char === '{') braceCount++;
+            if (char === '}') braceCount--;
+        }
+
+        if (braceCount === 0) {
+            insideTaggedGuard = false;
+            newLines.push(line); // push the closing brace
+            currentTaggedGuardName = '';
+        }
+        continue; // skip the original body lines
+    }
+
     newLines.push(line);
 }
 
@@ -136,4 +216,4 @@ export function isZMap<K, V>(obj: unknown, isK: (k: unknown) => k is K, isV: (v:
 newLines.push(genericGuards);
 
 // Write the result
-fs.writeFileSync(outputFile, newLines.join('\n'));
+fs.writeFileSync(guardOut, newLines.join('\n'));

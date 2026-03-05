@@ -1,26 +1,27 @@
-
 const fs = require('fs');
 const path = require('path');
 
-const dtsPath = path.join(__dirname, '../pkg/iris_wasm.d.ts');
+const inputFile = process.argv[2];
+const outputFile = process.argv[3];
 
 try {
-    let content = fs.readFileSync(dtsPath, 'utf8');
+    let dtsContent = fs.readFileSync(inputFile, 'utf8');
 
     // Append missing type definitions
     const missingTypes = `
-export type TxId = string;
+export type TxId = Digest;
 export type BlockHeight = number;
 export type LockTim = Timelock;
 `;
 
-    if (!content.includes('export type TxId')) {
-        content += missingTypes;
-        console.log('Appended missing types to iris_wasm.d.ts');
-        fs.writeFileSync(dtsPath, content);
+    if (!dtsContent.includes('export type TxId')) {
+        dtsContent += missingTypes;
+        console.log('Appended missing types to ' + outputFile);
     } else {
-        console.log('Types already present in iris_wasm.d.ts');
+        console.log('Types already present in ' + outputFile);
     }
+
+    fs.writeFileSync(outputFile, dtsContent);
 
 } catch (err) {
     console.error('Error patching iris_wasm.d.ts:', err);

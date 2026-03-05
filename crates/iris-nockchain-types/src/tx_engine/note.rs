@@ -6,7 +6,14 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 /// 64-bit unsigned integer representing the number of assets.
 #[derive(Debug, Clone, Copy, Eq, Ord, NounEncode, NounDecode, Hashable)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi, type = "string"))]
+#[cfg_attr(
+    feature = "wasm",
+    tsify(
+        into_wasm_abi,
+        from_wasm_abi,
+        type = "string | { __tag_nicks: undefined }"
+    )
+)]
 #[allow(clippy::derive_ord_xor_partial_ord)]
 pub struct Nicks(pub u64);
 

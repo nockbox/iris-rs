@@ -19,6 +19,7 @@ pub enum RawTx {
     V1(super::v1::RawTxV1),
 }
 
+#[iris_ztd_derive::wasm_member_methods]
 impl RawTx {
     pub fn id(&self) -> TxId {
         match self {

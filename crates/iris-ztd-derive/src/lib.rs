@@ -573,16 +573,24 @@ fn to_snake_case(s: &str) -> String {
     out
 }
 
-/// Helper to convert PascalCase to lowerCamelCase
+/// Helper to convert PascalCase or snake_case to lowerCamelCase
 fn to_lower_camel_case(s: &str) -> String {
     let mut out = String::new();
+    let mut capitalize_next = false;
     let mut first = true;
     for c in s.chars() {
-        if first {
-            out.push(c.to_ascii_lowercase());
-            first = false;
+        if c == '_' {
+            capitalize_next = true;
         } else {
-            out.push(c);
+            if first {
+                out.push(c.to_ascii_lowercase());
+                first = false;
+            } else if capitalize_next {
+                out.push(c.to_ascii_uppercase());
+                capitalize_next = false;
+            } else {
+                out.push(c);
+            }
         }
     }
     out
@@ -651,6 +659,203 @@ pub fn wasm_noun_codec(attr: TokenStream, item: TokenStream) -> TokenStream {
             #hash_fn
         }
     };
+
+    TokenStream::from(expanded)
+}
+
+/// Extract signatures from an `impl` block and generate corresponding
+/// `wasm_bindgen` exported functions within a private `cfg(feature = "wasm")` submodule.
+#[proc_macro_attribute]
+pub fn wasm_member_methods(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut input = parse_macro_input!(item as syn::ItemImpl);
+
+    // Determine target type name
+    let ty = &input.self_ty;
+    let type_name = if let syn::Type::Path(type_path) = &**ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            segment.ident.to_string()
+        } else {
+            return syn::Error::new_spanned(ty, "Expected a type path")
+                .to_compile_error()
+                .into();
+        }
+    } else {
+        return syn::Error::new_spanned(ty, "Expected a type path")
+            .to_compile_error()
+            .into();
+    };
+
+    let snake_name = to_snake_case(&type_name);
+    let mod_name = format_ident!("__wasm_member_methods_{}", snake_name);
+
+    let mut generated_methods = Vec::new();
+
+    for item in &mut input.items {
+        if let syn::ImplItem::Fn(method) = item {
+            // Check visibility (only export pub methods)
+            if !matches!(method.vis, syn::Visibility::Public(_)) {
+                continue;
+            }
+
+            let sig = &method.sig;
+            let method_ident = &sig.ident;
+            let method_name_str = method_ident.to_string();
+
+            // Extract attributes, looking for transform_output
+            let mut transform_output: Option<(syn::Type, syn::Expr)> = None;
+
+            method.attrs.retain(|attr| {
+                if attr.path().is_ident("transform_output") {
+                    // Parse #[transform_output(Type, expr)]
+                    if let syn::Meta::List(meta_list) = &attr.meta {
+                        let tokens: Vec<_> = meta_list.tokens.clone().into_iter().collect();
+
+                        let mut ty_tokens = proc_macro2::TokenStream::new();
+                        let mut expr_tokens = proc_macro2::TokenStream::new();
+                        let mut in_ty = true;
+
+                        for t in tokens {
+                            if in_ty {
+                                if let proc_macro2::TokenTree::Punct(ref p) = t {
+                                    if p.as_char() == ',' {
+                                        in_ty = false;
+                                        continue;
+                                    }
+                                }
+                                ty_tokens.extend(std::iter::once(t));
+                            } else {
+                                expr_tokens.extend(std::iter::once(t));
+                            }
+                        }
+
+                        // Parse safely, fallback if fails
+                        if let Ok(ty) = syn::parse2(ty_tokens) {
+                            if let Ok(expr) = syn::parse2(expr_tokens) {
+                                transform_output = Some((ty, expr));
+                            }
+                        }
+                    }
+                    false // Remove this attribute
+                } else {
+                    true // Keep others
+                }
+            });
+
+            let camel_method_name = to_lower_camel_case(&method_name_str);
+            let js_name_attr = if camel_method_name != method_name_str {
+                let struct_camel = to_lower_camel_case(&type_name);
+                let camel_method_capitalized = {
+                    let mut c = camel_method_name.chars();
+                    match c.next() {
+                        None => String::new(),
+                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    }
+                };
+                let js_name_combined = format!("{}{}", struct_camel, camel_method_capitalized);
+                quote! { #[wasm_bindgen::prelude::wasm_bindgen(js_name = #js_name_combined)] }
+            } else {
+                let struct_camel = to_lower_camel_case(&type_name);
+                let camel_method_capitalized = {
+                    let mut c = camel_method_name.chars();
+                    match c.next() {
+                        None => String::new(),
+                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                    }
+                };
+                let js_name_combined = format!("{}{}", struct_camel, camel_method_capitalized);
+                quote! { #[wasm_bindgen::prelude::wasm_bindgen(js_name = #js_name_combined)] }
+            };
+
+            // Extract doc comments
+            let doc_comments: Vec<_> = method
+                .attrs
+                .iter()
+                .filter(|a| a.path().is_ident("doc"))
+                .collect();
+
+            let mut args = Vec::new();
+            let mut pass_args = Vec::new();
+            let mut has_receiver = false;
+
+            for arg in &sig.inputs {
+                match arg {
+                    syn::FnArg::Receiver(r) => {
+                        has_receiver = true;
+                        let mutf = r.mutability;
+                        // Use the parsed `ty` instead of the string `type_name`
+                        if r.reference.is_some() {
+                            if mutf.is_some() {
+                                args.push(quote! { obj: &mut #ty });
+                            } else {
+                                args.push(quote! { obj: &#ty });
+                            }
+                        } else {
+                            args.push(quote! { obj: #ty });
+                        }
+                    }
+                    syn::FnArg::Typed(pat_type) => {
+                        let pat = &pat_type.pat;
+                        let pt_ty = &pat_type.ty;
+                        args.push(quote! { #pat: #pt_ty });
+                        pass_args.push(quote! { #pat });
+                    }
+                }
+            }
+
+            let call_expr = if has_receiver {
+                quote! { obj.#method_ident(#(#pass_args),*) }
+            } else {
+                quote! { <#ty>::#method_ident(#(#pass_args),*) }
+            };
+
+            let (final_output, body) =
+                if let Some((transform_ty, transform_expr)) = transform_output {
+                    let out = quote! { -> #transform_ty };
+                    let b = quote! {
+                        let out = #call_expr;
+                        #transform_expr
+                    };
+                    (out, b)
+                } else {
+                    let mut output = sig.output.clone();
+                    // Replace `Self` with the actual type name in the return type
+                    if let syn::ReturnType::Type(_, ret_ty) = &mut output {
+                        if let syn::Type::Path(type_path) = &mut **ret_ty {
+                            if type_path.path.is_ident("Self") {
+                                **ret_ty = *(*ty).clone();
+                            }
+                        }
+                    }
+                    let out = quote! { #output };
+                    let b = quote! { #call_expr };
+                    (out, b)
+                };
+
+            generated_methods.push(quote! {
+                #(#doc_comments)*
+                #js_name_attr
+                pub fn #method_ident(#(#args),*) #final_output {
+                    #body
+                }
+            });
+        }
+    }
+
+    let expanded = quote! {
+        #input
+
+        #[cfg(feature = "wasm")]
+        #[allow(non_snake_case)]
+        mod #mod_name {
+            use super::*;
+
+            #(#generated_methods)*
+        }
+    };
+
+    if type_name == "SpendCondition" {
+        // eprintln!("MACRO EXPANSION for SpendCondition:\n{}", expanded.to_string());
+    }
 
     TokenStream::from(expanded)
 }

@@ -100,16 +100,16 @@ http://localhost:8000/crates/iris-wasm/examples/grpc-web-demo.html
 ```javascript
 import init, {
   GrpcClient,
+  PrivateKey,
   deriveMasterKeyFromMnemonic,
-  WasmTxBuilder,
-  WasmNote,
-  WasmVersion,
-  WasmName,
-  WasmDigest,
-  WasmSpendCondition,
-  WasmPkh,
-  WasmLockPrimitive,
-  WasmLockTim
+  txEngineSettingsV1Default,
+  TxBuilder,
+  Note,
+  Digest,
+  SpendCondition,
+  Pkh,
+  LockPrimitive,
+  LockTim
 } from './pkg/iris_wasm.js';
 
 // Initialize the WASM module
@@ -119,13 +119,13 @@ await init();
 const client = new GrpcClient('http://localhost:8080');
 
 // Get balance by wallet address
-const balance = await client.get_balance_by_address(
+const balance = await client.getBalanceByAddress(
   '6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX'
 );
 console.log('Balance:', balance);
 
 // Get balance by first name (note hash)
-const balanceByName = await client.get_balance_by_first_name(
+const balanceByName = await client.getBalanceByFirstName(
   '2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH'
 );
 console.log('Balance by name:', balanceByName);
@@ -138,39 +138,40 @@ console.log('Balance by name:', balanceByName);
 const mnemonic = "dice domain inspire horse time...";
 const masterKey = deriveMasterKeyFromMnemonic(mnemonic, "");
 
-// Create notes from balance query
-const notes = balance.notes.map(entry => new WasmNote(
-  WasmVersion.V1(),
-  entry.note.noteVersion.v1.originPage.value,
-  new WasmName(entry.name.first, entry.name.last),
-  new WasmDigest(entry.note.noteVersion.v1.noteData.hash),
-  entry.note.noteVersion.v1.assets.value
-));
+// Use one available note from the balance query
+const note = Note.fromProtobuf(balance.notes[0].note);
 
 // Create spend condition
-const pubkeyHash = new WasmDigest("your_pubkey_hash_here");
-const spendCondition = new WasmSpendCondition([
-  WasmLockPrimitive.newPkh(WasmPkh.single(pubkeyHash)),
-  WasmLockPrimitive.newTim(WasmLockTim.coinbase())
+const pubkeyHash = new Digest("your_pubkey_hash_here");
+const spendCondition = new SpendCondition([
+  LockPrimitive.newPkh(Pkh.single(pubkeyHash)),
+  LockPrimitive.newTim(LockTim.coinbase())
 ]);
 
+const settings = txEngineSettingsV1Default();
+// Or use txEngineSettingsV1BythosDefault() when targeting Bythos defaults.
+
 // Build transaction
-const builder = WasmTxBuilder.newSimple(
-  notes,
-  spendCondition,
-  new WasmDigest("recipient_address"),
+const builder = new TxBuilder(settings);
+await builder.simpleSpend(
+  [note],
+  [spendCondition],
+  new Digest("recipient_address"),
   1234567, // gift
-  2850816, // fee
-  new WasmDigest("refund_address")
+  2850816, // fee override
+  new Digest("refund_address"),
+  true
 );
 
 // Sign and submit
-const signedTx = builder.sign(masterKey.private_key);
+const privateKey = PrivateKey.fromBytes(masterKey.private_key);
+await builder.sign(privateKey);
+const signedTx = builder.build();
 const txProtobuf = signedTx.toProtobuf();
-await client.send_transaction(txProtobuf);
+await client.sendTransaction(txProtobuf);
 
 // Check if a transaction was accepted
-const accepted = await client.transaction_accepted(signedTx.id.value);
+const accepted = await client.transactionAccepted(signedTx.id.value);
 console.log('Transaction accepted:', accepted);
 ```
 
@@ -187,22 +188,22 @@ Creates a new gRPC-Web client.
 
 #### Methods
 
-##### `get_balance_by_address(address: string): Promise<Balance>`
+##### `getBalanceByAddress(address: string): Promise<Balance>`
 Get the balance for a wallet address.
 - `address`: Base58-encoded wallet address
 - Returns: Balance object with notes, height, and block_id
 
-##### `get_balance_by_first_name(firstName: string): Promise<Balance>`
+##### `getBalanceByFirstName(firstName: string): Promise<Balance>`
 Get the balance for a note first name.
 - `firstName`: Base58-encoded first name hash
 - Returns: Balance object with notes, height, and block_id
 
-##### `send_transaction(rawTx: RawTransaction): Promise<string>`
+##### `sendTransaction(rawTx: RawTransaction): Promise<string>`
 Send a signed transaction to the network.
 - `rawTx`: RawTransaction object (must include tx_id)
 - Returns: Acknowledgment message
 
-##### `transaction_accepted(txId: string): Promise<boolean>`
+##### `transactionAccepted(txId: string): Promise<boolean>`
 Check if a transaction has been accepted.
 - `txId`: Base58-encoded transaction ID
 - Returns: `true` if accepted, `false` otherwise

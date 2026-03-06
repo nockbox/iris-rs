@@ -4,7 +4,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use alloc::{boxed::Box, format};
 use iris_crypto::{PublicKey, Signature};
-use iris_ztd::{ftas, Digest, FixedU64, Hashable, Noun, NounDecode, NounEncode, ZMap, ZSet};
+use iris_ztd::{tas, Digest, FixedU64, Hashable, Noun, NounDecode, NounEncode, ZMap, ZSet};
 use serde::{Deserialize, Serialize};
 
 use super::note::{BlockHeight, ExpectedVersion, Name, Source, Version};
@@ -268,7 +268,7 @@ impl SeedsV1 {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Spend0V1 {
@@ -283,7 +283,7 @@ impl Spend0V1 {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub struct Spend1V1 {
@@ -299,64 +299,20 @@ impl Spend1V1 {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[iris_ztd::wasm_noun_codec]
-#[serde(untagged)]
+#[iris_ztd::noun_derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    NounEncode,
+    NounDecode,
+    tsify_wasm
+)]
 pub enum SpendV1 {
-    S0 {
-        #[cfg_attr(feature = "wasm", tsify(type = "0"))]
-        version: ExpectedVersion<0>,
-        spend: Spend0V1,
-    },
-    S1 {
-        #[cfg_attr(feature = "wasm", tsify(type = "1"))]
-        version: ExpectedVersion<1>,
-        spend: Spend1V1,
-    },
-}
-
-impl NounEncode for SpendV1 {
-    fn to_noun(&self) -> Noun {
-        match self {
-            SpendV1::S0 { version, spend } => {
-                (version, &spend.signature, &spend.seeds, &spend.fee).to_noun()
-            }
-            SpendV1::S1 { version, spend } => {
-                (version, &spend.witness, &spend.seeds, &spend.fee).to_noun()
-            }
-        }
-    }
-}
-
-impl NounDecode for SpendV1 {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let (v, a, seeds, fee): (Version, Noun, SeedsV1, Nicks) = NounDecode::from_noun(noun)?;
-        match v {
-            Version::V0 => {
-                let signature: LegacySignature = NounDecode::from_noun(&a)?;
-                Some(SpendV1::S0 {
-                    version: ExpectedVersion,
-                    spend: Spend0V1 {
-                        signature,
-                        seeds,
-                        fee,
-                    },
-                })
-            }
-            Version::V1 => {
-                let witness: Witness = NounDecode::from_noun(&a)?;
-                Some(SpendV1::S1 {
-                    version: ExpectedVersion,
-                    spend: Spend1V1 {
-                        witness,
-                        seeds,
-                        fee,
-                    },
-                })
-            }
-            _ => None,
-        }
-    }
+    #[noun(tag = 0)]
+    S0(Spend0V1),
+    #[noun(tag = 1)]
+    S1(Spend1V1),
 }
 
 impl AsRef<SpendV1> for SpendV1 {
@@ -373,46 +329,40 @@ impl SpendV1 {
     }
 
     pub fn new_legacy(seeds: SeedsV1, fee: Nicks) -> Self {
-        SpendV1::S0 {
-            version: ExpectedVersion,
-            spend: Spend0V1 {
-                signature: LegacySignature::default(),
-                seeds,
-                fee,
-            },
-        }
+        SpendV1::S0(Spend0V1 {
+            signature: LegacySignature::default(),
+            seeds,
+            fee,
+        })
     }
 
     pub fn new_witness(witness: Witness, seeds: SeedsV1, fee: Nicks) -> Self {
-        SpendV1::S1 {
-            version: ExpectedVersion,
-            spend: Spend1V1 {
-                witness,
-                seeds,
-                fee,
-            },
-        }
+        SpendV1::S1(Spend1V1 {
+            witness,
+            seeds,
+            fee,
+        })
     }
 
     pub fn fee(&self) -> Nicks {
         match self {
-            SpendV1::S0 { spend, .. } => spend.fee,
-            SpendV1::S1 { spend, .. } => spend.fee,
+            SpendV1::S0(spend) => spend.fee,
+            SpendV1::S1(spend) => spend.fee,
         }
     }
 
     #[transform_output(SeedsV1, out.clone())]
     pub fn seeds(&self) -> &SeedsV1 {
         match self {
-            SpendV1::S0 { spend, .. } => &spend.seeds,
-            SpendV1::S1 { spend, .. } => &spend.seeds,
+            SpendV1::S0(spend) => &spend.seeds,
+            SpendV1::S1(spend) => &spend.seeds,
         }
     }
 
     pub fn sig_hash(&self) -> Digest {
         match self {
-            SpendV1::S0 { spend, .. } => spend.sig_hash(),
-            SpendV1::S1 { spend, .. } => spend.sig_hash(),
+            SpendV1::S0(spend) => spend.sig_hash(),
+            SpendV1::S1(spend) => spend.sig_hash(),
         }
     }
 }
@@ -420,7 +370,7 @@ impl SpendV1 {
 impl SpendV1 {
     pub fn calc_words(&self) -> (u64, u64) {
         match self {
-            SpendV1::S0 { spend, .. } => {
+            SpendV1::S0(spend) => {
                 let seed_words: u64 = spend
                     .seeds
                     .0
@@ -430,7 +380,7 @@ impl SpendV1 {
                 let sig_words = noun_words(&spend.signature.to_noun());
                 (seed_words, sig_words)
             }
-            SpendV1::S1 { spend, .. } => {
+            SpendV1::S1(spend) => {
                 let seed_words: u64 = spend
                     .seeds
                     .0
@@ -445,24 +395,24 @@ impl SpendV1 {
 
     pub fn fee_mut(&mut self) -> &mut Nicks {
         match self {
-            SpendV1::S0 { spend, .. } => &mut spend.fee,
-            SpendV1::S1 { spend, .. } => &mut spend.fee,
+            SpendV1::S0(spend) => &mut spend.fee,
+            SpendV1::S1(spend) => &mut spend.fee,
         }
     }
 
     pub fn seeds_mut(&mut self) -> &mut SeedsV1 {
         match self {
-            SpendV1::S0 { spend, .. } => &mut spend.seeds,
-            SpendV1::S1 { spend, .. } => &mut spend.seeds,
+            SpendV1::S0(spend) => &mut spend.seeds,
+            SpendV1::S1(spend) => &mut spend.seeds,
         }
     }
 
     pub fn add_signature(&mut self, key: PublicKey, signature: Signature) {
         match self {
-            SpendV1::S0 { spend, .. } => {
+            SpendV1::S0(spend) => {
                 spend.signature.add_entry(key, signature);
             }
-            SpendV1::S1 { spend, .. } => {
+            SpendV1::S1(spend) => {
                 spend
                     .witness
                     .pkh_signature
@@ -474,11 +424,11 @@ impl SpendV1 {
 
     pub fn add_preimage(&mut self, preimage: Noun) -> Digest {
         match self {
-            SpendV1::S0 { .. } => {
+            SpendV1::S0(_) => {
                 // Legacy spends do not carry hax preimages
                 preimage.hash()
             }
-            SpendV1::S1 { spend, .. } => {
+            SpendV1::S1(spend) => {
                 let digest = preimage.hash();
                 spend.witness.hax_map.insert(digest, preimage);
                 digest
@@ -488,8 +438,8 @@ impl SpendV1 {
 
     pub fn clear_signatures(&mut self) {
         match self {
-            SpendV1::S0 { spend, .. } => spend.signature.clear(),
-            SpendV1::S1 { spend, .. } => spend.witness.pkh_signature.0.clear(),
+            SpendV1::S0(spend) => spend.signature.clear(),
+            SpendV1::S1(spend) => spend.witness.pkh_signature.0.clear(),
         }
     }
 }
@@ -497,12 +447,8 @@ impl SpendV1 {
 impl Hashable for SpendV1 {
     fn hash(&self) -> Digest {
         match self {
-            SpendV1::S0 { spend, .. } => {
-                (Version::V0, &spend.signature, &spend.seeds, &spend.fee).hash()
-            }
-            SpendV1::S1 { spend, .. } => {
-                (Version::V1, &spend.witness, &spend.seeds, &spend.fee).hash()
-            }
+            SpendV1::S0(spend) => (Version::V0, &spend.signature, &spend.seeds, &spend.fee).hash(),
+            SpendV1::S1(spend) => (Version::V1, &spend.witness, &spend.seeds, &spend.fee).hash(),
         }
     }
 }
@@ -547,11 +493,13 @@ impl Witness {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[iris_ztd::wasm_noun_codec]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
+#[iris_ztd::noun_derive(NounEncode, NounDecode, Hashable, Serialize, Deserialize, tsify_wasm)]
+#[noun(tag_ident = version)]
 pub enum LockMerkleProof {
+    #[noun(cell)]
     Stub(LockMerkleProofStub),
+    #[noun(tag = "full")]
     Full(LockMerkleProofFull),
 }
 
@@ -580,43 +528,14 @@ impl LockMerkleProof {
     pub fn version(&self) -> Option<u64> {
         match self {
             Self::Stub(_) => None,
-            Self::Full(lmp) => Some(lmp.version.value_u64()),
+            Self::Full(_) => Some(tas!("full")),
         }
     }
 
     pub fn version_str(&self) -> Option<&str> {
         match self {
             Self::Stub(_) => None,
-            Self::Full(lmp) => Some(&*lmp.version),
-        }
-    }
-}
-
-impl NounEncode for LockMerkleProof {
-    fn to_noun(&self) -> Noun {
-        match self {
-            LockMerkleProof::Stub(stub) => stub.to_noun(),
-            LockMerkleProof::Full(full) => full.to_noun(),
-        }
-    }
-}
-
-impl NounDecode for LockMerkleProof {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let stub = LockMerkleProofStub::from_noun(noun);
-        if let Some(stub) = stub {
-            Some(LockMerkleProof::Stub(stub))
-        } else {
-            Some(LockMerkleProof::Full(NounDecode::from_noun(noun)?))
-        }
-    }
-}
-
-impl Hashable for LockMerkleProof {
-    fn hash(&self) -> Digest {
-        match self {
-            LockMerkleProof::Stub(stub) => stub.hash(),
-            LockMerkleProof::Full(full) => full.hash(),
+            Self::Full(_) => Some("full"),
         }
     }
 }
@@ -624,8 +543,6 @@ impl Hashable for LockMerkleProof {
 #[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize, Hashable)]
 #[iris_ztd::wasm_noun_codec]
 pub struct LockMerkleProofFull {
-    #[cfg_attr(feature = "wasm", tsify(type = "\"full\""))]
-    pub version: ftas!("full"),
     pub spend_condition: SpendCondition,
     pub axis: u64,
     pub proof: MerkleProof,
@@ -655,6 +572,48 @@ impl Hashable for LockMerkleProofStub {
 pub struct MerkleProof {
     pub root: Digest,
     pub path: Vec<Digest>,
+}
+
+#[iris_ztd::noun_derive(NounEncode, NounDecode, Hashable, Serialize, Deserialize, tsify_wasm)]
+pub enum Lock {
+    #[noun(cell)]
+    Single(SpendCondition),
+    #[noun(tag = 2)]
+    V2(LockV2),
+    #[noun(tag = 4)]
+    V4(LockV4),
+    #[noun(tag = 8)]
+    V8(LockV8),
+    #[noun(tag = 16)]
+    V16(LockV16),
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockV2 {
+    pub p: SpendCondition,
+    pub q: SpendCondition,
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockV4 {
+    pub p: LockV2,
+    pub q: LockV2,
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockV8 {
+    pub p: LockV4,
+    pub q: LockV4,
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockV16 {
+    pub p: LockV8,
+    pub q: LockV8,
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
@@ -709,48 +668,17 @@ impl SpendCondition {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[iris_ztd::wasm_noun_codec]
+#[derive(Debug, Clone)]
+#[iris_ztd::noun_derive(NounEncode, NounDecode, Hashable, Serialize, Deserialize, tsify_wasm)]
 pub enum LockPrimitive {
+    #[noun(tag = "pkh")]
     Pkh(Pkh),
+    #[noun(tag = "tim")]
     Tim(LockTim),
+    #[noun(tag = "hax")]
     Hax(Hax),
+    #[noun(tag = "brn")]
     Brn,
-}
-
-impl NounEncode for LockPrimitive {
-    fn to_noun(&self) -> iris_ztd::Noun {
-        match self {
-            LockPrimitive::Pkh(pkh) => ("pkh", pkh).to_noun(),
-            LockPrimitive::Tim(tim) => ("tim", tim).to_noun(),
-            LockPrimitive::Hax(hax) => ("hax", hax).to_noun(),
-            LockPrimitive::Brn => ("brn", 0).to_noun(),
-        }
-    }
-}
-
-impl NounDecode for LockPrimitive {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let (p, n): (String, Noun) = NounDecode::from_noun(noun)?;
-        Some(match &*p {
-            "pkh" => LockPrimitive::Pkh(NounDecode::from_noun(&n)?),
-            "tim" => LockPrimitive::Tim(NounDecode::from_noun(&n)?),
-            "hax" => LockPrimitive::Hax(NounDecode::from_noun(&n)?),
-            "brn" => LockPrimitive::Brn,
-            _ => return None,
-        })
-    }
-}
-
-impl Hashable for LockPrimitive {
-    fn hash(&self) -> Digest {
-        match self {
-            LockPrimitive::Pkh(pkh) => ("pkh", pkh).hash(),
-            LockPrimitive::Tim(tim) => ("tim", tim).hash(),
-            LockPrimitive::Hax(hax) => ("hax", hax).hash(),
-            LockPrimitive::Brn => ("brn", 0).hash(),
-        }
-    }
 }
 
 pub type LockTim = super::v0::Timelock;
@@ -834,12 +762,12 @@ impl SpendsV1 {
         for (name, spend) in &self.0 {
             let mut spend = spend.clone();
             match &mut spend {
-                SpendV1::S1 { spend: ws, .. } => {
+                SpendV1::S1(ws) => {
                     let witness = ws.witness.take_data();
                     spends.0.insert(*name, spend);
                     witness_data.data.insert(*name, witness);
                 }
-                SpendV1::S0 { .. } => {
+                SpendV1::S0(_) => {
                     spends.0.insert(*name, spend);
                 }
             }
@@ -864,7 +792,7 @@ impl SpendsV1 {
         for (name, spend) in &self.0 {
             let mut spend = spend.clone();
             // NOTE: this behavior does not match the wallet hoon, but if the worst that can happen is transaction remain invalid, it's ok.
-            if let SpendV1::S1 { spend: ws, .. } = &mut spend {
+            if let SpendV1::S1(ws) = &mut spend {
                 if let Some(witness) = witness_data.data.get(name) {
                     ws.witness = witness.clone();
                 }
@@ -1082,54 +1010,25 @@ impl From<SpendCondition> for LockMetadata {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[iris_ztd::wasm_noun_codec(no_hash)]
-#[serde(untagged)]
+#[iris_ztd::noun_derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    NounEncode,
+    NounDecode,
+    tsify_wasm
+)]
 pub enum InputDisplay {
-    V0 {
-        #[cfg_attr(feature = "wasm", tsify(type = "0"))]
-        version: ExpectedVersion<0>,
-        p: ZMap<Name, super::v0::Sig>,
-    },
-    V1 {
-        #[cfg_attr(feature = "wasm", tsify(type = "1"))]
-        version: ExpectedVersion<1>,
-        p: ZMap<Name, SpendCondition>,
-    },
+    #[noun(tag = 0)]
+    V0(ZMap<Name, crate::v0::Sig>),
+    #[noun(tag = 1)]
+    V1(ZMap<Name, SpendCondition>),
 }
 
 impl Default for InputDisplay {
     fn default() -> Self {
-        Self::V0 {
-            version: ExpectedVersion,
-            p: ZMap::new(),
-        }
-    }
-}
-
-impl NounEncode for InputDisplay {
-    fn to_noun(&self) -> Noun {
-        match self {
-            InputDisplay::V0 { version, p } => (version, p).to_noun(),
-            InputDisplay::V1 { version, p } => (version, p).to_noun(),
-        }
-    }
-}
-
-impl NounDecode for InputDisplay {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let (version, map): (Version, Noun) = NounDecode::from_noun(noun)?;
-        match version {
-            Version::V0 => Some(InputDisplay::V0 {
-                version: ExpectedVersion,
-                p: NounDecode::from_noun(&map)?,
-            }),
-            Version::V1 => Some(InputDisplay::V1 {
-                version: ExpectedVersion,
-                p: NounDecode::from_noun(&map)?,
-            }),
-            _ => None,
-        }
+        Self::V0(ZMap::new())
     }
 }
 
@@ -1299,7 +1198,7 @@ mod tests {
             "AvHDRESkhM9F2FMPiYFPeQ9GrL2kX8QkmHP8dGpVT8Pr2f8xM1SLGJW",
         );
 
-        let SpendV1::S1 { spend: ws, .. } = &spend else {
+        let SpendV1::S1(ws) = &spend else {
             panic!("expected witness spend");
         };
 

@@ -89,6 +89,11 @@ pub fn raw_tx_from_protobuf(tx: pb::RawTransaction) -> Result<RawTx, JsValue> {
         .map_err(|e| JsValue::from_str(&format!("{}", e)))
 }
 
+#[wasm_bindgen]
+pub fn locky(sp: iris_nockchain_types::v1::SpendCondition) -> iris_nockchain_types::v1::Lock {
+    iris_nockchain_types::v1::Lock::Single(sp)
+}
+
 #[derive(Serialize, Deserialize, tsify::Tsify)]
 #[tsify(into_wasm_abi, from_wasm_abi)]
 pub struct TxNotes {

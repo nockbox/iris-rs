@@ -715,14 +715,14 @@ impl From<Witness> for PbWitness {
 impl From<Spend> for PbSpend {
     fn from(spend: Spend) -> Self {
         match spend {
-            Spend::S1 { spend: ws, .. } => PbSpend {
+            Spend::S1(ws) => PbSpend {
                 spend_kind: Some(spend::SpendKind::Witness(PbWitnessSpend {
                     witness: Some(PbWitness::from(ws.witness)),
                     seeds: seeds_to_pb(ws.seeds),
                     fee: Some(PbNicks::from(ws.fee)),
                 })),
             },
-            Spend::S0 { spend: ls, .. } => PbSpend {
+            Spend::S0(ls) => PbSpend {
                 spend_kind: Some(spend::SpendKind::Legacy(PbLegacySpend {
                     signature: Some(PbLegacySignature::from(ls.signature)),
                     seeds: seeds_to_pb(ls.seeds),
@@ -1156,7 +1156,6 @@ impl TryFrom<PbLockMerkleProof> for LockMerkleProof {
                 spend_condition,
                 axis,
                 proof,
-                version: Default::default(),
             })),
             None => Err(ConversionError::Invalid("Stub merkle proof with axis != 1")),
             _ => Err(ConversionError::Invalid("Unsupported merkle proof version")),
@@ -1210,14 +1209,11 @@ impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
                         let seeds: Result<ZSet<Seed>, ConversionError> =
                             w.seeds.into_iter().map(|s| s.try_into()).collect();
 
-                        Spend::S1 {
-                            version: ExpectedVersion,
-                            spend: Spend1 {
-                                witness,
-                                seeds: Seeds(seeds?),
-                                fee: w.fee.required("WitnessSpend", "fee")?.into(),
-                            },
-                        }
+                        Spend::S1(Spend1 {
+                            witness,
+                            seeds: Seeds(seeds?),
+                            fee: w.fee.required("WitnessSpend", "fee")?.into(),
+                        })
                     }
                     spend::SpendKind::Legacy(l) => {
                         let signature: LegacySignature = l
@@ -1226,14 +1222,11 @@ impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
                             .try_into()?;
                         let seeds: Result<ZSet<Seed>, ConversionError> =
                             l.seeds.into_iter().map(|s| s.try_into()).collect();
-                        Spend::S0 {
-                            version: ExpectedVersion,
-                            spend: Spend0 {
-                                signature,
-                                seeds: Seeds(seeds?),
-                                fee: l.fee.required("LegacySpend", "fee")?.into(),
-                            },
-                        }
+                        Spend::S0(Spend0 {
+                            signature,
+                            seeds: Seeds(seeds?),
+                            fee: l.fee.required("LegacySpend", "fee")?.into(),
+                        })
                     }
                 };
                 Ok((name, spend))

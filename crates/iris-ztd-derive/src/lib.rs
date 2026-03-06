@@ -855,3 +855,714 @@ pub fn wasm_member_methods(_attr: TokenStream, item: TokenStream) -> TokenStream
 
     TokenStream::from(expanded)
 }
+
+/// Attribute macro `#[noun_derive(NounEncode, NounDecode, Hashable, Serialize, Deserialize)]`
+///
+/// Supports `#[noun(cell)]` and `#[noun(tag = N)]` on enum variants.
+/// Generates NounEncode/NounDecode/Hashable impls, and serde shadow types for Serialize/Deserialize.
+#[proc_macro_attribute]
+pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut input = parse_macro_input!(item as syn::ItemEnum);
+    let crate_path = get_crate_path();
+    let enum_name = &input.ident;
+    let vis = &input.vis;
+
+    // Parse attribute args: comma-separated idents like NounEncode, NounDecode, Hashable, Serialize, Deserialize
+    let attr_args = proc_macro2::TokenStream::from(attr);
+    let requested_derives: Vec<String> = attr_args
+        .into_iter()
+        .filter_map(|tt| {
+            if let proc_macro2::TokenTree::Ident(ident) = tt {
+                Some(ident.to_string())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let wants_noun_encode = requested_derives.iter().any(|s| s == "NounEncode");
+    let wants_noun_decode = requested_derives.iter().any(|s| s == "NounDecode");
+    let wants_hashable = requested_derives.iter().any(|s| s == "Hashable");
+    let wants_serialize = requested_derives.iter().any(|s| s == "Serialize");
+    let wants_deserialize = requested_derives.iter().any(|s| s == "Deserialize");
+    let wants_wasm = requested_derives.iter().any(|s| s == "tsify_wasm");
+
+    // Collect passthrough derives (everything other than the ones we handle manually)
+    let handled = [
+        "NounEncode",
+        "NounDecode",
+        "Hashable",
+        "Serialize",
+        "Deserialize",
+        "tsify_wasm",
+    ];
+    let passthrough_derives: Vec<proc_macro2::TokenStream> = requested_derives
+        .iter()
+        .filter(|s| !handled.contains(&s.as_str()))
+        .map(|s| {
+            let ident = format_ident!("{}", s);
+            quote! { #ident }
+        })
+        .collect();
+
+    // --- Parse #[noun(...)] attributes on enum ---
+    let mut tag_ident = format_ident!("tag");
+    input.attrs.retain(|attr| {
+        if !attr.path().is_ident("noun") {
+            return true;
+        }
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("tag_ident") {
+                if let Ok(value) = meta.value() {
+                    if let Ok(ident) = value.parse::<syn::Ident>() {
+                        tag_ident = ident;
+                    }
+                }
+            }
+            Ok(())
+        });
+        false
+    });
+
+    // --- Parse #[noun(...)] attributes on each variant ---
+    enum NounVariantKind {
+        Cell,           // #[noun(cell)]
+        TagU64(u64),    // #[noun(tag = 123)]
+        TagStr(String), // #[noun(tag = "foo")]
+    }
+
+    struct VariantInfo {
+        ident: syn::Ident,
+        kind: NounVariantKind,
+        fields: syn::Fields,
+    }
+
+    let mut variants_info = Vec::new();
+    let mut cell_count = 0;
+
+    for variant in &mut input.variants {
+        let mut kind = None;
+
+        variant.attrs.retain(|attr| {
+            if !attr.path().is_ident("noun") {
+                return true;
+            }
+            let _ = attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("cell") {
+                    kind = Some(NounVariantKind::Cell);
+                    cell_count += 1;
+                } else if meta.path.is_ident("tag") {
+                    let value = meta.value().expect("noun(tag = ...) requires a value");
+                    let lit: syn::Lit = value.parse().expect("tag value must be a literal");
+                    match lit {
+                        syn::Lit::Int(lit_int) => {
+                            let v: u64 = lit_int.base10_parse().expect("tag must be u64");
+                            kind = Some(NounVariantKind::TagU64(v));
+                        }
+                        syn::Lit::Str(lit_str) => {
+                            kind = Some(NounVariantKind::TagStr(lit_str.value()));
+                        }
+                        _ => panic!("noun(tag = ...) value must be an integer or string literal"),
+                    }
+                }
+                Ok(())
+            });
+            false // strip the #[noun(...)] attribute
+        });
+
+        let kind = kind.unwrap_or_else(|| NounVariantKind::TagStr(variant.ident.to_string()));
+
+        variants_info.push(VariantInfo {
+            ident: variant.ident.clone(),
+            kind,
+            fields: variant.fields.clone(),
+        });
+    }
+
+    if cell_count > 1 {
+        panic!("Only one #[noun(cell)] variant is allowed per enum");
+    }
+
+    // --- Generate NounEncode ---
+    let noun_encode_impl = if wants_noun_encode {
+        let mut arms = Vec::new();
+        for vi in &variants_info {
+            let vident = &vi.ident;
+            match &vi.kind {
+                NounVariantKind::Cell => {
+                    // Encode inner value directly
+                    match &vi.fields {
+                        Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+                            arms.push(quote! {
+                                Self::#vident(v) => #crate_path::NounEncode::to_noun(v),
+                            });
+                        }
+                        _ => panic!("noun(cell) variant must have exactly one unnamed field"),
+                    }
+                }
+                NounVariantKind::TagU64(tag) => match &vi.fields {
+                    Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+                        arms.push(quote! {
+                            Self::#vident(v) => {
+                                let tag_noun = #crate_path::NounEncode::to_noun(&(#tag as u64));
+                                let rest_noun = #crate_path::NounEncode::to_noun(v);
+                                #crate_path::NounEncode::to_noun(&(tag_noun, rest_noun))
+                            }
+                        });
+                    }
+                    Fields::Unit => {
+                        arms.push(quote! {
+                            Self::#vident => #crate_path::NounEncode::to_noun(&(#tag as u64)),
+                        });
+                    }
+                    _ => panic!("noun(tag = N) variant must have 0 or 1 unnamed field"),
+                },
+                NounVariantKind::TagStr(tag) => match &vi.fields {
+                    Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+                        arms.push(quote! {
+                            Self::#vident(v) => {
+                                let tag_noun = #crate_path::NounEncode::to_noun(&#tag);
+                                let rest_noun = #crate_path::NounEncode::to_noun(v);
+                                #crate_path::NounEncode::to_noun(&(tag_noun, rest_noun))
+                            }
+                        });
+                    }
+                    Fields::Unit => {
+                        arms.push(quote! {
+                            Self::#vident => #crate_path::NounEncode::to_noun(&#tag),
+                        });
+                    }
+                    _ => panic!("noun(tag = \"str\") variant must have 0 or 1 unnamed field"),
+                },
+            }
+        }
+        quote! {
+            impl #crate_path::NounEncode for #enum_name {
+                fn to_noun(&self) -> #crate_path::Noun {
+                    match self {
+                        #(#arms)*
+                    }
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    // --- Generate NounDecode ---
+    let noun_decode_impl = if wants_noun_decode {
+        // Find the cell variant (if any)
+        let cell_variant = variants_info
+            .iter()
+            .find(|v| matches!(v.kind, NounVariantKind::Cell));
+
+        let cell_fallback = if let Some(cv) = cell_variant {
+            let cv_ident = &cv.ident;
+            quote! {
+                // Tag is not an atom (it's a cell), try the cell variant
+                return Some(Self::#cv_ident(#crate_path::NounDecode::from_noun(noun)?));
+            }
+        } else {
+            quote! { return None; }
+        };
+
+        // Build match arms for u64 tags
+        let mut u64_tag_arms = Vec::new();
+        for vi in &variants_info {
+            if let NounVariantKind::TagU64(tag) = &vi.kind {
+                let vident = &vi.ident;
+                match &vi.fields {
+                    Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+                        u64_tag_arms.push(quote! {
+                            #tag => return Some(Self::#vident(#crate_path::NounDecode::from_noun(rest)?)),
+                        });
+                    }
+                    Fields::Unit => {
+                        u64_tag_arms.push(quote! {
+                            #tag => return Some(Self::#vident),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Build match arms for string tags
+        let mut str_tag_arms = Vec::new();
+        for vi in &variants_info {
+            if let NounVariantKind::TagStr(tag) = &vi.kind {
+                let vident = &vi.ident;
+                match &vi.fields {
+                    Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+                        str_tag_arms.push(quote! {
+                            #tag => return Some(Self::#vident(#crate_path::NounDecode::from_noun(rest)?)),
+                        });
+                    }
+                    Fields::Unit => {
+                        str_tag_arms.push(quote! {
+                            #tag => return Some(Self::#vident),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let has_u64_tags = !u64_tag_arms.is_empty();
+        let has_str_tags = !str_tag_arms.is_empty();
+
+        let u64_match_block = if has_u64_tags {
+            quote! {
+                if let Some(tag_u64) = <u64 as #crate_path::NounDecode>::from_noun(tag_noun) {
+                    match tag_u64 {
+                        #(#u64_tag_arms)*
+                        _ => {}
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        };
+
+        let str_match_block = if has_str_tags {
+            quote! {
+                {
+                    let a_bytes = tag_atom.to_le_bytes();
+                    if let Ok(tag_str) = core::str::from_utf8(&a_bytes) {
+                        match tag_str {
+                            #(#str_tag_arms)*
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        };
+
+        quote! {
+            impl #crate_path::NounDecode for #enum_name {
+                fn from_noun(noun: &#crate_path::Noun) -> Option<Self> {
+                    match noun {
+                        #crate_path::Noun::Cell(ref tag_noun, ref rest) => {
+                            // Check if tag is an atom
+                            if let #crate_path::Noun::Atom(ref tag_atom) = **tag_noun {
+                                // Try u64 tag matching
+                                #u64_match_block
+                                // Try string tag matching
+                                #str_match_block
+                                // No tag matched
+                                None
+                            } else {
+                                // Tag is not an atom (it's a cell) => try cell variant
+                                #cell_fallback
+                            }
+                        }
+                        #crate_path::Noun::Atom(_) => {
+                            // Atom at top level - try cell variant as fallback
+                            #cell_fallback
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    // --- Generate Hashable ---
+    let hashable_impl = if wants_hashable {
+        let mut arms = Vec::new();
+        for vi in &variants_info {
+            let vident = &vi.ident;
+            match &vi.kind {
+                NounVariantKind::Cell => match &vi.fields {
+                    Fields::Unnamed(_) => {
+                        arms.push(quote! {
+                            Self::#vident(v) => #crate_path::Hashable::hash(v),
+                        });
+                    }
+                    Fields::Unit => {
+                        arms.push(quote! {
+                            Self::#vident => #crate_path::Hashable::hash(&0u64),
+                        });
+                    }
+                    _ => {}
+                },
+                NounVariantKind::TagU64(tag) => match &vi.fields {
+                    Fields::Unnamed(_) => {
+                        arms.push(quote! {
+                            Self::#vident(v) => #crate_path::Hashable::hash(&(#tag as u64, v)),
+                        });
+                    }
+                    Fields::Unit => {
+                        arms.push(quote! {
+                            Self::#vident => #crate_path::Hashable::hash(&(#tag as u64)),
+                        });
+                    }
+                    _ => {}
+                },
+                NounVariantKind::TagStr(tag) => match &vi.fields {
+                    Fields::Unnamed(_) => {
+                        arms.push(quote! {
+                            Self::#vident(v) => #crate_path::Hashable::hash(&(#tag, v)),
+                        });
+                    }
+                    Fields::Unit => {
+                        arms.push(quote! {
+                            Self::#vident => #crate_path::Hashable::hash(&#tag),
+                        });
+                    }
+                    _ => {}
+                },
+            }
+        }
+        quote! {
+            impl #crate_path::Hashable for #enum_name {
+                fn hash(&self) -> #crate_path::Digest {
+                    match self {
+                        #(#arms)*
+                    }
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    // --- Generate Shadow Types & Serde ---
+    let serde_impl = if wants_serialize || wants_deserialize {
+        let shadow_mod_name = format_ident!(
+            "__noun_derive_shadow_{}",
+            to_snake_case(&enum_name.to_string())
+        );
+        let shadow_owned_name = enum_name.clone();
+        let shadow_borrowed_name = format_ident!("__ShadowBorrowed{}", enum_name);
+
+        // Build shadow owned variants
+        let mut shadow_owned_variants = Vec::new();
+        let mut shadow_borrowed_variants = Vec::new();
+        let mut from_shadow_arms = Vec::new(); // ShadowOwned -> Enum
+        let mut to_shadow_owned_arms = Vec::new(); // Enum -> ShadowOwned
+        let mut into_shadow_arms = Vec::new(); // &Enum -> ShadowBorrowed
+
+        for vi in &variants_info {
+            let vident = &vi.ident;
+            match &vi.kind {
+                NounVariantKind::Cell => {
+                    // Untagged: transparent
+                    match &vi.fields {
+                        Fields::Unnamed(f) => {
+                            let inner_ty = &f.unnamed[0].ty;
+                            shadow_owned_variants.push(quote! {
+                                #vident(#inner_ty),
+                            });
+                            shadow_borrowed_variants.push(quote! {
+                                #vident(&'a #inner_ty),
+                            });
+                            from_shadow_arms.push(quote! {
+                                #shadow_owned_name::#vident(v) => super::#enum_name::#vident(v),
+                            });
+                            to_shadow_owned_arms.push(quote! {
+                                super::#enum_name::#vident(v) => #shadow_owned_name::#vident(v),
+                            });
+                            into_shadow_arms.push(quote! {
+                                super::#enum_name::#vident(ref v) => #shadow_borrowed_name::#vident(v),
+                            });
+                        }
+                        _ => panic!("noun(cell) variant must have unnamed fields"),
+                    }
+                }
+                NounVariantKind::TagU64(tag) => {
+                    let tag_str = tag.to_string();
+                    match &vi.fields {
+                        Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+                            let inner_ty = &f.unnamed[0].ty;
+                            shadow_owned_variants.push(quote! {
+                                #vident {
+                                    #[cfg_attr(feature = "wasm", tsify(type = #tag_str))]
+                                    #tag_ident: u64,
+                                    #[serde(flatten)]
+                                    value: #inner_ty,
+                                },
+                            });
+                            shadow_borrowed_variants.push(quote! {
+                                #vident {
+                                    #tag_ident: u64,
+                                    #[serde(flatten)]
+                                    value: &'a #inner_ty,
+                                },
+                            });
+                            from_shadow_arms.push(quote! {
+                                #shadow_owned_name::#vident { value, .. } => super::#enum_name::#vident(value),
+                            });
+                            to_shadow_owned_arms.push(quote! {
+                                super::#enum_name::#vident(v) => #shadow_owned_name::#vident { #tag_ident: #tag, value: v },
+                            });
+                            into_shadow_arms.push(quote! {
+                                super::#enum_name::#vident(ref v) => #shadow_borrowed_name::#vident { #tag_ident: #tag, value: v },
+                            });
+                        }
+                        Fields::Unit => {
+                            shadow_owned_variants.push(quote! {
+                                #vident {
+                                    #[cfg_attr(feature = "wasm", tsify(type = #tag_str))]
+                                    #tag_ident: u64
+                                },
+                            });
+                            shadow_borrowed_variants.push(quote! {
+                                #vident { #tag_ident: u64 },
+                            });
+                            from_shadow_arms.push(quote! {
+                                #shadow_owned_name::#vident { .. } => super::#enum_name::#vident,
+                            });
+                            to_shadow_owned_arms.push(quote! {
+                                super::#enum_name::#vident => #shadow_owned_name::#vident { #tag_ident: #tag },
+                            });
+                            into_shadow_arms.push(quote! {
+                                super::#enum_name::#vident => #shadow_borrowed_name::#vident { #tag_ident: #tag },
+                            });
+                        }
+                        _ => panic!("noun(tag = N) variant must have 0 or 1 unnamed field"),
+                    }
+                }
+                NounVariantKind::TagStr(tag) => {
+                    let tag_str = format!("\"{}\"", tag);
+                    match &vi.fields {
+                        Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+                            let inner_ty = &f.unnamed[0].ty;
+                            shadow_owned_variants.push(quote! {
+                                #vident {
+                                    #[cfg_attr(feature = "wasm", tsify(type = #tag_str))]
+                                    #tag_ident: alloc::string::String,
+                                    #[serde(flatten)]
+                                    value: #inner_ty,
+                                },
+                            });
+                            shadow_borrowed_variants.push(quote! {
+                                #vident {
+                                    #tag_ident: &'a str,
+                                    #[serde(flatten)]
+                                    value: &'a #inner_ty,
+                                },
+                            });
+                            from_shadow_arms.push(quote! {
+                                #shadow_owned_name::#vident { value, .. } => super::#enum_name::#vident(value),
+                            });
+                            to_shadow_owned_arms.push(quote! {
+                                super::#enum_name::#vident(v) => #shadow_owned_name::#vident { #tag_ident: #tag.into(), value: v },
+                            });
+                            into_shadow_arms.push(quote! {
+                                super::#enum_name::#vident(ref v) => #shadow_borrowed_name::#vident { #tag_ident: #tag, value: v },
+                            });
+                        }
+                        Fields::Unit => {
+                            shadow_owned_variants.push(quote! {
+                                #vident {
+                                    #[cfg_attr(feature = "wasm", tsify(type = #tag_str))]
+                                    #tag_ident: alloc::string::String
+                                },
+                            });
+                            shadow_borrowed_variants.push(quote! {
+                                #vident { #tag_ident: &'a str },
+                            });
+                            from_shadow_arms.push(quote! {
+                                #shadow_owned_name::#vident { .. } => super::#enum_name::#vident,
+                            });
+                            to_shadow_owned_arms.push(quote! {
+                                super::#enum_name::#vident => #shadow_owned_name::#vident { #tag_ident: #tag.into() },
+                            });
+                            into_shadow_arms.push(quote! {
+                                super::#enum_name::#vident => #shadow_borrowed_name::#vident { #tag_ident: #tag },
+                            });
+                        }
+                        _ => panic!("noun(tag = \"str\") variant must have 0 or 1 unnamed field"),
+                    }
+                }
+            }
+        }
+
+        let serialize_impl = if wants_serialize {
+            quote! {
+                impl serde::Serialize for #enum_name {
+                    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                    where
+                        S: serde::Serializer,
+                    {
+                        let shadow: #shadow_mod_name::#shadow_borrowed_name = self.into();
+                        shadow.serialize(serializer)
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        };
+
+        let deserialize_impl = if wants_deserialize {
+            quote! {
+                impl<'de> serde::Deserialize<'de> for #enum_name {
+                    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                    where
+                        D: serde::Deserializer<'de>,
+                    {
+                        let shadow = #shadow_mod_name::#shadow_owned_name::deserialize(deserializer)?;
+                        Ok(shadow.into())
+                    }
+                }
+            }
+        } else {
+            quote! {}
+        };
+
+        let wasm_impl = if wants_wasm {
+            quote! {
+                const _: () = {
+
+                #[cfg(feature = "wasm")]
+                impl tsify::Tsify for #enum_name {
+                    type JsType = wasm_bindgen::JsValue;
+                    const DECL: &'static str = <#shadow_mod_name::#shadow_owned_name as tsify::Tsify>::DECL;
+                }
+
+                #[cfg(feature = "wasm")]
+                impl wasm_bindgen::describe::WasmDescribe for #enum_name {
+                    #[inline]
+                    fn describe() {
+                        <#shadow_mod_name::#shadow_owned_name as wasm_bindgen::describe::WasmDescribe>::describe()
+                    }
+                }
+
+                #[cfg(feature = "wasm")]
+                impl wasm_bindgen::convert::IntoWasmAbi for #enum_name {
+                    type Abi = <#shadow_mod_name::#shadow_owned_name as wasm_bindgen::convert::IntoWasmAbi>::Abi;
+
+                    #[inline]
+                    fn into_abi(self) -> Self::Abi {
+                        use wasm_bindgen::convert::IntoWasmAbi;
+                        let shadow: #shadow_mod_name::#shadow_owned_name = self.into();
+                        shadow.into_abi()
+                    }
+                }
+
+                #[cfg(feature = "wasm")]
+                impl wasm_bindgen::convert::FromWasmAbi for #enum_name {
+                    type Abi = <#shadow_mod_name::#shadow_owned_name as wasm_bindgen::convert::FromWasmAbi>::Abi;
+
+                    #[inline]
+                    unsafe fn from_abi(js: Self::Abi) -> Self {
+                        let shadow = <#shadow_mod_name::#shadow_owned_name as wasm_bindgen::convert::FromWasmAbi>::from_abi(js);
+                        shadow.into()
+                    }
+                }
+
+                #[cfg(feature = "wasm")]
+                pub struct SelfOwner<T>(T);
+
+                #[automatically_derived]
+                impl<T> ::core::ops::Deref for SelfOwner<T> {
+                    type Target = T;
+
+                    fn deref(&self) -> &Self::Target {
+                        &self.0
+                    }
+                }
+
+                #[cfg(feature = "wasm")]
+                impl wasm_bindgen::convert::RefFromWasmAbi for #enum_name {
+                    type Abi = <<Self as tsify::Tsify>::JsType as wasm_bindgen::convert::RefFromWasmAbi>::Abi;
+
+                    type Anchor = SelfOwner<Self>;
+
+                    unsafe fn ref_from_abi(js: Self::Abi) -> Self::Anchor {
+                        use wasm_bindgen::UnwrapThrowExt;
+                        let result = <Self as tsify::Tsify>::from_js(&*<<Self as tsify::Tsify>::JsType as wasm_bindgen::convert::RefFromWasmAbi>::ref_from_abi(js));
+                        if let Err(err) = result {
+                            wasm_bindgen::throw_str(err.to_string().as_ref());
+                        }
+                        SelfOwner(result.unwrap_throw())
+                    }
+                }
+                };
+            }
+        } else {
+            quote! {}
+        };
+
+        quote! {
+            #[allow(non_snake_case)]
+            mod #shadow_mod_name {
+                use super::*;
+
+                #[derive(serde::Serialize, serde::Deserialize)]
+                #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+                #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+                #[serde(untagged)]
+                pub enum #shadow_owned_name {
+                    #(#shadow_owned_variants)*
+                }
+
+                #[derive(serde::Serialize)]
+                #[serde(untagged)]
+                pub enum #shadow_borrowed_name<'a> {
+                    #(#shadow_borrowed_variants)*
+                }
+
+                impl From<#shadow_owned_name> for super::#enum_name {
+                    fn from(shadow: #shadow_owned_name) -> Self {
+                        match shadow {
+                            #(#from_shadow_arms)*
+                        }
+                    }
+                }
+
+                impl From<super::#enum_name> for #shadow_owned_name {
+                    fn from(val: super::#enum_name) -> Self {
+                        match val {
+                            #(#to_shadow_owned_arms)*
+                        }
+                    }
+                }
+
+                impl<'a> From<&'a super::#enum_name> for #shadow_borrowed_name<'a> {
+                    fn from(val: &'a super::#enum_name) -> Self {
+                        match val {
+                            #(#into_shadow_arms)*
+                        }
+                    }
+                }
+            }
+
+            #serialize_impl
+            #deserialize_impl
+            #wasm_impl
+        }
+    } else {
+        quote! {}
+    };
+
+    // --- Build the output ---
+    // Add passthrough derives to the original enum
+    let passthrough_derive_attr = if !passthrough_derives.is_empty() {
+        quote! { #[derive(#(#passthrough_derives),*)] }
+    } else {
+        quote! {}
+    };
+
+    let variants = &input.variants;
+    let original_attrs = &input.attrs;
+
+    let expanded = quote! {
+        #(#original_attrs)*
+        #passthrough_derive_attr
+        #vis enum #enum_name {
+            #variants
+        }
+
+        #noun_encode_impl
+        #noun_decode_impl
+        #hashable_impl
+        #serde_impl
+    };
+
+    TokenStream::from(expanded)
+}

@@ -15,7 +15,7 @@ use super::v1::{
     SeedsV1 as Seeds, SpendCondition, SpendV1 as Spend, SpendsV1 as Spends, TransactionDisplay,
     Witness,
 };
-use super::{ExpectedVersion, Name, TxEngineSettings, Version};
+use super::{Name, TxEngineSettings, Version};
 use crate::{Nicks, RawTx};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -167,7 +167,7 @@ impl SpendBuilder {
         let mut missing_unlocks = vec![];
 
         match &self.spend {
-            Spend::S0 { spend, .. } => {
+            Spend::S0(spend) => {
                 let Note::V0(note) = &self.note else {
                     panic!("Note is not V0");
                 };
@@ -186,7 +186,7 @@ impl SpendBuilder {
                     })
                 }
             }
-            Spend::S1 { spend, .. } => {
+            Spend::S1(spend) => {
                 let present_sigs: BTreeSet<Digest> = spend
                     .witness
                     .pkh_signature
@@ -215,14 +215,14 @@ impl SpendBuilder {
                     let valid_hax = h.0.iter().cloned().collect::<BTreeSet<_>>();
 
                     let current_hax = match &self.spend {
-                        Spend::S1 { spend, .. } => spend
+                        Spend::S1(spend) => spend
                             .witness
                             .hax_map
                             .clone()
                             .into_iter()
                             .map(|(k, _)| k)
                             .collect::<BTreeSet<_>>(),
-                        Spend::S0 { .. } => BTreeSet::new(),
+                        Spend::S0(_) => BTreeSet::new(),
                     };
 
                     let checked_hax = &current_hax & &valid_hax;
@@ -243,7 +243,7 @@ impl SpendBuilder {
     }
 
     pub fn add_preimage(&mut self, preimage: Noun) -> Option<Digest> {
-        let Spend::S1 { spend, .. } = &mut self.spend else {
+        let Spend::S1(spend) = &mut self.spend else {
             return None;
         };
 
@@ -261,7 +261,7 @@ impl SpendBuilder {
 
     pub fn sign(&mut self, signing_key: &PrivateKey) -> bool {
         match &mut self.spend {
-            Spend::S1 { spend, .. } => {
+            Spend::S1(spend) => {
                 let pkpkh = signing_key.public_key().hash();
 
                 for p in spend.witness.lock_merkle_proof.spend_condition().pkh() {
@@ -277,7 +277,7 @@ impl SpendBuilder {
                     }
                 }
             }
-            Spend::S0 { spend, .. } => {
+            Spend::S0(spend) => {
                 let Note::V0(note) = &self.note else {
                     panic!("Note is not V0");
                 };
@@ -471,21 +471,18 @@ impl TxBuilder {
 
         for (name, spend) in &self.spends {
             match (&spend.spend, &spend.note, &mut display.inputs) {
-                (Spend::S0 { .. }, Note::V0(n), InputDisplay::V0 { p, .. }) => {
+                (Spend::S0(_), Note::V0(n), InputDisplay::V0(p)) => {
                     p.insert(*name, n.sig.clone());
                 }
-                (Spend::S1 { spend: ws, .. }, _, InputDisplay::V0 { .. }) => {
+                (Spend::S1(ws), _, InputDisplay::V0(_)) => {
                     let mut map = ZMap::new();
                     map.insert(
                         *name,
                         ws.witness.lock_merkle_proof.spend_condition().clone(),
                     );
-                    display.inputs = InputDisplay::V1 {
-                        version: ExpectedVersion,
-                        p: map,
-                    };
+                    display.inputs = InputDisplay::V1(map);
                 }
-                (Spend::S1 { spend: ws, .. }, _, InputDisplay::V1 { p, .. }) => {
+                (Spend::S1(ws), _, InputDisplay::V1(p)) => {
                     p.insert(
                         *name,
                         ws.witness.lock_merkle_proof.spend_condition().clone(),
@@ -518,7 +515,7 @@ impl TxBuilder {
         self.spends
             .iter()
             .map(|(a, b)| {
-                let sp = if let Spend::S1 { spend: ws, .. } = &b.spend {
+                let sp = if let Spend::S1(ws) = &b.spend {
                     Some(ws.witness.lock_merkle_proof.spend_condition().clone())
                 } else {
                     None

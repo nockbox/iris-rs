@@ -1,12 +1,12 @@
 use iris_nockchain_types::tx_engine::{v0, v1};
 use iris_nockchain_types::v0::LegacySignature;
 use iris_nockchain_types::v1::{
-    Hax, LockMerkleProof, LockPrimitive, LockRoot, LockTim, MerkleProof, Pkh, PkhSignature,
-    SeedV1 as Seed, SeedsV1 as Seeds, Spend0V1 as Spend0, Spend1V1 as Spend1, SpendCondition,
-    SpendV1 as Spend, Witness,
+    Hax, LockMerkleProof, LockMerkleProofFull, LockMerkleProofStub, LockPrimitive, LockRoot,
+    LockTim, MerkleProof, Pkh, PkhSignature, SeedV1 as Seed, SeedsV1 as Seeds, Spend0V1 as Spend0,
+    Spend1V1 as Spend1, SpendCondition, SpendV1 as Spend, Witness,
 };
 use iris_nockchain_types::*;
-use iris_ztd::{jam, Belt, Digest, Noun, ZMap, ZSet, U256};
+use iris_ztd::{jam, tas, Belt, Digest, Noun, ZMap, ZSet, U256};
 
 use crate::common::{ConversionError, Required};
 use crate::pb::common::v1::{
@@ -308,9 +308,10 @@ impl From<MerkleProof> for PbMerkleProof {
 impl From<LockMerkleProof> for PbLockMerkleProof {
     fn from(proof: LockMerkleProof) -> Self {
         PbLockMerkleProof {
-            spend_condition: Some(PbSpendCondition::from(proof.spend_condition)),
-            axis: proof.axis,
-            proof: Some(PbMerkleProof::from(proof.proof)),
+            spend_condition: Some(PbSpendCondition::from(proof.spend_condition().clone())),
+            axis: proof.axis(),
+            proof: Some(PbMerkleProof::from(proof.proof().clone())),
+            lmp_version: proof.version(),
         }
     }
 }
@@ -1126,6 +1127,43 @@ impl TryFrom<PbSeed> for Seed {
     }
 }
 
+impl TryFrom<PbLockMerkleProof> for LockMerkleProof {
+    type Error = ConversionError;
+    fn try_from(lock_merkle_proof: PbLockMerkleProof) -> Result<Self, Self::Error> {
+        let spend_condition = lock_merkle_proof
+            .spend_condition
+            .required("LockMerkleProof", "spend_condition")?
+            .try_into()?;
+        let proof = lock_merkle_proof
+            .proof
+            .required("LockMerkleProof", "proof")?;
+        let proof = MerkleProof {
+            root: proof.root.required("MerkleProof", "root")?.try_into()?,
+            path: proof
+                .path
+                .into_iter()
+                .map(|h| h.try_into())
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        let axis = lock_merkle_proof.axis;
+        match lock_merkle_proof.lmp_version {
+            None if axis == 1 => Ok(LockMerkleProof::Stub(LockMerkleProofStub {
+                spend_condition,
+                axis: Default::default(),
+                proof,
+            })),
+            Some(v) if v == tas!("full") => Ok(LockMerkleProof::Full(LockMerkleProofFull {
+                spend_condition,
+                axis,
+                proof,
+                version: Default::default(),
+            })),
+            None => Err(ConversionError::Invalid("Stub merkle proof with axis != 1")),
+            _ => Err(ConversionError::Invalid("Unsupported merkle proof version")),
+        }
+    }
+}
+
 impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
     type Error = ConversionError;
     fn try_from(tx: PbRawTransaction) -> Result<Self, Self::Error> {
@@ -1150,27 +1188,9 @@ impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
                         let lock_merkle_proof = witness_pb
                             .lock_merkle_proof
                             .required("Witness", "lock_merkle_proof")?;
-                        let spend_condition = lock_merkle_proof
-                            .spend_condition
-                            .required("LockMerkleProof", "spend_condition")?
-                            .try_into()?;
-                        let proof = lock_merkle_proof
-                            .proof
-                            .required("LockMerkleProof", "proof")?;
 
                         let witness = Witness {
-                            lock_merkle_proof: LockMerkleProof {
-                                spend_condition,
-                                axis: lock_merkle_proof.axis,
-                                proof: MerkleProof {
-                                    root: proof.root.required("MerkleProof", "root")?.try_into()?,
-                                    path: proof
-                                        .path
-                                        .into_iter()
-                                        .map(|h| h.try_into())
-                                        .collect::<Result<Vec<_>, _>>()?,
-                                },
-                            },
+                            lock_merkle_proof: lock_merkle_proof.try_into()?,
                             pkh_signature,
                             hax_map: {
                                 let mut map = iris_ztd::ZMap::new();

@@ -8,13 +8,12 @@ use iris_grpc_proto::pb::common::v1 as pb_v1;
 use iris_grpc_proto::pb::common::v2 as pb;
 use iris_nockchain_types::{
     builder::{MissingUnlocks, TxBuilder},
-    note::{Name, Note, Version},
+    note::{Name, Note},
     tx::RawTx,
-    v0,
-    v1::{self, NockchainTx, NoteData, RawTxV1, SeedV1 as Seed, SpendCondition},
-    BlockHeight, Nicks, Source, SpendBuilder, TxEngineSettings,
+    v1::{NockchainTx, RawTxV1, SeedV1 as Seed, SpendCondition},
+    Nicks, SpendBuilder, TxEngineSettings,
 };
-use iris_ztd::{cue, Digest, ZSet, U256};
+use iris_ztd::{cue, Digest, U256};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 

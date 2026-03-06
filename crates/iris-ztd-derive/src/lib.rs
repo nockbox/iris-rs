@@ -853,9 +853,5 @@ pub fn wasm_member_methods(_attr: TokenStream, item: TokenStream) -> TokenStream
         }
     };
 
-    if type_name == "SpendCondition" {
-        // eprintln!("MACRO EXPANSION for SpendCondition:\n{}", expanded.to_string());
-    }
-
     TokenStream::from(expanded)
 }

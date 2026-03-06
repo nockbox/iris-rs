@@ -195,7 +195,7 @@ impl SpendBuilder {
                     .map(|(pkh, (_, _))| *pkh)
                     .collect();
 
-                let sc = &spend.witness.lock_merkle_proof.spend_condition;
+                let sc = spend.witness.lock_merkle_proof.spend_condition();
 
                 for p in sc.pkh() {
                     let valid_pkh = p.hashes.iter().cloned().collect::<BTreeSet<_>>();
@@ -249,7 +249,7 @@ impl SpendBuilder {
 
         let digest = preimage.hash();
 
-        for h in spend.witness.lock_merkle_proof.spend_condition.hax() {
+        for h in spend.witness.lock_merkle_proof.spend_condition().hax() {
             if h.0.contains(&digest) {
                 spend.witness.hax_map.insert(digest, preimage);
                 return Some(digest);
@@ -264,7 +264,7 @@ impl SpendBuilder {
             Spend::S1 { spend, .. } => {
                 let pkpkh = signing_key.public_key().hash();
 
-                for p in spend.witness.lock_merkle_proof.spend_condition.pkh() {
+                for p in spend.witness.lock_merkle_proof.spend_condition().pkh() {
                     if p.hashes.contains(&pkpkh) {
                         spend.witness.pkh_signature.0.insert(
                             signing_key.public_key().hash(),
@@ -476,14 +476,20 @@ impl TxBuilder {
                 }
                 (Spend::S1 { spend: ws, .. }, _, InputDisplay::V0 { .. }) => {
                     let mut map = ZMap::new();
-                    map.insert(*name, ws.witness.lock_merkle_proof.spend_condition.clone());
+                    map.insert(
+                        *name,
+                        ws.witness.lock_merkle_proof.spend_condition().clone(),
+                    );
                     display.inputs = InputDisplay::V1 {
                         version: ExpectedVersion,
                         p: map,
                     };
                 }
                 (Spend::S1 { spend: ws, .. }, _, InputDisplay::V1 { p, .. }) => {
-                    p.insert(*name, ws.witness.lock_merkle_proof.spend_condition.clone());
+                    p.insert(
+                        *name,
+                        ws.witness.lock_merkle_proof.spend_condition().clone(),
+                    );
                 }
                 _ => (),
             }
@@ -513,7 +519,7 @@ impl TxBuilder {
             .iter()
             .map(|(a, b)| {
                 let sp = if let Spend::S1 { spend: ws, .. } = &b.spend {
-                    Some(ws.witness.lock_merkle_proof.spend_condition.clone())
+                    Some(ws.witness.lock_merkle_proof.spend_condition().clone())
                 } else {
                     None
                 };

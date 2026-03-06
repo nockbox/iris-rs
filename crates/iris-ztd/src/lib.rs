@@ -7,6 +7,7 @@ pub mod crypto;
 pub mod tip5;
 
 mod belt;
+mod fixed;
 mod hash;
 
 #[cfg(feature = "alloc")]
@@ -21,6 +22,7 @@ mod zset;
 
 pub use belt::Belt;
 pub use crypto_bigint::{MulMod, U256};
+pub use fixed::*;
 pub use hash::*;
 
 #[cfg(feature = "alloc")]

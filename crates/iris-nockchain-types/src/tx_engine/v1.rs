@@ -4,7 +4,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use alloc::{boxed::Box, format};
 use iris_crypto::{PublicKey, Signature};
-use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode, ZMap, ZSet};
+use iris_ztd::{ftas, Digest, FixedU64, Hashable, Noun, NounDecode, NounEncode, ZMap, ZSet};
 use serde::{Deserialize, Serialize};
 
 use super::note::{BlockHeight, ExpectedVersion, Name, Source, Version};
@@ -524,11 +524,11 @@ impl Witness {
     pub fn new(spend_condition: SpendCondition) -> Self {
         let root = spend_condition.hash();
         Self {
-            lock_merkle_proof: LockMerkleProof {
+            lock_merkle_proof: LockMerkleProof::Stub(LockMerkleProofStub {
                 spend_condition,
-                axis: 1,
+                axis: Default::default(),
                 proof: MerkleProof { root, path: vec![] },
-            },
+            }),
             pkh_signature: PkhSignature(ZMap::new()),
             hax_map: ZMap::new(),
             tim: (),
@@ -547,15 +547,100 @@ impl Witness {
     }
 }
 
-#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[iris_ztd::wasm_noun_codec]
-pub struct LockMerkleProof {
+#[serde(untagged)]
+pub enum LockMerkleProof {
+    Stub(LockMerkleProofStub),
+    Full(LockMerkleProofFull),
+}
+
+impl LockMerkleProof {
+    pub fn spend_condition(&self) -> &SpendCondition {
+        match self {
+            Self::Stub(lmp) => &lmp.spend_condition,
+            Self::Full(lmp) => &lmp.spend_condition,
+        }
+    }
+
+    pub fn axis(&self) -> u64 {
+        match self {
+            Self::Stub(lmp) => *lmp.axis,
+            Self::Full(lmp) => lmp.axis,
+        }
+    }
+
+    pub fn proof(&self) -> &MerkleProof {
+        match self {
+            Self::Stub(lmp) => &lmp.proof,
+            Self::Full(lmp) => &lmp.proof,
+        }
+    }
+
+    pub fn version(&self) -> Option<u64> {
+        match self {
+            Self::Stub(_) => None,
+            Self::Full(lmp) => Some(lmp.version.value_u64()),
+        }
+    }
+
+    pub fn version_str(&self) -> Option<&str> {
+        match self {
+            Self::Stub(_) => None,
+            Self::Full(lmp) => Some(&*lmp.version),
+        }
+    }
+}
+
+impl NounEncode for LockMerkleProof {
+    fn to_noun(&self) -> Noun {
+        match self {
+            LockMerkleProof::Stub(stub) => stub.to_noun(),
+            LockMerkleProof::Full(full) => full.to_noun(),
+        }
+    }
+}
+
+impl NounDecode for LockMerkleProof {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let stub = LockMerkleProofStub::from_noun(noun);
+        if let Some(stub) = stub {
+            Some(LockMerkleProof::Stub(stub))
+        } else {
+            Some(LockMerkleProof::Full(NounDecode::from_noun(noun)?))
+        }
+    }
+}
+
+impl Hashable for LockMerkleProof {
+    fn hash(&self) -> Digest {
+        match self {
+            LockMerkleProof::Stub(stub) => stub.hash(),
+            LockMerkleProof::Full(full) => full.hash(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize, Hashable)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockMerkleProofFull {
+    #[cfg_attr(feature = "wasm", tsify(type = "\"full\""))]
+    pub version: ftas!("full"),
     pub spend_condition: SpendCondition,
     pub axis: u64,
     pub proof: MerkleProof,
 }
 
-impl Hashable for LockMerkleProof {
+#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockMerkleProofStub {
+    pub spend_condition: SpendCondition,
+    #[cfg_attr(feature = "wasm", tsify(type = "1"))]
+    pub axis: FixedU64<1>,
+    pub proof: MerkleProof,
+}
+
+impl Hashable for LockMerkleProofStub {
     fn hash(&self) -> Digest {
         // NOTE: lmao
         let axis_mold_hash: Digest = "6mhCSwJQDvbkbiPAUNjetJtVoo1VLtEhmEYoU4hmdGd6ep1F6ayaV4A"
@@ -1220,19 +1305,19 @@ mod tests {
 
         check_hash(
             "spend condition tim",
-            &ws.witness.lock_merkle_proof.spend_condition.0[1],
+            &ws.witness.lock_merkle_proof.spend_condition().0[1],
             "B5RtZnbphbf1D5vQwsZjHycLN2Ldp7RD2pK6V3qAMFCrxnUXAhgmKgg",
         );
 
         check_hash(
             "spend condition pkh",
-            &ws.witness.lock_merkle_proof.spend_condition.0[0],
+            &ws.witness.lock_merkle_proof.spend_condition().0[0],
             "65RqCgowDZJziLZzpQkPULVy2tb1dMGMUrgsxxfC1mPPK6hSNKAP6DP",
         );
 
         check_hash(
             "spend condition",
-            &ws.witness.lock_merkle_proof.spend_condition,
+            &ws.witness.lock_merkle_proof.spend_condition(),
             "5k2qTDtcxyQWBmsVTi1fEmbSeoAnq5B83SGoJwDU8NJkRfXWevwQDWn",
         );
 
@@ -1244,7 +1329,7 @@ mod tests {
 
         check_hash(
             "merkle proof",
-            &ws.witness.lock_merkle_proof.proof,
+            &ws.witness.lock_merkle_proof.proof(),
             "MefKNQSmk8wzDzCPpY93GMdM53Pv1TGbUZe2Kn427FiuvbgjSZe5eJ",
         );
 

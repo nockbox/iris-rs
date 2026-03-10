@@ -1,6 +1,6 @@
 use alloc::{boxed::Box, format, string::ToString};
 use core::convert::TryFrom;
-use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode, ZMap};
+use iris_ztd::{Digest, Either, Hashable, Noun, NounDecode, NounEncode, ZMap};
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 /// 64-bit unsigned integer representing the number of assets.
@@ -243,6 +243,24 @@ impl Hashable for Note {
             Note::V1(n) => n.hash(),
         }
     }
+
+    fn leaf_count(&self) -> usize {
+        match self {
+            Note::V0(n) => n.leaf_count(),
+            Note::V1(n) => n.leaf_count(),
+        }
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        match self {
+            Note::V0(n) => n
+                .hashable_pair()
+                .map(|(a, b)| (Either::Left(a), Either::Left(b))),
+            Note::V1(n) => n
+                .hashable_pair()
+                .map(|(a, b)| (Either::Right(a), Either::Right(b))),
+        }
+    }
 }
 
 impl NounDecode for Note {
@@ -389,6 +407,14 @@ impl NounDecode for Version {
 impl Hashable for Version {
     fn hash(&self) -> Digest {
         (*self as u32 as u64).hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
     }
 }
 

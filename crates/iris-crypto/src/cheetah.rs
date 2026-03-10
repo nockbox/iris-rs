@@ -159,6 +159,14 @@ impl Hashable for PublicKey {
     fn hash(&self) -> Digest {
         self.0.hash()
     }
+
+    fn leaf_count(&self) -> usize {
+        self.0.leaf_count()
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        self.0.hashable_pair()
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -219,6 +227,14 @@ impl NounDecode for Signature {
 impl Hashable for Signature {
     fn hash(&self) -> Digest {
         self.to_noun().hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
     }
 }
 

@@ -23,6 +23,7 @@ iris-ztd-derive = { workspace = true }
 arrayvec = "0.7"
 tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
+either = { version = "1", default_features = false }
 
 [dev-dependencies]
 serde_json = { version = "1", default-features = false, features = ["alloc"] }

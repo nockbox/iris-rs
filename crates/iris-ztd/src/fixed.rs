@@ -66,6 +66,14 @@ macro_rules! fixed_noun {
             fn hash(&self) -> Digest {
                 V.hash()
             }
+
+            fn leaf_count(&self) -> usize {
+                1
+            }
+
+            fn hashable_pair(&self) -> Option<(impl Hashable + '_, impl Hashable + '_)> {
+                Option::<((), ())>::None
+            }
         }
     };
     ($n: ident, $t:ty, $d:ty; $($tt:tt)*) => {
@@ -177,6 +185,14 @@ impl<const V: u64> NounDecode for FixedTas<V> {
 impl<const V: u64> Hashable for FixedTas<V> {
     fn hash(&self) -> Digest {
         V.hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair(&self) -> Option<(impl Hashable + '_, impl Hashable + '_)> {
+        Option::<((), ())>::None
     }
 }
 

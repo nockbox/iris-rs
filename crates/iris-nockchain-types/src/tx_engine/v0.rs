@@ -269,12 +269,27 @@ impl Hashable for SeedV0 {
         )
             .hash()
     }
+
+    fn leaf_count(&self) -> usize {
+        (
+            &self.recipient,
+            (&self.timelock_intent, &self.gift, &self.parent_hash),
+        )
+            .leaf_count()
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Some((
+            &self.recipient,
+            (&self.timelock_intent, &self.gift, &self.parent_hash),
+        ))
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct SigHashSeedV0<'a>(&'a SeedV0);
 
-impl<'a> Hashable for SigHashSeedV0<'a> {
+impl Hashable for SigHashSeedV0<'_> {
     fn hash(&self) -> Digest {
         // output source is included
         (
@@ -285,6 +300,31 @@ impl<'a> Hashable for SigHashSeedV0<'a> {
             &self.0.parent_hash,
         )
             .hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        (
+            &self.0.output_source,
+            (
+                &self.0.recipient,
+                &self.0.timelock_intent,
+                &self.0.gift,
+                &self.0.parent_hash,
+            ),
+        )
+            .leaf_count()
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Some((
+            &self.0.output_source,
+            (
+                &self.0.recipient,
+                &self.0.timelock_intent,
+                &self.0.gift,
+                &self.0.parent_hash,
+            ),
+        ))
     }
 }
 

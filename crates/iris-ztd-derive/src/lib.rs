@@ -72,7 +72,72 @@ pub fn derive_hashable(input: TokenStream) -> TokenStream {
     let mut generics = input.generics.clone();
     let where_clause = generics.make_where_clause();
 
-    let hash_expr = match &input.data {
+    let [hash_expr, leaf_expr] = [quote!(hash), quote!(leaf_count)].map(|func| {
+        match &input.data {
+            Data::Struct(data) => {
+                for field in &data.fields {
+                    let ty = &field.ty;
+                    where_clause
+                        .predicates
+                        .push(syn::parse_quote!(#ty: #crate_path::Hashable));
+                }
+
+                match &data.fields {
+                    Fields::Named(fields) => {
+                        let field_names: Vec<_> = fields.named.iter().map(|f| &f.ident).collect();
+
+                        if field_names.is_empty() {
+                            // Empty struct hashes as unit
+                            quote! { ().#func() }
+                        } else if field_names.len() == 1 {
+                            // Single field: just hash the field directly
+                            let field = &field_names[0];
+                            quote! { self.#field.#func() }
+                        } else {
+                            // Multiple fields: create nested tuples
+                            let expr = build_nested_tuple_refs(&field_names);
+                            quote! { #expr.#func() }
+                        }
+                    }
+                    Fields::Unnamed(fields) => {
+                        let field_count = fields.unnamed.len();
+
+                        if field_count == 0 {
+                            quote! { ().#func() }
+                        } else if field_count == 1 {
+                            quote! { self.0.#func() }
+                        } else {
+                            // Build nested tuples for tuple structs using indices
+                            let indices: Vec<_> = (0..field_count).map(syn::Index::from).collect();
+                            let expr = build_nested_tuple_refs_indexed(&indices);
+                            quote! { #expr.#func() }
+                        }
+                    }
+                    Fields::Unit => {
+                        quote! { ().#func() }
+                    }
+                }
+            }
+            Data::Enum(_) => {
+                return syn::Error::new_spanned(
+                    &input,
+                    "Hashable derive macro does not support enums yet",
+                )
+                .to_compile_error()
+                .into();
+            }
+            Data::Union(_) => {
+                return syn::Error::new_spanned(
+                    &input,
+                    "Hashable derive macro does not support unions",
+                )
+                .to_compile_error()
+                .into();
+            }
+        }
+    });
+
+    let pair_expr = match &input.data {
         Data::Struct(data) => {
             for field in &data.fields {
                 let ty = &field.ty;
@@ -87,31 +152,33 @@ pub fn derive_hashable(input: TokenStream) -> TokenStream {
 
                     if field_names.is_empty() {
                         // Empty struct hashes as unit
-                        quote! { ().hash() }
+                        quote! { ().hashable_pair() }
                     } else if field_names.len() == 1 {
                         // Single field: just hash the field directly
                         let field = &field_names[0];
-                        quote! { self.#field.hash() }
+                        quote! { self.#field.hashable_pair() }
                     } else {
                         // Multiple fields: create nested tuples
-                        build_nested_tuple(&field_names)
+                        let expr = build_nested_tuple_refs(&field_names);
+                        quote! { Some(#expr) }
                     }
                 }
                 Fields::Unnamed(fields) => {
                     let field_count = fields.unnamed.len();
 
                     if field_count == 0 {
-                        quote! { ().hash() }
+                        quote! { ().hashable_pair() }
                     } else if field_count == 1 {
-                        quote! { self.0.hash() }
+                        quote! { self.0.hashable_pair() }
                     } else {
                         // Build nested tuples for tuple structs using indices
                         let indices: Vec<_> = (0..field_count).map(syn::Index::from).collect();
-                        build_nested_tuple_indexed(&indices)
+                        let expr = build_nested_tuple_refs_indexed(&indices);
+                        quote! { Some(#expr) }
                     }
                 }
                 Fields::Unit => {
-                    quote! { ().hash() }
+                    quote! { ().hashable_pair() }
                 }
             }
         }
@@ -140,36 +207,16 @@ pub fn derive_hashable(input: TokenStream) -> TokenStream {
             fn hash(&self) -> #crate_path::Digest {
                 #hash_expr
             }
+
+            fn leaf_count(&self) -> usize {
+                #leaf_expr
+            }
+
+            fn hashable_pair(&self) -> Option<(impl #crate_path::Hashable + '_, impl #crate_path::Hashable + '_)> {
+                #pair_expr
+            }
         }
     })
-}
-
-/// Build nested tuple expression for named fields: (&self.x, &(&self.y, &self.z))
-fn build_nested_tuple(field_names: &[&Option<syn::Ident>]) -> proc_macro2::TokenStream {
-    let mut iter = field_names.iter().rev();
-    let last = iter.next().unwrap();
-
-    let mut result = quote! { &self.#last };
-
-    for field in iter {
-        result = quote! { (&self.#field, #result) };
-    }
-
-    quote! { #result.hash() }
-}
-
-/// Build nested tuple expression for tuple struct fields: (&self.0, &(&self.1, &self.2))
-fn build_nested_tuple_indexed(indices: &[syn::Index]) -> proc_macro2::TokenStream {
-    let mut iter = indices.iter().rev();
-    let last = iter.next().unwrap();
-
-    let mut result = quote! { &self.#last };
-
-    for index in iter {
-        result = quote! { (&self.#index, #result) };
-    }
-
-    quote! { #result.hash() }
 }
 
 /// Derive macro for implementing the `NounEncode` trait.
@@ -606,6 +653,8 @@ pub fn wasm_noun_codec(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let attr_str = attr.to_string();
     let no_hash = attr_str.contains("no_hash");
+    let with_prove = attr_str.contains("with_prove");
+    let no_derive = attr_str.contains("no_derive");
 
     let snake_name = to_snake_case(&name_str);
     let camel_name = to_lower_camel_case(&name_str);
@@ -613,14 +662,25 @@ pub fn wasm_noun_codec(attr: TokenStream, item: TokenStream) -> TokenStream {
     let to_noun_snake = format_ident!("{}_to_noun", snake_name);
     let from_noun_snake = format_ident!("{}_from_noun", snake_name);
     let hash_snake = format_ident!("{}_hash", snake_name);
+    let prove_snake = format_ident!("{}_prove", snake_name);
 
     let to_noun_camel = format!("{}ToNoun", camel_name);
     let from_noun_camel = format!("{}FromNoun", camel_name);
     let hash_camel = format!("{}Hash", camel_name);
+    let prove_camel = format!("{}Prove", camel_name);
 
     let mod_name = format_ident!("__wasm_noun_codec_{}", snake_name);
 
     let crate_path = get_crate_path();
+
+    let derive_attrs = if no_derive {
+        quote! {}
+    } else {
+        quote! {
+            #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+            #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+        }
+    };
 
     let hash_fn = if no_hash {
         quote! {}
@@ -633,9 +693,22 @@ pub fn wasm_noun_codec(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
+    let prove_fn = if with_prove {
+        quote! {
+            /// Create a 0-indexed merkle proof for the type's subleaf.
+            ///
+            /// Note that unlike `prove-hashable-by-index:merkle`, which is 1-indexed, this method is 0-indexed.
+            #[wasm_bindgen(js_name = #prove_camel)]
+            pub fn #prove_snake(v: &#name, leaf_index: u32) -> #crate_path::MerkleProvenAxis {
+                #crate_path::MerkleProof::prove_hashable(v, leaf_index as usize)
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let expanded = quote! {
-        #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-        #[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+        #derive_attrs
         #input
 
         #[cfg(feature = "wasm")]
@@ -657,6 +730,7 @@ pub fn wasm_noun_codec(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
 
             #hash_fn
+            #prove_fn
         }
     };
 
@@ -1172,56 +1246,128 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // --- Generate Hashable ---
     let hashable_impl = if wants_hashable {
-        let mut arms = Vec::new();
-        for vi in &variants_info {
+        let mut arms_hash = Vec::new();
+        let mut arms_leaves = Vec::new();
+        let mut arms_pairs = Vec::new();
+        let mut eithers = vec![];
+        for (i, vi) in variants_info.iter().enumerate() {
             let vident = &vi.ident;
+            let cur_eithers = if i == variants_info.len() - 1 {
+                eithers.clone()
+            } else {
+                [&eithers[..], &[quote!(#crate_path::Either::Left)][..]].concat()
+            };
+            let nest = |a: proc_macro2::TokenStream| {
+                cur_eithers.iter().rev().fold(a, |acc, f| quote!(#f(#acc)))
+            };
             match &vi.kind {
                 NounVariantKind::Cell => match &vi.fields {
                     Fields::Unnamed(_) => {
-                        arms.push(quote! {
+                        arms_hash.push(quote! {
                             Self::#vident(v) => #crate_path::Hashable::hash(v),
+                        });
+                        arms_leaves.push(quote! {
+                            Self::#vident(v) => #crate_path::Hashable::leaf_count(v),
+                        });
+                        let nested_a = nest(quote!(a));
+                        let nested_b = nest(quote!(b));
+                        arms_pairs.push(quote! {
+                            Self::#vident(v) => #crate_path::Hashable::hashable_pair(v).map(|(a, b)| (#nested_a, #nested_b)),
                         });
                     }
                     Fields::Unit => {
-                        arms.push(quote! {
+                        arms_hash.push(quote! {
                             Self::#vident => #crate_path::Hashable::hash(&0u64),
+                        });
+                        arms_leaves.push(quote! {
+                            Self::#vident => #crate_path::Hashable::leaf_count(&0u64),
+                        });
+                        let nested_a = nest(quote!(a));
+                        let nested_b = nest(quote!(b));
+                        arms_pairs.push(quote! {
+                            Self::#vident => Option::<((),())>::None.map(|(a, b)| (#nested_a, #nested_b)),
                         });
                     }
                     _ => {}
                 },
                 NounVariantKind::TagU64(tag) => match &vi.fields {
                     Fields::Unnamed(_) => {
-                        arms.push(quote! {
+                        arms_hash.push(quote! {
                             Self::#vident(v) => #crate_path::Hashable::hash(&(#tag as u64, v)),
+                        });
+                        arms_leaves.push(quote! {
+                            Self::#vident(v) => #crate_path::Hashable::leaf_count(&(#tag as u64, v)),
+                        });
+                        let nested_tag = nest(quote!(#tag as u64));
+                        let nested_value = nest(quote!(v));
+                        arms_pairs.push(quote! {
+                            Self::#vident(v) => Some((#nested_tag, #nested_value)),
                         });
                     }
                     Fields::Unit => {
-                        arms.push(quote! {
+                        arms_hash.push(quote! {
                             Self::#vident => #crate_path::Hashable::hash(&(#tag as u64)),
+                        });
+                        arms_leaves.push(quote! {
+                            Self::#vident => #crate_path::Hashable::leaf_count(&(#tag as u64)),
+                        });
+                        let nested_a = nest(quote!(a));
+                        let nested_b = nest(quote!(b));
+                        arms_pairs.push(quote! {
+                            Self::#vident => Option::<((),())>::None.map(|(a, b)| (#nested_a, #nested_b)),
                         });
                     }
                     _ => {}
                 },
                 NounVariantKind::TagStr(tag) => match &vi.fields {
                     Fields::Unnamed(_) => {
-                        arms.push(quote! {
+                        arms_hash.push(quote! {
                             Self::#vident(v) => #crate_path::Hashable::hash(&(#tag, v)),
+                        });
+                        arms_leaves.push(quote! {
+                            Self::#vident(v) => #crate_path::Hashable::leaf_count(&(#tag, v)),
+                        });
+                        let nested_tag = nest(quote!(#tag));
+                        let nested_value = nest(quote!(v));
+                        arms_pairs.push(quote! {
+                            Self::#vident(v) => Some((#nested_tag, #nested_value)),
                         });
                     }
                     Fields::Unit => {
-                        arms.push(quote! {
+                        arms_hash.push(quote! {
                             Self::#vident => #crate_path::Hashable::hash(&#tag),
+                        });
+                        arms_leaves.push(quote! {
+                            Self::#vident => #crate_path::Hashable::leaf_count(&#tag),
+                        });
+                        let nested_a = nest(quote!(a));
+                        let nested_b = nest(quote!(b));
+                        arms_pairs.push(quote! {
+                            Self::#vident => Option::<((),())>::None.map(|(a, b)| (#nested_a, #nested_b)),
                         });
                     }
                     _ => {}
                 },
             }
+            eithers.push(quote!(#crate_path::Either::Right));
         }
         quote! {
             impl #crate_path::Hashable for #enum_name {
                 fn hash(&self) -> #crate_path::Digest {
                     match self {
-                        #(#arms)*
+                        #(#arms_hash)*
+                    }
+                }
+
+                fn leaf_count(&self) -> usize {
+                    match self {
+                        #(#arms_leaves)*
+                    }
+                }
+
+                fn hashable_pair<'a>(&'a self) -> Option<(impl #crate_path::Hashable + 'a, impl #crate_path::Hashable + 'a)> {
+                    match self {
+                        #(#arms_pairs)*
                     }
                 }
             }
@@ -1416,46 +1562,62 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let wasm_impl = if wants_wasm {
             quote! {
-                const _: () = {
-
                 #[cfg(feature = "wasm")]
-                impl tsify::Tsify for #enum_name {
-                    type JsType = wasm_bindgen::JsValue;
-                    const DECL: &'static str = <#shadow_mod_name::#shadow_owned_name as tsify::Tsify>::DECL;
+                const _: () = {
+                use tsify::Tsify;
+                use wasm_bindgen::JsValue;
+                use wasm_bindgen::convert::*;
+                use wasm_bindgen::describe::*;
+                use wasm_bindgen::UnwrapThrowExt;
+
+                impl Tsify for #enum_name {
+                    type JsType = <#shadow_mod_name::#shadow_owned_name as Tsify>::JsType;
+                    const DECL: &'static str = <#shadow_mod_name::#shadow_owned_name as Tsify>::DECL;
                 }
 
-                #[cfg(feature = "wasm")]
-                impl wasm_bindgen::describe::WasmDescribe for #enum_name {
+                impl WasmDescribe for #enum_name {
                     #[inline]
                     fn describe() {
-                        <#shadow_mod_name::#shadow_owned_name as wasm_bindgen::describe::WasmDescribe>::describe()
+                        <#shadow_mod_name::#shadow_owned_name as WasmDescribe>::describe()
                     }
                 }
 
-                #[cfg(feature = "wasm")]
-                impl wasm_bindgen::convert::IntoWasmAbi for #enum_name {
-                    type Abi = <#shadow_mod_name::#shadow_owned_name as wasm_bindgen::convert::IntoWasmAbi>::Abi;
+                #[automatically_derived]
+                impl WasmDescribeVector for #enum_name {
+                    #[inline]
+                    fn describe_vector() {
+                        <#shadow_mod_name::#shadow_owned_name as WasmDescribeVector>::describe_vector()
+                    }
+                }
+
+                impl IntoWasmAbi for #enum_name {
+                    type Abi = <#shadow_mod_name::#shadow_owned_name as IntoWasmAbi>::Abi;
 
                     #[inline]
                     fn into_abi(self) -> Self::Abi {
-                        use wasm_bindgen::convert::IntoWasmAbi;
                         let shadow: #shadow_mod_name::#shadow_owned_name = self.into();
                         shadow.into_abi()
                     }
                 }
 
-                #[cfg(feature = "wasm")]
-                impl wasm_bindgen::convert::FromWasmAbi for #enum_name {
-                    type Abi = <#shadow_mod_name::#shadow_owned_name as wasm_bindgen::convert::FromWasmAbi>::Abi;
+                impl FromWasmAbi for #enum_name {
+                    type Abi = <#shadow_mod_name::#shadow_owned_name as FromWasmAbi>::Abi;
 
                     #[inline]
                     unsafe fn from_abi(js: Self::Abi) -> Self {
-                        let shadow = <#shadow_mod_name::#shadow_owned_name as wasm_bindgen::convert::FromWasmAbi>::from_abi(js);
+                        let shadow = <#shadow_mod_name::#shadow_owned_name as FromWasmAbi>::from_abi(js);
                         shadow.into()
                     }
                 }
 
-                #[cfg(feature = "wasm")]
+                #[automatically_derived]
+                impl OptionFromWasmAbi for #enum_name {
+                    #[inline]
+                    fn is_none(js: &Self::Abi) -> bool {
+                        <<Self as Tsify>::JsType as OptionFromWasmAbi>::is_none(js)
+                    }
+                }
+
                 pub struct SelfOwner<T>(T);
 
                 #[automatically_derived]
@@ -1467,19 +1629,36 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 }
 
-                #[cfg(feature = "wasm")]
-                impl wasm_bindgen::convert::RefFromWasmAbi for #enum_name {
-                    type Abi = <<Self as tsify::Tsify>::JsType as wasm_bindgen::convert::RefFromWasmAbi>::Abi;
+                impl RefFromWasmAbi for #enum_name {
+                    type Abi = <<Self as Tsify>::JsType as RefFromWasmAbi>::Abi;
 
                     type Anchor = SelfOwner<Self>;
 
                     unsafe fn ref_from_abi(js: Self::Abi) -> Self::Anchor {
-                        use wasm_bindgen::UnwrapThrowExt;
-                        let result = <Self as tsify::Tsify>::from_js(&*<<Self as tsify::Tsify>::JsType as wasm_bindgen::convert::RefFromWasmAbi>::ref_from_abi(js));
+                        let result = <Self as Tsify>::from_js(&*<<Self as Tsify>::JsType as RefFromWasmAbi>::ref_from_abi(js));
                         if let Err(err) = result {
                             wasm_bindgen::throw_str(err.to_string().as_ref());
                         }
                         SelfOwner(result.unwrap_throw())
+                    }
+                }
+
+                #[automatically_derived]
+                impl VectorFromWasmAbi for #enum_name {
+                    type Abi = <<Self as Tsify>::JsType as VectorFromWasmAbi>::Abi;
+
+                    #[inline]
+                    unsafe fn vector_from_abi(js: Self::Abi) -> Box<[Self]> {
+                        <<Self as Tsify>::JsType as VectorFromWasmAbi>::vector_from_abi(js)
+                            .into_iter()
+                            .map(|value| {
+                                let result = Self::from_js(value);
+                                if let Err(err) = result {
+                                    wasm_bindgen::throw_str(err.to_string().as_ref());
+                                }
+                                result.unwrap_throw()
+                            })
+                            .collect()
                     }
                 }
                 };

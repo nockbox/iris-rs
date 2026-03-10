@@ -2,11 +2,11 @@ use iris_nockchain_types::tx_engine::{v0, v1};
 use iris_nockchain_types::v0::LegacySignature;
 use iris_nockchain_types::v1::{
     Hax, LockMerkleProof, LockMerkleProofFull, LockMerkleProofStub, LockPrimitive, LockRoot,
-    LockTim, MerkleProof, Pkh, PkhSignature, SeedV1 as Seed, SeedsV1 as Seeds, Spend0V1 as Spend0,
+    LockTim, Pkh, PkhSignature, SeedV1 as Seed, SeedsV1 as Seeds, Spend0V1 as Spend0,
     Spend1V1 as Spend1, SpendCondition, SpendV1 as Spend, Witness,
 };
 use iris_nockchain_types::*;
-use iris_ztd::{jam, tas, Belt, Digest, Noun, ZMap, ZSet, U256};
+use iris_ztd::{jam, tas, Belt, Digest, MerkleProof, Noun, ZMap, ZSet, U256};
 
 use crate::common::{ConversionError, Required};
 use crate::pb::common::v1::{

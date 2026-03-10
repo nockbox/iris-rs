@@ -2,6 +2,7 @@
 use alloc::{boxed::Box, format, string::ToString};
 use core::fmt;
 use crypto_bigint::{nlimbs, NonZero, Uint};
+use either::Either;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -406,6 +407,8 @@ pub fn hash_noun(leaves: &[Belt], dyck: &[Belt]) -> Digest {
 
 pub trait Hashable {
     fn hash(&self) -> Digest;
+    fn leaf_count(&self) -> usize;
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)>;
 }
 
 impl Hashable for Belt {
@@ -413,11 +416,27 @@ impl Hashable for Belt {
         let v = [Belt(1), *self];
         Digest(hash_varlen(&v).map(Belt))
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
 impl Hashable for u64 {
     fn hash(&self) -> Digest {
         Belt(*self).hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
     }
 }
 
@@ -425,11 +444,27 @@ impl Hashable for u32 {
     fn hash(&self) -> Digest {
         Belt(*self as u64).hash()
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
 impl Hashable for usize {
     fn hash(&self) -> Digest {
         (*self as u64).hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
     }
 }
 
@@ -437,11 +472,27 @@ impl Hashable for i32 {
     fn hash(&self) -> Digest {
         (*self as u64).hash()
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
 impl Hashable for bool {
     fn hash(&self) -> Digest {
         (if *self { 0 } else { 1 }).hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
     }
 }
 
@@ -449,11 +500,54 @@ impl Hashable for Digest {
     fn hash(&self) -> Digest {
         *self
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
 impl<T: Hashable + ?Sized> Hashable for &T {
     fn hash(&self) -> Digest {
         (**self).hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        (**self).leaf_count()
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        (**self).hashable_pair()
+    }
+}
+
+impl<T: Hashable, P: Hashable> Hashable for Either<T, P> {
+    fn hash(&self) -> Digest {
+        match self {
+            Either::Left(v) => v.hash(),
+            Either::Right(v) => v.hash(),
+        }
+    }
+
+    fn leaf_count(&self) -> usize {
+        match self {
+            Either::Left(v) => v.leaf_count(),
+            Either::Right(v) => v.leaf_count(),
+        }
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        match self {
+            Either::Left(v) => v
+                .hashable_pair()
+                .map(|(a, b)| (Either::Left(a), Either::Left(b))),
+            Either::Right(v) => v
+                .hashable_pair()
+                .map(|(a, b)| (Either::Right(a), Either::Right(b))),
+        }
     }
 }
 
@@ -462,6 +556,20 @@ impl<T: Hashable> Hashable for Option<T> {
         match self {
             None => 0.hash(),
             Some(v) => (&0, v).hash(),
+        }
+    }
+
+    fn leaf_count(&self) -> usize {
+        match self {
+            None => 1,
+            Some(v) => (&0, v).leaf_count(),
+        }
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        match self {
+            None => None,
+            Some(v) => Some((0, v)),
         }
     }
 }
@@ -474,11 +582,33 @@ impl<T: Hashable> Hashable for Zeroable<T> {
             Some(v) => v.hash(),
         }
     }
+
+    fn leaf_count(&self) -> usize {
+        match &self.0 {
+            None => 1,
+            Some(v) => v.leaf_count(),
+        }
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        match &self.0 {
+            None => None,
+            Some(v) => v.hashable_pair(),
+        }
+    }
 }
 
 impl Hashable for () {
     fn hash(&self) -> Digest {
         0.hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
     }
 }
 
@@ -492,6 +622,14 @@ macro_rules! impl_hashable_for_tuple {
                 belts[5..].copy_from_slice(&self.1.hash().0);
                 Digest(hash_fixed(&mut belts).map(|u| Belt(u)))
             }
+
+            fn leaf_count(&self) -> usize {
+                self.0.leaf_count() + self.1.leaf_count()
+            }
+
+            fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+                Some((&self.0, &self.1))
+            }
         }
     };
     ($T:ident, $($U:ident),+) => {
@@ -500,6 +638,18 @@ macro_rules! impl_hashable_for_tuple {
                 #[allow(non_snake_case)]
                 let ($T, $($U),*) = self;
                 ($T, ($($U,)*)).hash()
+            }
+
+            fn leaf_count(&self) -> usize {
+                #[allow(non_snake_case)]
+                let ($T, $($U),*) = self;
+                $T.leaf_count() + ($($U.leaf_count()),*).leaf_count()
+            }
+
+            fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+                #[allow(non_snake_case)]
+                let ($T, $($U),*) = self;
+                Some(($T, ($($U,)*)))
             }
         }
 
@@ -518,18 +668,39 @@ impl<T: Hashable> Hashable for &[T] {
             (first.hash(), rest.hash()).hash()
         }
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
 #[cfg(feature = "alloc")]
 impl<T: Hashable> Hashable for Vec<T> {
     fn hash(&self) -> Digest {
-        fn hash_slice<T: Hashable>(arr: &[T]) -> Digest {
-            match arr.split_first() {
-                None => 0.hash(),
-                Some((first, rest)) => (first.hash(), hash_slice(rest)).hash(),
-            }
+        let hashes = self.iter().map(|v| v.hash()).collect::<Vec<_>>();
+
+        let mut belts = vec![];
+        belts.push(Belt(hashes.len() as u64 * 5 + 1));
+        belts.extend(hashes.iter().flat_map(|b| b.0));
+        belts.push(Belt(0));
+
+        for _ in 0..hashes.len() {
+            belts.extend([0, 0, 1, 0, 1, 0, 1, 0, 1, 1].map(Belt));
         }
-        hash_slice(self.as_slice())
+
+        Digest(hash_varlen(&belts).map(Belt))
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
     }
 }
 
@@ -540,6 +711,14 @@ impl Hashable for &str {
             .fold(0u64, |acc, (i, byte)| acc | ((byte as u64) << (i * 8)))
             .hash()
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
 #[cfg(feature = "alloc")]
@@ -549,6 +728,14 @@ impl Hashable for String {
             .enumerate()
             .fold(0u64, |acc, (i, byte)| acc | ((byte as u64) << (i * 8)))
             .hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
     }
 }
 
@@ -572,6 +759,14 @@ impl Hashable for Noun {
         visit(self, &mut leaves, &mut dyck);
         hash_noun(&leaves, &dyck)
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
 impl Hashable for CheetahPoint {
@@ -590,5 +785,28 @@ impl Hashable for CheetahPoint {
         hash[1..14].copy_from_slice(&leaves);
         hash[14..38].copy_from_slice(&dyck);
         Digest(hash_varlen(&hash).map(Belt))
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    #[test]
+    fn test_vec_hash() {
+        let vec = vec![0u64, 1u64];
+        assert_eq!(
+            vec.hash().to_string(),
+            "5F6UZhcWYBDSJ3CvevfiABhdSjc9qNh29KcH5rs8FJB4NNPHRn3oqQJ"
+        );
     }
 }

@@ -4,7 +4,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 use alloc::{boxed::Box, format};
 use iris_crypto::{PublicKey, Signature};
-use iris_ztd::{tas, Digest, FixedU64, Hashable, Noun, NounDecode, NounEncode, ZMap, ZSet};
+use iris_ztd::{
+    tas, Digest, Either, FixedU64, Hashable, MerkleProof, MerkleProvenAxis, Noun, NounDecode,
+    NounEncode, ZMap, ZSet,
+};
 use serde::{Deserialize, Serialize};
 
 use super::note::{BlockHeight, ExpectedVersion, Name, Source, Version};
@@ -64,6 +67,14 @@ impl Hashable for NoteData {
             .collect::<ZMap<_, _>>()
             .hash()
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
 #[iris_ztd::wasm_member_methods]
@@ -90,10 +101,8 @@ impl NoteData {
 }
 
 impl NoteData {
-    // TODO: support 2,4,8,16-way spend conditions.
-    pub fn push_lock(&mut self, spend_condition: SpendCondition) {
-        self.0
-            .insert("lock".to_string(), (0, spend_condition).to_noun());
+    pub fn push_lock(&mut self, lock: Lock) {
+        self.0.insert("lock".to_string(), (0, lock).to_noun());
     }
 
     pub fn push_pkh(&mut self, pkh: Pkh) {
@@ -132,9 +141,10 @@ impl NoteV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[iris_ztd::wasm_noun_codec]
+#[serde(untagged)]
 pub enum LockRoot {
     Hash(Digest),
-    Lock(SpendCondition),
+    Lock(Lock),
 }
 
 impl NounEncode for LockRoot {
@@ -175,6 +185,14 @@ impl Hashable for LockRoot {
             LockRoot::Lock(l) => l.hash(),
         }
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
@@ -195,7 +213,7 @@ impl SeedV1 {
         parent_hash: Digest,
         include_lock_data: bool,
     ) -> Self {
-        let lock_root = LockRoot::Lock(SpendCondition::new_pkh(Pkh::single(pkh)));
+        let lock_root = LockRoot::Lock(SpendCondition::new_pkh(Pkh::single(pkh).into()).into());
         let mut note_data = NoteData::empty();
         if include_lock_data {
             note_data.push_pkh(Pkh::single(pkh));
@@ -225,12 +243,27 @@ impl Hashable for SeedV1 {
         )
             .hash()
     }
+
+    fn leaf_count(&self) -> usize {
+        (
+            &self.lock_root,
+            (&self.note_data, &self.gift, &self.parent_hash),
+        )
+            .leaf_count()
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Some((
+            &self.lock_root,
+            (&self.note_data, &self.gift, &self.parent_hash),
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct SigHashSeedV1<'a>(&'a SeedV1);
 
-impl<'a> Hashable for SigHashSeedV1<'a> {
+impl Hashable for SigHashSeedV1<'_> {
     fn hash(&self) -> Digest {
         // output source is included
         (
@@ -241,6 +274,31 @@ impl<'a> Hashable for SigHashSeedV1<'a> {
             &self.0.parent_hash,
         )
             .hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        (
+            &self.0.output_source,
+            (
+                &self.0.lock_root,
+                &self.0.note_data,
+                &self.0.gift,
+                &self.0.parent_hash,
+            ),
+        )
+            .leaf_count()
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Some((
+            &self.0.output_source,
+            (
+                &self.0.lock_root,
+                &self.0.note_data,
+                &self.0.gift,
+                &self.0.parent_hash,
+            ),
+        ))
     }
 }
 
@@ -308,6 +366,7 @@ impl Spend1V1 {
     NounDecode,
     tsify_wasm
 )]
+#[iris_ztd::wasm_noun_codec(no_derive, no_hash)]
 pub enum SpendV1 {
     #[noun(tag = 0)]
     S0(Spend0V1),
@@ -451,6 +510,30 @@ impl Hashable for SpendV1 {
             SpendV1::S1(spend) => (Version::V1, &spend.witness, &spend.seeds, &spend.fee).hash(),
         }
     }
+
+    fn leaf_count(&self) -> usize {
+        match self {
+            SpendV1::S0(spend) => {
+                (Version::V0, &spend.signature, &spend.seeds, &spend.fee).leaf_count()
+            }
+            SpendV1::S1(spend) => {
+                (Version::V1, &spend.witness, &spend.seeds, &spend.fee).leaf_count()
+            }
+        }
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        match self {
+            SpendV1::S0(spend) => Some((
+                Version::V0,
+                (Either::Left(&spend.signature), &spend.seeds, &spend.fee),
+            )),
+            SpendV1::S1(spend) => Some((
+                Version::V1,
+                (Either::Right(&spend.witness), &spend.seeds, &spend.fee),
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
@@ -467,14 +550,25 @@ pub struct Witness {
 }
 
 impl Witness {
-    pub fn new(spend_condition: SpendCondition) -> Self {
-        let root = spend_condition.hash();
-        Self {
-            lock_merkle_proof: LockMerkleProof::Stub(LockMerkleProofStub {
+    pub fn new(lock: Lock, index: usize) -> Self {
+        let spend_condition = lock[index].clone();
+        let leaf_number = if lock.height() == 1 { index } else { index + 1 };
+        let MerkleProvenAxis { proof, axis } = MerkleProof::prove_hashable(&lock, leaf_number);
+        let lock_merkle_proof = if axis == 1 && proof.path.is_empty() {
+            LockMerkleProof::Stub(LockMerkleProofStub {
                 spend_condition,
                 axis: Default::default(),
-                proof: MerkleProof { root, path: vec![] },
-            }),
+                proof,
+            })
+        } else {
+            LockMerkleProof::Full(LockMerkleProofFull {
+                spend_condition,
+                axis,
+                proof,
+            })
+        };
+        Self {
+            lock_merkle_proof,
             pkh_signature: PkhSignature(ZMap::new()),
             hax_map: ZMap::new(),
             tim: (),
@@ -495,6 +589,7 @@ impl Witness {
 
 #[derive(Debug, Clone)]
 #[iris_ztd::noun_derive(NounEncode, NounDecode, Hashable, Serialize, Deserialize, tsify_wasm)]
+#[iris_ztd::wasm_noun_codec(no_derive)]
 #[noun(tag_ident = version)]
 pub enum LockMerkleProof {
     #[noun(cell)]
@@ -565,16 +660,32 @@ impl Hashable for LockMerkleProofStub {
             .unwrap();
         (&self.spend_condition.hash(), axis_mold_hash, &self.proof).hash()
     }
+
+    fn leaf_count(&self) -> usize {
+        (&self.spend_condition, 0, &self.proof).leaf_count()
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        // NOTE: lmao
+        let axis_mold_hash: Digest = "6mhCSwJQDvbkbiPAUNjetJtVoo1VLtEhmEYoU4hmdGd6ep1F6ayaV4A"
+            .try_into()
+            .unwrap();
+
+        Some((&self.spend_condition, (axis_mold_hash, &self.proof)))
+    }
 }
 
-#[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
-#[iris_ztd::wasm_noun_codec]
-pub struct MerkleProof {
-    pub root: Digest,
-    pub path: Vec<Digest>,
-}
-
-#[iris_ztd::noun_derive(NounEncode, NounDecode, Hashable, Serialize, Deserialize, tsify_wasm)]
+#[iris_ztd::noun_derive(
+    Debug,
+    Clone,
+    NounEncode,
+    NounDecode,
+    Hashable,
+    Serialize,
+    Deserialize,
+    tsify_wasm
+)]
+#[iris_ztd::wasm_noun_codec(with_prove, no_derive)]
 pub enum Lock {
     #[noun(cell)]
     Single(SpendCondition),
@@ -588,11 +699,59 @@ pub enum Lock {
     V16(LockV16),
 }
 
+impl Lock {
+    pub fn height(&self) -> usize {
+        match self {
+            Self::Single(_) => 1,
+            Self::V2(_) => 2,
+            Self::V4(_) => 3,
+            Self::V8(_) => 4,
+            Self::V16(_) => 5,
+        }
+    }
+}
+
+impl From<SpendCondition> for Lock {
+    fn from(sp: SpendCondition) -> Self {
+        Self::Single(sp)
+    }
+}
+
+impl core::ops::Index<usize> for Lock {
+    type Output = SpendCondition;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        match self {
+            Self::Single(s) if idx < 1 => s,
+            Self::V2(s) if idx < 2 => &s[idx],
+            Self::V4(s) if idx < 4 => &s[idx],
+            Self::V8(s) if idx < 8 => &s[idx],
+            Self::V16(s) if idx < 16 => &s[idx],
+            _ => panic!(
+                "Index {idx} out of range for lock of height {}",
+                self.height()
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
 #[iris_ztd::wasm_noun_codec]
 pub struct LockV2 {
     pub p: SpendCondition,
     pub q: SpendCondition,
+}
+
+impl core::ops::Index<usize> for LockV2 {
+    type Output = SpendCondition;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        if idx < 1 {
+            &self.p
+        } else {
+            &self.q
+        }
+    }
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
@@ -602,6 +761,18 @@ pub struct LockV4 {
     pub q: LockV2,
 }
 
+impl core::ops::Index<usize> for LockV4 {
+    type Output = SpendCondition;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        if idx < 2 {
+            &self.p[idx % 2]
+        } else {
+            &self.q[idx % 2]
+        }
+    }
+}
+
 #[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
 #[iris_ztd::wasm_noun_codec]
 pub struct LockV8 {
@@ -609,11 +780,35 @@ pub struct LockV8 {
     pub q: LockV4,
 }
 
+impl core::ops::Index<usize> for LockV8 {
+    type Output = SpendCondition;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        if idx < 4 {
+            &self.p[idx % 4]
+        } else {
+            &self.q[idx % 4]
+        }
+    }
+}
+
 #[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
 #[iris_ztd::wasm_noun_codec]
 pub struct LockV16 {
     pub p: LockV8,
     pub q: LockV8,
+}
+
+impl core::ops::Index<usize> for LockV16 {
+    type Output = SpendCondition;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        if idx < 8 {
+            &self.p[idx % 8]
+        } else {
+            &self.q[idx % 8]
+        }
+    }
 }
 
 #[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
@@ -669,7 +864,8 @@ impl SpendCondition {
 }
 
 #[derive(Debug, Clone)]
-#[iris_ztd::noun_derive(NounEncode, NounDecode, Hashable, Serialize, Deserialize, tsify_wasm)]
+#[iris_ztd::noun_derive(NounEncode, NounDecode, Serialize, Deserialize, Hashable, tsify_wasm)]
+#[iris_ztd::wasm_noun_codec(no_derive)]
 pub enum LockPrimitive {
     #[noun(tag = "pkh")]
     Pkh(Pkh),
@@ -680,7 +876,6 @@ pub enum LockPrimitive {
     #[noun(tag = "brn")]
     Brn,
 }
-
 pub type LockTim = super::v0::Timelock;
 
 #[derive(Debug, Clone, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
@@ -997,12 +1192,12 @@ impl NounDecode for WitnessData {
 #[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
 #[iris_ztd::wasm_noun_codec]
 pub struct LockMetadata {
-    pub lock: SpendCondition,
+    pub lock: Lock,
     pub include_data: bool,
 }
 
-impl From<SpendCondition> for LockMetadata {
-    fn from(value: SpendCondition) -> Self {
+impl From<Lock> for LockMetadata {
+    fn from(value: Lock) -> Self {
         Self {
             lock: value,
             include_data: false,
@@ -1019,6 +1214,7 @@ impl From<SpendCondition> for LockMetadata {
     NounDecode,
     tsify_wasm
 )]
+#[iris_ztd::wasm_noun_codec(no_derive, no_hash)]
 pub enum InputDisplay {
     #[noun(tag = 0)]
     V0(ZMap<Name, crate::v0::Sig>),
@@ -1148,13 +1344,17 @@ mod tests {
         seed2.gift = Nicks(1234567);
 
         let mut spend = Spend::new_witness(
-            Witness::new(SpendCondition(
-                [
-                    LockPrimitive::Pkh(Pkh::single(pkh)),
-                    LockPrimitive::Tim(LockTim::coinbase()),
-                ]
+            Witness::new(
+                SpendCondition(
+                    [
+                        LockPrimitive::Pkh(Pkh::single(pkh)),
+                        LockPrimitive::Tim(LockTim::coinbase()),
+                    ]
+                    .into(),
+                )
                 .into(),
-            )),
+                0,
+            ),
             SeedsV1([seed1.clone(), seed2.clone()].into()),
             Nicks(2850816),
         );

@@ -11,9 +11,9 @@ use alloc::{boxed::Box, format, string::ToString};
 
 use super::note::Note;
 use super::v1::{
-    words_for_unordered_spends, InputDisplay, LockRoot, NockchainTx, NoteData, Pkh, SeedV1 as Seed,
-    SeedsV1 as Seeds, SpendCondition, SpendV1 as Spend, SpendsV1 as Spends, TransactionDisplay,
-    Witness,
+    words_for_unordered_spends, InputDisplay, Lock, LockRoot, NockchainTx, NoteData, Pkh,
+    SeedV1 as Seed, SeedsV1 as Seeds, SpendCondition, SpendV1 as Spend, SpendsV1 as Spends,
+    TransactionDisplay, Witness,
 };
 use super::{Name, TxEngineSettings, Version};
 use crate::{Nicks, RawTx};
@@ -48,21 +48,21 @@ pub struct SpendBuilder {
         serialize_with = "noun_serialize",
         deserialize_with = "noun_deserialize"
     )]
-    refund_lock: Option<SpendCondition>,
+    refund_lock: Option<LockRoot>,
 }
 
 impl SpendBuilder {
     pub fn new(
         note: Note,
-        spend_condition: Option<SpendCondition>,
-        refund_lock: Option<SpendCondition>,
+        spend_condition: Option<(Lock, usize)>,
+        refund_lock: Option<LockRoot>,
     ) -> Result<Self, BuildError> {
         let spend = if note.version() == Version::V0 {
             Spend::new_legacy(Seeds(Default::default()), 0.into())
         } else {
-            let spend_condition = spend_condition.ok_or(BuildError::MissingSpendCondition)?;
+            let (lock, sp_index) = spend_condition.ok_or(BuildError::MissingSpendCondition)?;
             Spend::new_witness(
-                Witness::new(spend_condition.clone()),
+                Witness::new(lock, sp_index),
                 Seeds(Default::default()),
                 Nicks(0),
             )
@@ -74,11 +74,7 @@ impl SpendBuilder {
         })
     }
 
-    pub fn from_spend(
-        spend: Spend,
-        note: Note,
-        refund_lock: Option<SpendCondition>,
-    ) -> Option<Self> {
+    pub fn from_spend(spend: Spend, note: Note, refund_lock: Option<LockRoot>) -> Option<Self> {
         match (note.version(), &spend) {
             (Version::V0, Spend::S0 { .. }) => (),
             (Version::V1, Spend::S1 { .. }) => (),
@@ -101,10 +97,8 @@ impl SpendBuilder {
     }
 
     pub fn compute_refund(&mut self, include_lock_data: bool) -> &mut Self {
-        if self.refund_lock.is_some() {
+        if let Some(lock_root) = self.refund_lock.clone() {
             self.invalidate_sigs();
-            let rl = self.refund_lock.clone().unwrap();
-            let lock_root = LockRoot::Lock(rl.clone());
             // Remove the previous refund
             self.spend
                 .seeds_mut()
@@ -113,7 +107,7 @@ impl SpendBuilder {
                 - self.spend.fee()
                 - self.spend.seeds().0.iter().map(|v| v.gift).sum::<Nicks>();
             if refund > 0 {
-                let seed = self.build_seed(rl, refund, include_lock_data);
+                let seed = self.build_seed(lock_root, refund, include_lock_data);
                 // NOTE: by convention, the refund seed is always first
                 self.spend.seeds_mut().0.insert(seed);
             }
@@ -122,8 +116,7 @@ impl SpendBuilder {
     }
 
     pub fn cur_refund(&self) -> Option<&Seed> {
-        let rl = self.refund_lock.as_ref()?;
-        let lock_root = LockRoot::Lock(rl.clone());
+        let lock_root = self.refund_lock.clone()?;
         self.spend
             .seeds()
             .0
@@ -136,10 +129,12 @@ impl SpendBuilder {
         self.note.assets() == spend_sum + self.spend.fee()
     }
 
-    pub fn build_seed(&self, lock: SpendCondition, gift: Nicks, include_lock_data: bool) -> Seed {
-        let lock_root = LockRoot::Lock(lock.clone());
+    pub fn build_seed(&self, lock_root: LockRoot, gift: Nicks, include_lock_data: bool) -> Seed {
         let mut note_data = NoteData::empty();
         if include_lock_data {
+            let LockRoot::Lock(lock) = lock_root.clone() else {
+                panic!("include_lock_data set, but lock_root is a hash");
+            };
             note_data.push_lock(lock);
         }
         let parent_hash = self.note.hash();
@@ -332,7 +327,7 @@ impl TxBuilder {
 
     pub fn from_tx(
         tx: RawTx,
-        mut notes: BTreeMap<Name, (Note, Option<SpendCondition>)>,
+        mut notes: BTreeMap<Name, (Note, Option<LockRoot>)>,
         settings: TxEngineSettings,
     ) -> Result<Self, BuildError> {
         let RawTx::V1(tx) = tx else {
@@ -345,10 +340,11 @@ impl TxBuilder {
                 .0
                 .into_iter()
                 .map(|(n, s)| {
-                    let (note, sc) = notes.remove(&n).ok_or(BuildError::NoteNotFound(n))?;
+                    let (note, refund_lock) =
+                        notes.remove(&n).ok_or(BuildError::NoteNotFound(n))?;
                     Ok((
                         n,
-                        SpendBuilder::from_spend(s, note, sc)
+                        SpendBuilder::from_spend(s, note, refund_lock)
                             .ok_or(BuildError::InvalidSpendCondition)?,
                     ))
                 })
@@ -366,7 +362,7 @@ impl TxBuilder {
 
     pub fn simple_spend_base(
         &mut self,
-        notes: Vec<(Note, Option<SpendCondition>)>,
+        notes: Vec<(Note, Option<(Lock, usize)>)>,
         recipient: Digest,
         gift: Nicks,
         refund_pkh: Digest,
@@ -376,7 +372,8 @@ impl TxBuilder {
             return Err(BuildError::ZeroGift);
         }
 
-        let refund_lock = SpendCondition::new_pkh(Pkh::single(refund_pkh));
+        let refund_lock = Lock::from(SpendCondition::new_pkh(Pkh::single(refund_pkh)));
+        let refund_lock_root = LockRoot::Lock(refund_lock);
 
         let mut remaining_gift = gift;
 
@@ -385,10 +382,11 @@ impl TxBuilder {
 
             remaining_gift -= gift_portion;
 
-            let mut spend = SpendBuilder::new(note, spend_condition, Some(refund_lock.clone()))?;
+            let mut spend =
+                SpendBuilder::new(note, spend_condition, Some(refund_lock_root.clone()))?;
             if gift_portion > 0 {
                 let seed = spend.build_seed(
-                    SpendCondition::new_pkh(Pkh::single(recipient)),
+                    LockRoot::Lock(SpendCondition::new_pkh(Pkh::single(recipient)).into()),
                     gift_portion,
                     include_lock_data,
                 );
@@ -412,7 +410,7 @@ impl TxBuilder {
 
     pub fn simple_spend(
         &mut self,
-        notes: Vec<(Note, Option<SpendCondition>)>,
+        notes: Vec<(Note, Option<(Lock, usize)>)>,
         recipient: Digest,
         gift: Nicks,
         refund_pkh: Digest,
@@ -511,17 +509,10 @@ impl TxBuilder {
         }
     }
 
-    pub fn all_notes(&self) -> BTreeMap<Name, (Note, Option<SpendCondition>)> {
+    pub fn all_notes(&self) -> BTreeMap<Name, Note> {
         self.spends
             .iter()
-            .map(|(a, b)| {
-                let sp = if let Spend::S1(ws) = &b.spend {
-                    Some(ws.witness.lock_merkle_proof.spend_condition().clone())
-                } else {
-                    None
-                };
-                (*a, (b.note.clone(), sp))
-            })
+            .map(|(a, b)| (*a, b.note.clone()))
             .collect()
     }
 
@@ -839,12 +830,16 @@ mod tests {
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
-        let spend_condition = SpendCondition(
-            [
-                LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
-                LockPrimitive::Tim(LockTim::coinbase()),
-            ]
+        let spend_condition: (Lock, usize) = (
+            SpendCondition(
+                [
+                    LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+                    LockPrimitive::Tim(LockTim::coinbase()),
+                ]
+                .into(),
+            )
             .into(),
+            0,
         );
         for (settings, fee, expected_id) in [
             (
@@ -972,12 +967,16 @@ mod tests {
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
-        let spend_condition = SpendCondition(
-            [
-                LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
-                LockPrimitive::Tim(LockTim::coinbase()),
-            ]
+        let spend_condition: (Lock, usize) = (
+            SpendCondition(
+                [
+                    LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+                    LockPrimitive::Tim(LockTim::coinbase()),
+                ]
+                .into(),
+            )
             .into(),
+            0,
         );
         let notes = notes
             .into_iter()
@@ -1102,12 +1101,16 @@ mod tests {
                     .map(|note| {
                         (
                             note,
-                            Some(SpendCondition(
-                                [
-                                    LockPrimitive::Pkh(Pkh::single(public_key.hash())),
-                                    LockPrimitive::Tim(LockTim::coinbase()),
-                                ]
+                            Some((
+                                SpendCondition(
+                                    [
+                                        LockPrimitive::Pkh(Pkh::single(public_key.hash())),
+                                        LockPrimitive::Tim(LockTim::coinbase()),
+                                    ]
+                                    .into(),
+                                )
                                 .into(),
+                                0,
                             )),
                         )
                     })
@@ -1186,12 +1189,16 @@ mod tests {
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
-        let spend_condition = SpendCondition(
-            [
-                LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
-                LockPrimitive::Tim(LockTim::coinbase()),
-            ]
+        let spend_condition: (Lock, usize) = (
+            SpendCondition(
+                [
+                    LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+                    LockPrimitive::Tim(LockTim::coinbase()),
+                ]
+                .into(),
+            )
             .into(),
+            0,
         );
         let mut builder = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(1)));
 
@@ -1248,23 +1255,27 @@ mod tests {
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
-        let spend_condition = SpendCondition(
-            [
-                LockPrimitive::Pkh(Pkh::single(
-                    "9zpwNfGdcPT1QUKw2Fnw2zvftzpAYEjzZfTqGW8KLnf3NmEJ7yR5t2Y"
-                        .try_into()
-                        .unwrap(),
-                )),
-                LockPrimitive::Hax(Hax([Digest([
-                    Belt(1730770831742798981),
-                    Belt(2676322185709933211),
-                    Belt(8329210750824781744),
-                    Belt(16756092452590401876),
-                    Belt(3547445316740171466),
-                ])]
-                .into())),
-            ]
+        let spend_condition: (Lock, usize) = (
+            SpendCondition(
+                [
+                    LockPrimitive::Pkh(Pkh::single(
+                        "9zpwNfGdcPT1QUKw2Fnw2zvftzpAYEjzZfTqGW8KLnf3NmEJ7yR5t2Y"
+                            .try_into()
+                            .unwrap(),
+                    )),
+                    LockPrimitive::Hax(Hax([Digest([
+                        Belt(1730770831742798981),
+                        Belt(2676322185709933211),
+                        Belt(8329210750824781744),
+                        Belt(16756092452590401876),
+                        Belt(3547445316740171466),
+                    ])]
+                    .into())),
+                ]
+                .into(),
+            )
             .into(),
+            0,
         );
         let mut builder = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(1)));
 
@@ -1324,12 +1335,16 @@ mod tests {
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
-        let spend_condition = SpendCondition(
-            [
-                LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
-                LockPrimitive::Tim(LockTim::coinbase()),
-            ]
+        let spend_condition: (Lock, usize) = (
+            SpendCondition(
+                [
+                    LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+                    LockPrimitive::Tim(LockTim::coinbase()),
+                ]
+                .into(),
+            )
             .into(),
+            0,
         );
         let tx = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(1)))
             .simple_spend_base(

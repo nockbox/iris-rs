@@ -10,7 +10,7 @@ use iris_nockchain_types::{
     builder::{MissingUnlocks, TxBuilder},
     note::{Name, Note},
     tx::RawTx,
-    v1::{NockchainTx, RawTxV1, SeedV1 as Seed, SpendCondition},
+    v1::{Lock, LockRoot, NockchainTx, RawTxV1, SeedV1 as Seed, SpendCondition},
     Nicks, SpendBuilder, TxEngineSettings,
 };
 use iris_ztd::{cue, Digest, U256};
@@ -98,7 +98,27 @@ pub fn locky(sp: iris_nockchain_types::v1::SpendCondition) -> iris_nockchain_typ
 #[tsify(into_wasm_abi, from_wasm_abi)]
 pub struct TxNotes {
     pub notes: Vec<Note>,
-    pub spend_conditions: Vec<SpendCondition>,
+    pub refund_locks: Vec<Option<LockRoot>>,
+}
+
+#[derive(Serialize, Deserialize, tsify::Tsify)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(untagged)]
+pub enum TxLock {
+    None,
+    Some { lock: Lock, lock_sp_index: usize },
+}
+
+impl TxLock {
+    fn into_tuple(self) -> Option<(Lock, usize)> {
+        match self {
+            TxLock::None => None,
+            TxLock::Some {
+                lock,
+                lock_sp_index,
+            } => Some((lock, lock_sp_index)),
+        }
+    }
 }
 
 // ============================================================================
@@ -220,21 +240,13 @@ impl WasmTxBuilder {
     pub fn from_tx(
         tx: RawTx,
         notes: Vec<Note>,
-        spend_conditions: Vec<SpendCondition>,
+        refund_lock: Option<LockRoot>,
         settings: TxEngineSettings,
     ) -> Result<Self, JsValue> {
-        if notes.len() != spend_conditions.len() {
-            return Err(JsValue::from_str(
-                "notes and spend_conditions must have the same length",
-            ));
-        }
-
-        let internal_notes: Result<BTreeMap<Name, (Note, Option<SpendCondition>)>, String> = notes
+        let internal_notes: BTreeMap<Name, (Note, Option<LockRoot>)> = notes
             .into_iter()
-            .zip(spend_conditions)
-            .map(|(n, sc)| Ok((n.name(), (n, Some(sc)))))
+            .map(|n| (n.name(), (n, refund_lock.clone())))
             .collect();
-        let internal_notes = internal_notes.map_err(|e| JsValue::from_str(&e))?;
 
         let builder =
             TxBuilder::from_tx(tx, internal_notes, settings).map_err(|e| e.to_string())?;
@@ -247,23 +259,23 @@ impl WasmTxBuilder {
     pub fn simple_spend(
         &mut self,
         notes: Vec<Note>,
-        spend_conditions: Vec<SpendCondition>,
+        locks: Vec<TxLock>,
         recipient: Digest,
         gift: Nicks,
         fee_override: Option<Nicks>,
         refund_pkh: Digest,
         include_lock_data: bool,
     ) -> Result<(), JsValue> {
-        if notes.len() != spend_conditions.len() {
+        if notes.len() != locks.len() {
             return Err(JsValue::from_str(
-                "notes and spend_conditions must have the same length",
+                "notes and locks must have the same length",
             ));
         }
 
-        let internal_notes: Vec<(Note, Option<SpendCondition>)> = notes
+        let internal_notes: Vec<(Note, Option<(Lock, usize)>)> = notes
             .into_iter()
-            .zip(spend_conditions)
-            .map(|(n, sc)| (n, Some(sc)))
+            .zip(locks)
+            .map(|(n, lck)| (n, lck.into_tuple()))
             .collect();
 
         self.builder
@@ -346,16 +358,10 @@ impl WasmTxBuilder {
     }
 
     #[wasm_bindgen(js_name = allNotes)]
-    pub fn all_notes(&self) -> Result<TxNotes, JsValue> {
-        let mut ret = TxNotes {
-            notes: vec![],
-            spend_conditions: vec![],
-        };
-        for (note, spend_condition) in self.builder.all_notes().into_values() {
-            ret.notes.push(note);
-            if let Some(sc) = spend_condition {
-                ret.spend_conditions.push(sc);
-            }
+    pub fn all_notes(&self) -> Result<Vec<Note>, JsValue> {
+        let mut ret = Vec::new();
+        for note in self.builder.all_notes().into_values() {
+            ret.push(note);
         }
         Ok(ret)
     }
@@ -390,11 +396,12 @@ impl WasmSpendBuilder {
     #[wasm_bindgen(constructor)]
     pub fn new(
         note: Note,
-        spend_condition: Option<SpendCondition>,
-        refund_lock: Option<SpendCondition>,
+        lock: Option<Lock>,
+        lock_sp_index: Option<usize>,
+        refund_lock: Option<LockRoot>,
     ) -> Result<Self, JsValue> {
         Ok(Self {
-            builder: SpendBuilder::new(note, spend_condition, refund_lock)
+            builder: SpendBuilder::new(note, lock.zip(lock_sp_index), refund_lock)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?,
         })
     }

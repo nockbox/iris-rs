@@ -1,5 +1,7 @@
 use alloc::boxed::Box;
+#[cfg(feature = "wasm")]
 use alloc::format;
+#[cfg(feature = "wasm")]
 use alloc::string::ToString;
 use core::borrow::Borrow;
 use serde::de::{SeqAccess, Visitor};
@@ -226,6 +228,14 @@ impl<E: ZEntry> Hashable for ZBase<E> {
             }
         }
         hash_node(&self.root)
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
     }
 }
 

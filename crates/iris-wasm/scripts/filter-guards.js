@@ -36,6 +36,7 @@ while ((match = tagTypeRegex.exec(dtsContent)) !== null) {
 
 // Nockchain base58 atoms do not have 1-padding, so we need to use a different regex.
 const nockchainBase58Regex = "/^[A-HJ-NP-Za-km-z2-9][A-HJ-NP-Za-km-z1-9]*$/";
+const nockchainHexRegex = "/^[0-9a-f]*$/";
 
 // TODO: check string length for these
 const customGuardImplementations = {
@@ -46,8 +47,9 @@ const customGuardImplementations = {
     'TxId': `return (typeof typedObj === "string" && ${nockchainBase58Regex}.test(typedObj))`,
     'PublicKey': `return (typeof typedObj === "string" && ${nockchainBase58Regex}.test(typedObj))`,
     'BlockHeight': `return (typeof typedObj === "number")`,
+    'PageMsg': `return (typeof typedObj === "string") || (Array.isArray(typedObj) && typedObj.every((e: any) => (typeof e === "number" && e < 256)))`,
+    'Bignum': `return (typeof typedObj === "string" && ${nockchainHexRegex}.test(typedObj))`,
 };
-
 let insideTaggedGuard = false;
 let currentTaggedGuardName = '';
 
@@ -55,7 +57,7 @@ let currentTaggedGuardName = '';
 if (taggedTypes.size > 0) {
     console.log("Replacing", taggedTypes);
     const dtsReplaced = dtsContent.replace(
-        /export type ([A-Za-z0-9_]+) = ([a-z]+) \| \{\s*__tag_[a-z0-9_]+:\s*undefined\s*\};/g,
+        /export type ([A-Za-z0-9_ \|]+) = ([a-z]+) \| \{\s*__tag_[a-z0-9_]+:\s*undefined\s*\};/g,
         'export type $1 = $2;'
     );
     fs.writeFileSync(dtsOut, dtsReplaced);

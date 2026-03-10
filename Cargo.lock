@@ -699,6 +699,7 @@ dependencies = [
  "iris-ztd",
  "iris-ztd-derive",
  "serde",
+ "serde_json",
  "thiserror 2.0.17",
  "tsify",
  "wasm-bindgen",

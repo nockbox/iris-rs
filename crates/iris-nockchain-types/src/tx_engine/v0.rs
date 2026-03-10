@@ -2,12 +2,13 @@ use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use alloc::{boxed::Box, format, string::ToString};
+use core::fmt;
 use iris_crypto::{PublicKey, Signature};
-use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode, ZMap, ZSet};
+use iris_ztd::{Belt, Bignum, Digest, Hashable, Noun, NounDecode, NounEncode, ZMap, ZSet};
 use serde::{Deserialize, Serialize};
 
-use super::note::{BlockHeight, Name, Source, TimelockRange, Version};
-use super::TxId;
+use super::note::{BlockHeight, Name, Note, Source, TimelockRange, Version};
+use super::{BlockchainConstants, TxId};
 use crate::Nicks;
 
 #[derive(
@@ -194,8 +195,8 @@ pub struct Inputs(pub ZMap<Name, Input>);
 )]
 #[iris_ztd::wasm_noun_codec]
 pub struct Timelock {
-    pub rel: TimelockRange,
     pub abs: TimelockRange,
+    pub rel: TimelockRange,
 }
 
 impl Timelock {
@@ -344,6 +345,230 @@ impl SeedsV0 {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
+#[iris_ztd::wasm_noun_codec(no_hash, no_noun)]
+pub struct PageV0 {
+    digest: Digest,
+    pow: Option<Noun>,
+    parent: Digest,
+    tx_ids: ZSet<Digest>,
+    coinbase: CoinbaseSplitV0,
+    timestamp: u64,
+    epoch_counter: u32,
+    target: Bignum,
+    accumulated_work: Bignum,
+    height: BlockHeight,
+    msg: PageMsg,
+}
+
+impl PageV0 {
+    pub fn coinbase(&self, consts: BlockchainConstants) -> Vec<Note> {
+        let mut notes = vec![];
+
+        let timelock = if self.height < consts.first_month_coinbase_min {
+            Timelock {
+                rel: TimelockRange {
+                    // Hoon hardcodes 4383 even if the first month period can be changed.
+                    min: Some(4383),
+                    max: None,
+                },
+                abs: TimelockRange::none(),
+            }
+        } else {
+            Timelock {
+                rel: TimelockRange {
+                    min: Some(consts.coinbase_timelock_min),
+                    max: None,
+                },
+                abs: TimelockRange::none(),
+            }
+        };
+
+        let timelock = TimelockIntent {
+            tim: Some(timelock),
+        };
+
+        for (sig, assets) in self.coinbase.0.clone() {
+            let inner = NoteInner {
+                version: Version::V0,
+                origin_page: self.height,
+                timelock,
+            };
+            let source = Source {
+                hash: self.parent,
+                is_coinbase: true,
+            };
+            let name = Name::new_v0(sig.clone(), source, timelock);
+            notes.push(Note::V0(NoteV0 {
+                inner,
+                name,
+                sig,
+                source,
+                assets,
+            }))
+        }
+
+        notes
+    }
+
+    pub fn block_commitment(&self) -> Digest {
+        let Self {
+            parent,
+            tx_ids,
+            coinbase,
+            timestamp,
+            epoch_counter,
+            target,
+            accumulated_work,
+            height,
+            msg,
+            ..
+        } = self;
+
+        (
+            parent,
+            tx_ids,
+            coinbase,
+            timestamp,
+            epoch_counter,
+            target,
+            accumulated_work,
+            height,
+            msg,
+        )
+            .hash()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
+#[iris_ztd::wasm_noun_codec]
+pub struct CoinbaseSplitV0(ZMap<Sig, Nicks>);
+
+#[derive(Debug, Clone, Hashable, NounDecode, NounEncode, PartialEq, Eq)]
+#[iris_ztd::wasm_noun_codec]
+#[cfg_attr(
+    feature = "wasm",
+    tsify(type = "string | number[] | { __tag_page_msg: undefined }")
+)]
+pub struct PageMsg(pub Vec<Belt>);
+
+impl<'a> From<&'a [u8]> for PageMsg {
+    fn from(other: &'a [u8]) -> Self {
+        let mut belts = vec![];
+
+        for c in other.chunks(8) {
+            let mut b = [0u8; 8];
+            b[..c.len()].copy_from_slice(&c);
+            belts.push(Belt(u64::from_le_bytes(b)));
+        }
+
+        PageMsg(belts)
+    }
+}
+
+impl<'a> From<&'a str> for PageMsg {
+    fn from(other: &'a str) -> Self {
+        let mut belts = vec![];
+
+        for c in other.as_bytes().chunks(4) {
+            let mut b = [0u8; 4];
+            b[..c.len()].copy_from_slice(&c);
+            belts.push(Belt(u32::from_le_bytes(b) as u64));
+        }
+
+        PageMsg(belts)
+    }
+}
+
+impl core::fmt::Display for PageMsg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, b) in self.0.iter().enumerate() {
+            if b.0 >= (1 << 32) {
+                return Err(fmt::Error);
+            }
+            let b = (b.0 as u32).to_le_bytes();
+            let mut len = 4;
+            while i == self.0.len() - 1 && len > 0 && b[len - 1] == 0 {
+                len -= 1;
+            }
+            let Ok(s) = core::str::from_utf8(&b[..len]) else {
+                return Err(fmt::Error);
+            };
+            f.write_str(s)?;
+        }
+        Ok(())
+    }
+}
+
+impl Serialize for PageMsg {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut bytes = vec![];
+        let mut no_string = false;
+
+        for (i, b) in self.0.iter().enumerate() {
+            if b.0 >= (1 << 32) {
+                no_string = true;
+                break;
+            }
+            let b = (b.0 as u32).to_le_bytes();
+            let mut len = 4;
+            while i == self.0.len() - 1 && len > 0 && b[len - 1] == 0 {
+                len -= 1;
+            }
+            bytes.extend(b[..len].iter().copied());
+        }
+
+        if let (Ok(s), false) = (core::str::from_utf8(&bytes), no_string) {
+            serializer.serialize_str(s)
+        } else {
+            let mut bytes = vec![];
+
+            for b in self.0.iter() {
+                let b = b.0.to_le_bytes();
+                bytes.extend(b);
+            }
+
+            serializer.serialize_bytes(&bytes)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PageMsg {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct PageMsgVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for PageMsgVisitor {
+            type Value = PageMsg;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a string or sequence of belt bytes (64-bit little endian)")
+            }
+
+            fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(v.into())
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(v.into())
+            }
+        }
+
+        deserializer.deserialize_str(PageMsgVisitor)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +590,12 @@ mod tests {
     const TX1_OUTPUTS: &[u8] = include_bytes!(
         "../../test_vectors/BAXmnxFoApbXBwzBPEPoNwcbtGa8UHS4gxBWDsATP1mrRq8PoKbLQJU.txo"
     );
+    // /( b block/7pR2bvzoMvfFcxXaHv4ERm8AgEnExcZLuEsjNgLkJziBkqBLidLg39Y
+    // /j b crates/iris-nockchain-types/test_vectors/0.block
+    const BLOCK_0: &[u8] = include_bytes!("../../test_vectors/0.block");
+    // /( b block/A7YEzGRmb2mpyhv3eaxMaCjL5LiYmHx2HUfnZ36wvALVgY43pf7Sad3
+    // /j b crates/iris-nockchain-types/test_vectors/1123.block
+    const BLOCK_1123: &[u8] = include_bytes!("../../test_vectors/1123.block");
 
     #[test]
     fn check_tx_id() {
@@ -399,5 +630,55 @@ mod tests {
         tx_outs.sort_by_key(|note| note.name);
 
         assert_eq!(outs, tx_outs);
+    }
+
+    #[test]
+    fn parse_page_msg() {
+        let str_msg = "QUIDQUID CORRUMPI POTEST, CORRUMPETUR";
+        let page_msg = PageMsg::from(str_msg);
+        let s = serde_json::to_string(&page_msg).unwrap();
+        assert_eq!(format!("\"{str_msg}\""), s);
+    }
+
+    #[test]
+    fn parse_block_0() {
+        let noun = iris_ztd::cue(BLOCK_0).unwrap();
+        let Some(Some(block)): Option<Option<PageV0>> = NounDecode::from_noun(&noun).unwrap()
+        else {
+            panic!("Invalid page decoding");
+        };
+
+        let str_msg = "QUIDQUID CORRUMPI POTEST, CORRUMPETUR";
+        let page_msg = PageMsg::from(str_msg);
+
+        assert_eq!(page_msg, block.msg);
+        assert_eq!(block.coinbase(Default::default()), &[]);
+    }
+
+    #[test]
+    fn parse_block_1123() {
+        let noun = iris_ztd::cue(BLOCK_1123).unwrap();
+        let Some(Some(block)): Option<Option<PageV0>> = NounDecode::from_noun(&noun).unwrap()
+        else {
+            panic!("Invalid page decoding");
+        };
+
+        let str_msg = "took zero knowledge";
+        let page_msg = PageMsg::from(str_msg);
+
+        assert_eq!(page_msg, block.msg);
+        let coinbase = block.coinbase(Default::default());
+        assert_eq!(
+            coinbase.iter().map(|v| v.name()).collect::<Vec<_>>(),
+            &[Name::new(
+                "5xfojQpojJ979vtvd8fdh2j57mgay42GLzj1njzSknSi2j9jtj3JMPR"
+                    .try_into()
+                    .unwrap(),
+                "2tik85koe7esbRTygnCRdBA8ykGthwdSqgLCn1mutjgi9Wj1wqVYMzq"
+                    .try_into()
+                    .unwrap()
+            )],
+            "{coinbase:?}",
+        );
     }
 }

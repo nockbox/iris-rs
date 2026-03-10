@@ -643,6 +643,7 @@ pub fn wasm_noun_codec(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let attr_str = attr.to_string();
     let no_hash = attr_str.contains("no_hash");
+    let no_noun = attr_str.contains("no_noun");
     let with_prove = attr_str.contains("with_prove");
     let no_derive = attr_str.contains("no_derive");
 
@@ -697,15 +698,10 @@ pub fn wasm_noun_codec(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     };
 
-    let expanded = quote! {
-        #derive_attrs
-        #input
-
-        #[cfg(feature = "wasm")]
-        mod #mod_name {
-            use super::*;
-            use wasm_bindgen::prelude::*;
-
+    let noun_fn = if no_noun {
+        quote! {}
+    } else {
+        quote! {
             /// Convert into `Noun`.
             #[wasm_bindgen(js_name = #to_noun_camel)]
             pub fn #to_noun_snake(v: &#name) -> #crate_path::Noun {
@@ -718,7 +714,19 @@ pub fn wasm_noun_codec(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #crate_path::NounDecode::from_noun(noun)
                     .ok_or_else(|| JsValue::from_str("Failed to decode noun"))
             }
+        }
+    };
 
+    let expanded = quote! {
+        #derive_attrs
+        #input
+
+        #[cfg(feature = "wasm")]
+        mod #mod_name {
+            use super::*;
+            use wasm_bindgen::prelude::*;
+
+            #noun_fn
             #hash_fn
             #prove_fn
         }

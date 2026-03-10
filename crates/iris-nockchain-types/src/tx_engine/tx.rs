@@ -106,3 +106,66 @@ impl TxEngineSettings {
         Self::v1_bythos_with_word_cost((1 << 14).into())
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+pub struct BlockchainConstants {
+    pub first_month_coinbase_min: u32,
+    pub coinbase_timelock_min: u32,
+}
+
+impl Default for BlockchainConstants {
+    fn default() -> Self {
+        Self::mainnet()
+    }
+}
+
+#[iris_ztd_derive::wasm_member_methods]
+impl BlockchainConstants {
+    pub const fn mainnet() -> Self {
+        Self {
+            first_month_coinbase_min: 4383,
+            coinbase_timelock_min: 100,
+        }
+    }
+}
+
+/// A Nockchain Block
+///
+/// This includes necessary information about a block, but does not include transactions (only their IDs are provided).
+#[iris_ztd::noun_derive(
+    Debug,
+    Clone,
+    NounEncode,
+    NounDecode,
+    Hashable,
+    Serialize,
+    Deserialize,
+    tsify_wasm
+)]
+#[iris_ztd::wasm_noun_codec(with_prove, no_derive, noun_tag = "version")]
+pub enum Page {
+    #[noun(cell)]
+    V0(crate::v0::PageV0),
+    #[noun(tag = 1)]
+    V1(crate::v1::PageV1),
+}
+
+#[cfg_attr(feature = "wasm", iris_ztd::wasm_member_methods)]
+impl Page {
+    /// Compute coinbase notes of this block
+    pub fn coinbase(&self, consts: BlockchainConstants) -> Vec<Note> {
+        match self {
+            Self::V0(p) => p.coinbase(consts),
+            Self::V1(p) => p.coinbase(consts),
+        }
+    }
+
+    pub fn block_commitment(&self) -> Digest {
+        match self {
+            Self::V0(p) => p.block_commitment(),
+            Self::V1(p) => p.block_commitment(),
+        }
+    }
+}

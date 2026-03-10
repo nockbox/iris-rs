@@ -14,6 +14,8 @@ mod hash;
 mod noun;
 
 #[cfg(feature = "alloc")]
+mod bignum;
+#[cfg(feature = "alloc")]
 mod prove;
 #[cfg(feature = "alloc")]
 mod zbase;
@@ -29,6 +31,6 @@ pub use fixed::*;
 pub use hash::*;
 
 #[cfg(feature = "alloc")]
-pub use crate::{noun::*, prove::*, zmap::*, zset::*};
+pub use crate::{bignum::*, noun::*, prove::*, zmap::*, zset::*};
 
 pub use ::iris_ztd_derive::*;

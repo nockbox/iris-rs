@@ -26,3 +26,6 @@ wasm-bindgen = { workspace = true, optional = true }
 
 [features]
 wasm = ["iris-ztd/wasm", "tsify", "wasm-bindgen"]
+
+[dev-dependencies]
+serde_json = { version = "1", default-features = false, features = ["alloc"] }

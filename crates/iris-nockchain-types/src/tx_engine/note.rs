@@ -198,7 +198,7 @@ macro_rules! impl_from_ops {
 impl_from_ops!(u64);
 impl_math_ops!(u64, Nicks);
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[iris_ztd::wasm_noun_codec]
 #[serde(untagged)]
 pub enum Note {
@@ -479,7 +479,7 @@ impl Name {
         timelock: super::v0::TimelockIntent,
     ) -> Self {
         let first = (true, timelock.tim.is_some(), &owners, 0).hash();
-        let last = (true, &source, &timelock, 0).hash();
+        let last = (true, &source, &timelock.hash(), 0).hash();
         Self::new(first, last)
     }
 }

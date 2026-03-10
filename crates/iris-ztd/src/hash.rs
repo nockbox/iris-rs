@@ -658,7 +658,7 @@ macro_rules! impl_hashable_for_tuple {
     };
 }
 
-impl_hashable_for_tuple!(A, B, C, D, E, F, G, H, I, J, K);
+impl_hashable_for_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T);
 
 impl<T: Hashable> Hashable for &[T] {
     fn hash(&self) -> Digest {

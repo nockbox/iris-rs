@@ -415,6 +415,15 @@ impl_nounable_for_tuple!(
     I => i
     J => j
     K => k
+    L => l
+    M => m
+    N => n
+    O => o
+    P => p
+    Q => q
+    R => r
+    S => s
+    T => t
 );
 
 impl<T: NounEncode, const N: usize> NounEncode for [T; N] {

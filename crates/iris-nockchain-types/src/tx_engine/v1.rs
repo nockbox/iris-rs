@@ -5,14 +5,14 @@ use alloc::vec::Vec;
 use alloc::{boxed::Box, format};
 use iris_crypto::{PublicKey, Signature};
 use iris_ztd::{
-    tas, Digest, Either, FixedU64, Hashable, MerkleProof, MerkleProvenAxis, Noun, NounDecode,
-    NounEncode, ZMap, ZSet,
+    tas, Bignum, Digest, Either, FixedU64, Hashable, MerkleProof, MerkleProvenAxis, Noun,
+    NounDecode, NounEncode, ZMap, ZSet,
 };
 use serde::{Deserialize, Serialize};
 
-use super::note::{BlockHeight, ExpectedVersion, Name, Source, Version};
+use super::note::{BlockHeight, ExpectedVersion, Name, Note, Source, TimelockRange, Version};
 use super::v0::LegacySignature;
-use super::{TxEngineSettings, TxId};
+use super::{BlockchainConstants, TxEngineSettings, TxId};
 use crate::Nicks;
 
 fn noun_words(n: &Noun) -> u64 {
@@ -927,7 +927,34 @@ pub enum LockPrimitive {
     #[noun(tag = "brn")]
     Brn,
 }
-pub type LockTim = super::v0::Timelock;
+
+#[derive(
+    Debug, Clone, Copy, NounEncode, Hashable, NounDecode, Serialize, Deserialize, PartialEq, Eq,
+)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockTim {
+    pub rel: TimelockRange,
+    pub abs: TimelockRange,
+}
+
+impl LockTim {
+    pub fn coinbase() -> Self {
+        Self {
+            rel: TimelockRange {
+                min: Some(100),
+                max: None,
+            },
+            abs: TimelockRange::none(),
+        }
+    }
+
+    pub fn none() -> Self {
+        Self {
+            rel: TimelockRange::none(),
+            abs: TimelockRange::none(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
 #[iris_ztd::wasm_noun_codec]
@@ -1286,12 +1313,101 @@ pub struct TransactionDisplay {
     pub outputs: ZMap<Digest, LockMetadata>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
+#[iris_ztd::wasm_noun_codec(no_hash, no_noun)]
+pub struct PageV1 {
+    digest: Digest,
+    pow: Option<Noun>,
+    parent: Digest,
+    tx_ids: ZSet<Digest>,
+    coinbase: CoinbaseSplitV1,
+    timestamp: u64,
+    epoch_counter: u32,
+    target: Bignum,
+    accumulated_work: Bignum,
+    height: BlockHeight,
+    msg: crate::v0::PageMsg,
+}
+
+impl PageV1 {
+    pub fn coinbase(&self, consts: BlockchainConstants) -> Vec<Note> {
+        let mut notes = vec![];
+
+        // No more first month checks
+        let timelock = LockTim {
+            rel: TimelockRange {
+                min: Some(consts.coinbase_timelock_min),
+                max: None,
+            },
+            abs: TimelockRange::none(),
+        };
+
+        for (pkh, assets) in self.coinbase.0.clone() {
+            let source = Source {
+                hash: self.parent,
+                is_coinbase: true,
+            };
+            let lock = Lock::Single(SpendCondition(
+                [
+                    LockPrimitive::Pkh(Pkh::single(pkh)),
+                    LockPrimitive::Tim(timelock),
+                ]
+                .into(),
+            ));
+            let name = Name::new_v1(lock.hash(), source);
+            notes.push(Note::V1(NoteV1 {
+                version: Version::V1,
+                origin_page: self.height,
+                name,
+                note_data: NoteData::empty(),
+                assets,
+            }))
+        }
+
+        notes
+    }
+
+    pub fn block_commitment(&self) -> Digest {
+        let Self {
+            parent,
+            tx_ids,
+            coinbase,
+            timestamp,
+            epoch_counter,
+            target,
+            accumulated_work,
+            height,
+            msg,
+            ..
+        } = self;
+
+        (
+            parent,
+            tx_ids,
+            coinbase,
+            timestamp,
+            epoch_counter,
+            target,
+            accumulated_work,
+            height,
+            msg,
+        )
+            .hash()
+    }
+}
+
+/// Maps Pkh -> Nicks (coins)
+#[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
+#[iris_ztd::wasm_noun_codec]
+pub struct CoinbaseSplitV1(ZMap<Digest, Nicks>);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Page;
     use bip39::Mnemonic;
     use iris_crypto::derive_master_key;
-    use iris_ztd::Hashable;
+    use iris_ztd::{Belt, Hashable};
 
     use super::{RawTxV1 as RawTx, SeedV1 as Seed, SpendV1 as Spend, SpendsV1 as Spends};
 
@@ -1311,6 +1427,10 @@ mod tests {
     const TX2: &[u8] = include_bytes!(
         "../../test_vectors/6bh1qizhspMEMeLWpB5bf6GRgcxKxPZyuYRpGBaV2Dc1kLPoyFRRbBf.tx"
     );
+
+    // /( b block/77aAcbLMWfbhFw6Mfj7VT1xyrgNFkbT1TyD7yqAtnKQ5DTArCftz5jj
+    // /j b crates/iris-nockchain-types/test_vectors/53384.block
+    const BLOCK_53384: &[u8] = include_bytes!("../../test_vectors/53384.block");
 
     #[test]
     fn check_tx_v0_v1() {
@@ -1513,6 +1633,44 @@ mod tests {
             "transaction id",
             &tx.id,
             "3j4vkn72mcpVtQrTgNnYyoF3rDuYax3aebT5axu3Qe16jm9x2wLtepW",
+        );
+    }
+
+    #[test]
+    fn parse_block_53383() {
+        let noun = iris_ztd::cue(BLOCK_53384).unwrap();
+        let Some(Some(Page::V1(block))): Option<Option<Page>> =
+            NounDecode::from_noun(&noun).unwrap()
+        else {
+            panic!("Invalid page decoding");
+        };
+
+        let str_msg = "";
+        let page_msg = crate::v0::PageMsg::from(str_msg);
+
+        assert_eq!(page_msg, block.msg);
+        let coinbase = block.coinbase(Default::default());
+        assert_eq!(
+            coinbase.iter().map(|v| v.name()).collect::<Vec<_>>(),
+            &[
+                Name::new(
+                    "3VmnKbeM61f3s5oovtMvxyTeaf46Ap5UnuQCB5DWnu3DgXZsKRi1iAt"
+                        .try_into()
+                        .unwrap(),
+                    "5Vndp49nTLS9TTy95iq3cFqqtnkk3C2hz446y82QNsfsb6TuWCtgQMW"
+                        .try_into()
+                        .unwrap()
+                ),
+                Name::new(
+                    "4g8Dsxjj7QCvHwz67cFPu9qE8BohCSusRXAXYknix6Q8X8KuqJhFdG8"
+                        .try_into()
+                        .unwrap(),
+                    "5Vndp49nTLS9TTy95iq3cFqqtnkk3C2hz446y82QNsfsb6TuWCtgQMW"
+                        .try_into()
+                        .unwrap()
+                )
+            ],
+            "{coinbase:?}",
         );
     }
 }

@@ -110,7 +110,7 @@ macro_rules! ftas {
     };
 }
 
-#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FixedTas<const N: u64>;
 
 impl<const V: u64> FixedTas<V> {

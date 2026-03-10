@@ -22,11 +22,11 @@ use ibig::{ops::DivRem, UBig};
 
 #[cfg(feature = "alloc")]
 pub fn belts_from_bytes(bytes: &[u8]) -> Vec<Belt> {
-    belts_from_atom(UBig::from_be_bytes(bytes))
+    belts_from_ubig(UBig::from_be_bytes(bytes))
 }
 
 #[cfg(feature = "alloc")]
-pub fn belts_from_atom(num: UBig) -> Vec<Belt> {
+pub fn belts_from_ubig(num: UBig) -> Vec<Belt> {
     let p = UBig::from(PRIME);
     let mut belts = Vec::new();
     let mut remainder = num;
@@ -43,11 +43,11 @@ pub fn belts_from_atom(num: UBig) -> Vec<Belt> {
 
 #[cfg(feature = "alloc")]
 pub fn belts_to_bytes(belts: &[Belt]) -> Vec<u8> {
-    belts_to_atom(belts).to_be_bytes()
+    belts_to_ubig(belts).to_be_bytes()
 }
 
 #[cfg(feature = "alloc")]
-pub fn belts_to_atom(belts: &[Belt]) -> UBig {
+pub fn belts_to_ubig(belts: &[Belt]) -> UBig {
     let p = UBig::from(PRIME);
     let mut num = UBig::from(0u64);
     for belt in belts {
@@ -69,7 +69,10 @@ where
     {
         let bytes = self.to_bytes_arr();
         let mut buf = <Self as Limbable>::bs58_buf();
-        let len = bs58::encode(bytes.as_ref())
+        let bytes = bytes.as_ref();
+        let start = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
+        let bytes = &bytes[start..];
+        let len = bs58::encode(bytes)
             .onto(buf.as_mut())
             .map_err(serde::ser::Error::custom)?;
         let s = core::str::from_utf8(&buf.as_ref()[..len]).map_err(serde::ser::Error::custom)?;
@@ -307,7 +310,7 @@ where
 
 #[cfg(feature = "alloc")]
 impl<const N: usize> Base58Belts<N> {
-    pub fn to_atom(&self) -> UBig {
+    pub fn to_ubig(&self) -> UBig {
         let p = UBig::from(PRIME);
         let mut result = UBig::from(0u64);
         let mut power = UBig::from(1u64);
@@ -321,7 +324,7 @@ impl<const N: usize> Base58Belts<N> {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let res = self.to_atom();
+        let res = self.to_ubig();
         let res_bytes = res.to_be_bytes();
         let expected_len = N * 8; // Each belt is 8 bytes
 
@@ -335,8 +338,8 @@ impl<const N: usize> Base58Belts<N> {
 // Digest-specific implementations that delegate to Base58Belts<5>
 #[cfg(feature = "alloc")]
 impl Digest {
-    pub fn to_atom(&self) -> UBig {
-        Base58Belts::<5>::from(*self).to_atom()
+    pub fn to_ubig(&self) -> UBig {
+        Base58Belts::<5>::from(*self).to_ubig()
     }
 
     pub fn to_bytes(&self) -> [u8; 40] {
@@ -348,6 +351,21 @@ impl Digest {
 
     pub fn from_bytes(bytes: &[u8]) -> Self {
         Base58Belts::<5>::from_bytes(bytes).into()
+    }
+}
+
+#[cfg(feature = "alloc")]
+#[iris_ztd_derive::wasm_member_methods]
+impl Digest {
+    pub fn to_atom(&self) -> Noun {
+        Noun::Atom(self.to_ubig())
+    }
+
+    pub fn from_atom(atom: Noun) -> Self {
+        let Noun::Atom(atom) = atom else {
+            panic!("not an atom");
+        };
+        Self::from_bytes(&atom.to_be_bytes())
     }
 }
 

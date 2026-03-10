@@ -48,7 +48,7 @@ pub fn tas_belts(s: &str) -> Noun {
 #[wasm_bindgen]
 pub fn atom_to_belts(atom: Noun) -> Result<Noun, JsValue> {
     match atom {
-        Noun::Atom(atom) => Ok((&iris_ztd::belts_from_atom(atom)[..]).to_noun()),
+        Noun::Atom(atom) => Ok((&iris_ztd::belts_from_ubig(atom)[..]).to_noun()),
         _ => Err(JsValue::from_str("not an atom")),
     }
 }
@@ -61,5 +61,5 @@ pub fn belts_to_atom(noun: Noun) -> Result<Noun, JsValue> {
     let noun = Noun::Cell(Arc::new(noun), Arc::new(0u64.to_noun()));
     let belts: Vec<Belt> =
         NounDecode::from_noun(&noun).ok_or_else(|| JsValue::from_str("unable to parse belts"))?;
-    Ok(Noun::Atom(iris_ztd::belts_to_atom(&belts)))
+    Ok(Noun::Atom(iris_ztd::belts_to_ubig(&belts)))
 }

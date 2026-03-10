@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn test_list_proof() {
         let lst = vec![0u64, 1u64];
-        let lst = HashableList(&lst);
+        let lst = HashableList(&lst[..]);
         let MerkleProvenAxis { proof, axis } = MerkleProof::prove_hashable(&(&lst, ()), 0);
         assert_eq!(axis, 2);
         assert_eq!(

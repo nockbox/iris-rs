@@ -826,6 +826,7 @@ mod tests {
     #[test]
     fn test_vec_hash() {
         let vec = vec![0u64, 1u64];
+        let vec = HashableList(vec);
         assert_eq!(
             vec.hash().to_string(),
             "5F6UZhcWYBDSJ3CvevfiABhdSjc9qNh29KcH5rs8FJB4NNPHRn3oqQJ"

@@ -116,6 +116,10 @@ where
 #[serde(into = "Base58Belts<5>")]
 pub struct Digest(pub [Belt; 5]);
 
+#[cfg(feature = "alloc")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct HashableList<T>(pub T);
+
 /// Convert big-endian bytes of any length to u64, asserting no overflow.
 fn be_bytes_to_u64(bytes: &[u8]) -> u64 {
     if bytes.len() > 8 {
@@ -567,10 +571,7 @@ impl<T: Hashable> Hashable for Option<T> {
     }
 
     fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
-        match self {
-            None => None,
-            Some(v) => Some((0, v)),
-        }
+        self.as_ref().map(|v| (0, v))
     }
 }
 
@@ -681,7 +682,28 @@ impl<T: Hashable> Hashable for &[T] {
 #[cfg(feature = "alloc")]
 impl<T: Hashable> Hashable for Vec<T> {
     fn hash(&self) -> Digest {
-        let hashes = self.iter().map(|v| v.hash()).collect::<Vec<_>>();
+        fn hash_slice<T: Hashable>(arr: &[T]) -> Digest {
+            match arr.split_first() {
+                None => 0.hash(),
+                Some((first, rest)) => (first.hash(), hash_slice(rest)).hash(),
+            }
+        }
+        hash_slice(self.as_slice())
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<T: core::ops::Deref<Target = [O]>, O: Hashable> Hashable for HashableList<T> {
+    fn hash(&self) -> Digest {
+        let hashes = &self.0.iter().map(|v| v.hash()).collect::<Vec<_>>();
 
         let mut belts = vec![];
         belts.push(Belt(hashes.len() as u64 * 5 + 1));

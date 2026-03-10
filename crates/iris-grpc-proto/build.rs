@@ -293,7 +293,7 @@ fn rewrite_generated_files(out_dir: &std::path::Path) -> Result<(), Box<dyn std:
                 let prefix = compute_prefix(mod_name, ver);
 
                 format!(
-                    "{indent}#[cfg_attr(feature = \"wasm\", tsify(type = \"{prefix}{type_name} | undefined\"))]\n{indent}pub {field}: ::core::option::Option<{super_chain}{}v{ver}::{type_name}>",
+                    "{indent}#[serde(default)]#[cfg_attr(feature = \"wasm\", tsify(type = \"{prefix}{type_name}\"))]\n{indent}pub {field}: ::core::option::Option<{super_chain}{}v{ver}::{type_name}>",
                     mod_name.map(|m| format!("{}::", m)).unwrap_or_default()
                 )
             }).to_string();
@@ -390,7 +390,7 @@ fn rewrite_generated_files(out_dir: &std::path::Path) -> Result<(), Box<dyn std:
                 let full_type = format!("{base_prefix}{mod_pascal}{type_name}");
 
                 format!(
-                    "{indent}#[cfg_attr(feature = \"wasm\", tsify(type = \"{full_type} | undefined\"))]\n{indent}pub {field}: ::core::option::Option<{mod_name}::{type_name}>"
+                    "{indent}#[serde(default)]#[cfg_attr(feature = \"wasm\", tsify(type = \"{full_type}\"))]\n{indent}pub {field}: ::core::option::Option<{mod_name}::{type_name}>"
                 )
             }).to_string();
 
@@ -421,20 +421,8 @@ fn rewrite_generated_files(out_dir: &std::path::Path) -> Result<(), Box<dyn std:
                 let field = &caps[3];
                 let type_name = &caps[4];
 
-                if matches!(type_name, "String" | "bool" | "u32" | "i32" | "u64" | "i64" | "f32" | "f64" | "Vec" | "Option") {
-                    return caps[0].to_string();
-                }
-
-                // Look for current mod to build full type Name
-                let full_type = if let Some(mod_name) = &current_mod {
-                    let mod_pascal = to_pascal_case(mod_name);
-                    format!("{base_prefix}{mod_pascal}{type_name}")
-                } else {
-                    format!("{base_prefix}{type_name}")
-                };
-
                 format!(
-                    "{indent}#[cfg_attr(feature = \"wasm\", tsify(type = \"{full_type} | undefined\"))]\n{indent}pub {field}: ::core::option::Option<{type_name}>"
+                    "{indent}#[serde(default, skip_serializing_if = \"::core::option::Option::is_none\")]\n{indent}pub {field}: ::core::option::Option<{type_name}>"
                 )
             }).to_string();
 

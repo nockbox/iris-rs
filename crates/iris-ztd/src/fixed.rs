@@ -125,7 +125,7 @@ impl<const V: u64> FixedTas<V> {
         while cnt < 8 && Self::VALUE_LE_BYTES[cnt] != 0 {
             cnt += 1;
         }
-        unsafe { core::str::from_utf8_unchecked(&Self::VALUE_LE_BYTES.split_at(cnt).0) }
+        unsafe { core::str::from_utf8_unchecked(Self::VALUE_LE_BYTES.split_at(cnt).0) }
     };
 
     pub fn value_u64(self) -> u64 {

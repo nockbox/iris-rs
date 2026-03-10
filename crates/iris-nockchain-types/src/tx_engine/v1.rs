@@ -142,6 +142,7 @@ impl NoteV1 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[iris_ztd::wasm_noun_codec]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum LockRoot {
     Hash(Digest),
     Lock(Lock),
@@ -213,7 +214,7 @@ impl SeedV1 {
         parent_hash: Digest,
         include_lock_data: bool,
     ) -> Self {
-        let lock_root = LockRoot::Lock(SpendCondition::new_pkh(Pkh::single(pkh).into()).into());
+        let lock_root = LockRoot::Lock(SpendCondition::new_pkh(Pkh::single(pkh)).into());
         let mut note_data = NoteData::empty();
         if include_lock_data {
             note_data.push_pkh(Pkh::single(pkh));
@@ -699,6 +700,7 @@ pub enum Lock {
     V16(LockV16),
 }
 
+#[iris_ztd::wasm_member_methods]
 impl Lock {
     pub fn height(&self) -> usize {
         match self {
@@ -708,6 +710,55 @@ impl Lock {
             Self::V8(_) => 4,
             Self::V16(_) => 5,
         }
+    }
+
+    pub fn from_list(sps: Vec<SpendCondition>) -> Self {
+        let n = sps.len();
+        let mut it = sps.into_iter();
+        macro_rules! next {
+            () => {
+                it.next().unwrap()
+            };
+        }
+        macro_rules! v2 {
+            () => {
+                LockV2 {
+                    p: next!(),
+                    q: next!(),
+                }
+            };
+        }
+        macro_rules! v4 {
+            () => {
+                LockV4 { p: v2!(), q: v2!() }
+            };
+        }
+        macro_rules! v8 {
+            () => {
+                LockV8 { p: v4!(), q: v4!() }
+            };
+        }
+        match n {
+            1 => Lock::Single(next!()),
+            2 => Lock::V2(v2!()),
+            4 => Lock::V4(v4!()),
+            8 => Lock::V8(v8!()),
+            16 => Lock::V16(LockV16 { p: v8!(), q: v8!() }),
+            _ => panic!("Invalid spend condition count {n}, must be 1, 2, 4, 8, or 16"),
+        }
+    }
+
+    pub fn from_list_burnpad(sps: Vec<SpendCondition>) -> Self {
+        let mut sps = sps;
+        let len = sps.len();
+        assert!(
+            len > 0 && len <= 16,
+            "Spend condition count must be between 1 and 16, got {len}"
+        );
+        let target = len.next_power_of_two();
+        let brn = SpendCondition(vec![LockPrimitive::Brn]);
+        sps.resize(target, brn);
+        Self::from_list(sps)
     }
 }
 

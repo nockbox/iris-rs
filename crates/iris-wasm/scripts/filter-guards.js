@@ -45,6 +45,7 @@ const customGuardImplementations = {
     // These are mere type aliases, but we need to handle them all the same.
     'TxId': `return (typeof typedObj === "string" && ${nockchainBase58Regex}.test(typedObj))`,
     'PublicKey': `return (typeof typedObj === "string" && ${nockchainBase58Regex}.test(typedObj))`,
+    'BlockHeight': `return (typeof typedObj === "number")`,
 };
 
 let insideTaggedGuard = false;
@@ -54,8 +55,8 @@ let currentTaggedGuardName = '';
 if (taggedTypes.size > 0) {
     console.log("Replacing", taggedTypes);
     const dtsReplaced = dtsContent.replace(
-        /export type ([A-Za-z0-9_]+) = string \| \{\s*__tag_[a-z0-9_]+:\s*undefined\s*\};/g,
-        'export type $1 = string;'
+        /export type ([A-Za-z0-9_]+) = ([a-z]+) \| \{\s*__tag_[a-z0-9_]+:\s*undefined\s*\};/g,
+        'export type $1 = $2;'
     );
     fs.writeFileSync(dtsOut, dtsReplaced);
 } else {

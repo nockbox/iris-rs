@@ -104,6 +104,7 @@ pub struct TxNotes {
 #[derive(Serialize, Deserialize, tsify::Tsify)]
 #[tsify(into_wasm_abi, from_wasm_abi)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 pub enum TxLock {
     None,
     Some { lock: Lock, lock_sp_index: usize },

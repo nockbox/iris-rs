@@ -119,20 +119,12 @@ pub fn derive_hashable(input: TokenStream) -> TokenStream {
                 }
             }
             Data::Enum(_) => {
-                return syn::Error::new_spanned(
-                    &input,
-                    "Hashable derive macro does not support enums yet",
-                )
-                .to_compile_error()
-                .into();
+                syn::Error::new_spanned(&input, "Hashable derive macro does not support enums yet")
+                    .to_compile_error()
             }
             Data::Union(_) => {
-                return syn::Error::new_spanned(
-                    &input,
-                    "Hashable derive macro does not support unions",
-                )
-                .to_compile_error()
-                .into();
+                syn::Error::new_spanned(&input, "Hashable derive macro does not support unions")
+                    .to_compile_error()
             }
         }
     });
@@ -628,16 +620,14 @@ fn to_lower_camel_case(s: &str) -> String {
     for c in s.chars() {
         if c == '_' {
             capitalize_next = true;
+        } else if first {
+            out.push(c.to_ascii_lowercase());
+            first = false;
+        } else if capitalize_next {
+            out.push(c.to_ascii_uppercase());
+            capitalize_next = false;
         } else {
-            if first {
-                out.push(c.to_ascii_lowercase());
-                first = false;
-            } else if capitalize_next {
-                out.push(c.to_ascii_uppercase());
-                capitalize_next = false;
-            } else {
-                out.push(c);
-            }
+            out.push(c);
         }
     }
     out
@@ -816,29 +806,17 @@ pub fn wasm_member_methods(_attr: TokenStream, item: TokenStream) -> TokenStream
             });
 
             let camel_method_name = to_lower_camel_case(&method_name_str);
-            let js_name_attr = if camel_method_name != method_name_str {
-                let struct_camel = to_lower_camel_case(&type_name);
-                let camel_method_capitalized = {
-                    let mut c = camel_method_name.chars();
-                    match c.next() {
-                        None => String::new(),
-                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                    }
-                };
-                let js_name_combined = format!("{}{}", struct_camel, camel_method_capitalized);
-                quote! { #[wasm_bindgen::prelude::wasm_bindgen(js_name = #js_name_combined)] }
-            } else {
-                let struct_camel = to_lower_camel_case(&type_name);
-                let camel_method_capitalized = {
-                    let mut c = camel_method_name.chars();
-                    match c.next() {
-                        None => String::new(),
-                        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-                    }
-                };
-                let js_name_combined = format!("{}{}", struct_camel, camel_method_capitalized);
-                quote! { #[wasm_bindgen::prelude::wasm_bindgen(js_name = #js_name_combined)] }
+            let struct_camel = to_lower_camel_case(&type_name);
+            let camel_method_capitalized = {
+                let mut c = camel_method_name.chars();
+                match c.next() {
+                    None => String::new(),
+                    Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+                }
             };
+            let js_name_combined = format!("{}{}", struct_camel, camel_method_capitalized);
+            let js_name_attr =
+                quote! { #[wasm_bindgen::prelude::wasm_bindgen(js_name = #js_name_combined)] };
 
             // Extract doc comments
             let doc_comments: Vec<_> = method

@@ -65,7 +65,7 @@ impl MerkleProof {
                 return false;
             };
             path = rest;
-            if axis % 2 == 0 {
+            if axis.is_multiple_of(2) {
                 leaf = (leaf, sib).hash();
             } else {
                 leaf = (sib, leaf).hash();
@@ -88,6 +88,7 @@ impl MerkleProof {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HashableList;
     use alloc::string::ToString;
     use alloc::vec;
 
@@ -152,6 +153,7 @@ mod tests {
     #[test]
     fn test_list_proof() {
         let lst = vec![0u64, 1u64];
+        let lst = HashableList(&lst);
         let MerkleProvenAxis { proof, axis } = MerkleProof::prove_hashable(&(&lst, ()), 0);
         assert_eq!(axis, 2);
         assert_eq!(

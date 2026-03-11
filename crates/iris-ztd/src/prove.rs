@@ -90,7 +90,6 @@ mod tests {
     use super::*;
     use crate::HashableList;
     use alloc::string::ToString;
-    use alloc::vec;
 
     #[test]
     fn test_empty_proof() {
@@ -152,7 +151,7 @@ mod tests {
 
     #[test]
     fn test_list_proof() {
-        let lst = vec![0u64, 1u64];
+        let lst = [0u64, 1u64];
         let lst = HashableList(&lst[..]);
         let MerkleProvenAxis { proof, axis } = MerkleProof::prove_hashable(&(&lst, ()), 0);
         assert_eq!(axis, 2);

@@ -93,11 +93,7 @@ mod tests {
     #[test]
     fn test_bignum() {
         let bignum = Bignum::from(&UBig::from(12345678901234567890u128));
-        assert_eq!(
-            bignum.to_atom(),
-            Noun::Atom(UBig::from(12345678901234567890u128))
-        );
-        assert_eq!(Bignum::from_atom(&bignum.to_atom()), bignum);
+        assert_eq!(UBig::from(&bignum), UBig::from(12345678901234567890u128));
         let json = serde_json::to_string(&bignum).unwrap();
         assert_eq!(json, "\"ab54a98ceb1f0ad2\"");
         let bignum2 = serde_json::from_str(&json).unwrap();

@@ -458,7 +458,7 @@ impl<'a> From<&'a [u8]> for PageMsg {
 
         for c in other.chunks(8) {
             let mut b = [0u8; 8];
-            b[..c.len()].copy_from_slice(&c);
+            b[..c.len()].copy_from_slice(c);
             belts.push(Belt(u64::from_le_bytes(b)));
         }
 
@@ -472,7 +472,7 @@ impl<'a> From<&'a str> for PageMsg {
 
         for c in other.as_bytes().chunks(4) {
             let mut b = [0u8; 4];
-            b[..c.len()].copy_from_slice(&c);
+            b[..c.len()].copy_from_slice(c);
             belts.push(Belt(u32::from_le_bytes(b) as u64));
         }
 

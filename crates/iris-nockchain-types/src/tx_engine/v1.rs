@@ -1407,7 +1407,7 @@ mod tests {
     use crate::Page;
     use bip39::Mnemonic;
     use iris_crypto::derive_master_key;
-    use iris_ztd::{Belt, Hashable};
+    use iris_ztd::Hashable;
 
     use super::{RawTxV1 as RawTx, SeedV1 as Seed, SpendV1 as Spend, SpendsV1 as Spends};
 

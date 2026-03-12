@@ -112,7 +112,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 #[iris_ztd_derive::wasm_noun_codec]
 #[cfg_attr(feature = "wasm", tsify(type = "string | { __tag_digest: undefined }"))]
 #[serde(from = "Base58Belts<5>")]

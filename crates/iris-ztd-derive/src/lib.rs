@@ -989,6 +989,7 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
         Cell,           // #[noun(cell)]
         TagU64(u64),    // #[noun(tag = 123)]
         TagStr(String), // #[noun(tag = "foo")]
+        EmbedTag,       // #[noun(embedded_tag = 123)]
     }
 
     struct VariantInfo {
@@ -1024,7 +1025,10 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                         }
                         _ => panic!("noun(tag = ...) value must be an integer or string literal"),
                     }
+                } else if meta.path.is_ident("embedded_tag") {
+                    kind = Some(NounVariantKind::EmbedTag);
                 }
+
                 Ok(())
             });
             false // strip the #[noun(...)] attribute
@@ -1058,6 +1062,19 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                             });
                         }
                         _ => panic!("noun(cell) variant must have exactly one unnamed field"),
+                    }
+                }
+                NounVariantKind::EmbedTag => {
+                    // Encode inner value directly
+                    match &vi.fields {
+                        Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+                            arms.push(quote! {
+                                Self::#vident(v) => #crate_path::NounEncode::to_noun(v),
+                            });
+                        }
+                        _ => {
+                            panic!("noun(embedded_tag) variant must have exactly one unnamed field")
+                        }
                     }
                 }
                 NounVariantKind::TagU64(tag) => match &vi.fields {
@@ -1200,6 +1217,32 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
             quote! {}
         };
 
+        let mut embed_match_arms = Vec::new();
+        for vi in &variants_info {
+            if let NounVariantKind::EmbedTag = vi.kind {
+                let vident = &vi.ident;
+                match &vi.fields {
+                    Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+                        embed_match_arms.push(quote! {
+                            if let Some(v) = #crate_path::NounDecode::from_noun(noun).map(Self::#vident) {
+                                return Some(v);
+                            }
+                        });
+                    }
+                    Fields::Unit => {
+                        panic!("Cannot use embedded_tag on unit variants");
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let embed_match_block = quote! {
+            {
+                #(#embed_match_arms)*
+            }
+        };
+
         quote! {
             impl #crate_path::NounDecode for #enum_name {
                 fn from_noun(noun: &#crate_path::Noun) -> Option<Self> {
@@ -1211,6 +1254,8 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                                 #u64_match_block
                                 // Try string tag matching
                                 #str_match_block
+                                // Try embedded tags
+                                #embed_match_block
                                 // No tag matched
                                 None
                             } else {
@@ -1248,6 +1293,35 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
             };
             match &vi.kind {
                 NounVariantKind::Cell => match &vi.fields {
+                    Fields::Unnamed(_) => {
+                        arms_hash.push(quote! {
+                            Self::#vident(v) => #crate_path::Hashable::hash(v),
+                        });
+                        arms_leaves.push(quote! {
+                            Self::#vident(v) => #crate_path::Hashable::leaf_count(v),
+                        });
+                        let nested_a = nest(quote!(a));
+                        let nested_b = nest(quote!(b));
+                        arms_pairs.push(quote! {
+                            Self::#vident(v) => #crate_path::Hashable::hashable_pair(v).map(|(a, b)| (#nested_a, #nested_b)),
+                        });
+                    }
+                    Fields::Unit => {
+                        arms_hash.push(quote! {
+                            Self::#vident => #crate_path::Hashable::hash(&0u64),
+                        });
+                        arms_leaves.push(quote! {
+                            Self::#vident => #crate_path::Hashable::leaf_count(&0u64),
+                        });
+                        let nested_a = nest(quote!(a));
+                        let nested_b = nest(quote!(b));
+                        arms_pairs.push(quote! {
+                            Self::#vident => Option::<((),())>::None.map(|(a, b)| (#nested_a, #nested_b)),
+                        });
+                    }
+                    _ => {}
+                },
+                NounVariantKind::EmbedTag => match &vi.fields {
                     Fields::Unnamed(_) => {
                         arms_hash.push(quote! {
                             Self::#vident(v) => #crate_path::Hashable::hash(v),
@@ -1403,6 +1477,30 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                             });
                         }
                         _ => panic!("noun(cell) variant must have unnamed fields"),
+                    }
+                }
+                NounVariantKind::EmbedTag => {
+                    // Untagged: transparent
+                    match &vi.fields {
+                        Fields::Unnamed(f) => {
+                            let inner_ty = &f.unnamed[0].ty;
+                            shadow_owned_variants.push(quote! {
+                                #vident(#inner_ty),
+                            });
+                            shadow_borrowed_variants.push(quote! {
+                                #vident(&'a #inner_ty),
+                            });
+                            from_shadow_arms.push(quote! {
+                                #shadow_owned_name::#vident(v) => super::#enum_name::#vident(v),
+                            });
+                            to_shadow_owned_arms.push(quote! {
+                                super::#enum_name::#vident(v) => #shadow_owned_name::#vident(v),
+                            });
+                            into_shadow_arms.push(quote! {
+                                super::#enum_name::#vident(ref v) => #shadow_borrowed_name::#vident(v),
+                            });
+                        }
+                        _ => panic!("noun(embed_tag) variant must have unnamed fields"),
                     }
                 }
                 NounVariantKind::TagU64(tag) => {

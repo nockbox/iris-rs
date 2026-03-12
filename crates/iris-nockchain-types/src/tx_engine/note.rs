@@ -440,7 +440,6 @@ impl TryFrom<u32> for Version {
 #[derive(
     Clone,
     Copy,
-    Debug,
     Hashable,
     NounEncode,
     NounDecode,
@@ -456,6 +455,18 @@ pub struct Name {
     pub first: Digest,
     pub last: Digest,
     _sig: u64, // end-of-list marker
+}
+
+impl core::fmt::Display for Name {
+    fn fmt(&self, fmt: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(fmt, "[{} {}]", self.first, self.last)
+    }
+}
+
+impl core::fmt::Debug for Name {
+    fn fmt(&self, fmt: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(fmt, "Name {{[{} {}]}}", self.first, self.last)
+    }
 }
 
 impl Name {

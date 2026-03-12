@@ -1,7 +1,7 @@
 use crate::ftas;
-use alloc::vec::Vec;
 #[cfg(feature = "wasm")]
-use alloc::{boxed::Box, format, string::ToString};
+use alloc::{boxed::Box, string::ToString};
+use alloc::{format, vec, vec::Vec};
 use core::fmt;
 use ibig::UBig;
 use iris_ztd_derive::*;

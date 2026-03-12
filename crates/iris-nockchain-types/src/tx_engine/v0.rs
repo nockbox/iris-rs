@@ -1,7 +1,11 @@
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
-use alloc::{boxed::Box, format, string::ToString};
+use alloc::{
+    boxed::Box,
+    format,
+    string::{FromUtf8Error, String, ToString},
+};
 use core::fmt;
 use iris_crypto::{PublicKey, Signature};
 use iris_ztd::{Belt, Bignum, Digest, Hashable, Noun, NounDecode, NounEncode, ZMap, ZSet};
@@ -113,6 +117,25 @@ pub struct SpendV0 {
     pub fee: Nicks,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode, Hashable)]
+#[iris_ztd::wasm_noun_codec]
+pub struct OutputV0 {
+    pub note: NoteV0,
+    pub seeds: SeedsV0,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode, Hashable)]
+#[iris_ztd::wasm_noun_codec]
+pub struct OutputsV0(pub ZMap<Sig, OutputV0>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode)]
+#[iris_ztd::wasm_noun_codec(no_hash)]
+pub struct TxV0 {
+    pub raw: RawTxV0,
+    pub total_size: u64,
+    pub outputs: OutputsV0,
+}
+
 #[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
 #[iris_ztd::wasm_noun_codec(no_hash)]
 pub struct RawTxV0 {
@@ -130,7 +153,7 @@ impl RawTxV0 {
     /// Calculate output notes from the transaction inputs.
     ///
     /// This function combines seeds across multiple inputs into one output note per-recipient-sig.
-    pub fn outputs(&self) -> Vec<NoteV0> {
+    pub fn outputs(&self, origin_page: BlockHeight) -> Vec<NoteV0> {
         let inps = &self.inputs.0;
 
         let mut output_base: BTreeMap<Sig, (TimelockIntent, Nicks, ZSet<SeedV0>)> = BTreeMap::new();
@@ -172,13 +195,17 @@ impl RawTxV0 {
                 assets,
                 inner: NoteInner {
                     version: Version::V0,
-                    origin_page: BlockHeight::default(),
+                    origin_page,
                     timelock,
                 },
             });
         }
 
         outputs
+    }
+
+    pub fn input_names(&self) -> Vec<Name> {
+        self.inputs.0.iter().map(|(_, v)| v.note.name).collect()
     }
 
     pub fn calc_id(&self) -> TxId {
@@ -348,17 +375,17 @@ impl SeedsV0 {
 #[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
 #[iris_ztd::wasm_noun_codec(no_hash, no_noun)]
 pub struct PageV0 {
-    digest: Digest,
-    pow: Option<Noun>,
-    parent: Digest,
-    tx_ids: ZSet<Digest>,
-    coinbase: CoinbaseSplitV0,
-    timestamp: u64,
-    epoch_counter: u32,
-    target: Bignum,
-    accumulated_work: Bignum,
-    height: BlockHeight,
-    msg: PageMsg,
+    pub digest: Digest,
+    pub pow: Option<Noun>,
+    pub parent: Digest,
+    pub tx_ids: ZSet<Digest>,
+    pub coinbase: CoinbaseSplitV0,
+    pub timestamp: u64,
+    pub epoch_counter: u32,
+    pub target: Bignum,
+    pub accumulated_work: Bignum,
+    pub height: BlockHeight,
+    pub msg: PageMsg,
 }
 
 impl PageV0 {
@@ -480,6 +507,31 @@ impl<'a> From<&'a str> for PageMsg {
     }
 }
 
+pub enum PageMsgConvertError {
+    Utf8(FromUtf8Error),
+    Not32Bit,
+}
+
+impl TryFrom<&PageMsg> for String {
+    type Error = PageMsgConvertError;
+
+    fn try_from(msg: &PageMsg) -> Result<String, Self::Error> {
+        let mut bytes = vec![];
+        for (i, b) in msg.0.iter().enumerate() {
+            if b.0 >= (1 << 32) {
+                return Err(PageMsgConvertError::Not32Bit);
+            }
+            let b = (b.0 as u32).to_le_bytes();
+            let mut len = 4;
+            while i == msg.0.len() - 1 && len > 0 && b[len - 1] == 0 {
+                len -= 1;
+            }
+            bytes.extend_from_slice(&b[..len]);
+        }
+        String::from_utf8(bytes).map_err(PageMsgConvertError::Utf8)
+    }
+}
+
 impl core::fmt::Display for PageMsg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (i, b) in self.0.iter().enumerate() {
@@ -505,24 +557,8 @@ impl Serialize for PageMsg {
     where
         S: serde::Serializer,
     {
-        let mut bytes = vec![];
-        let mut no_string = false;
-
-        for (i, b) in self.0.iter().enumerate() {
-            if b.0 >= (1 << 32) {
-                no_string = true;
-                break;
-            }
-            let b = (b.0 as u32).to_le_bytes();
-            let mut len = 4;
-            while i == self.0.len() - 1 && len > 0 && b[len - 1] == 0 {
-                len -= 1;
-            }
-            bytes.extend(b[..len].iter().copied());
-        }
-
-        if let (Ok(s), false) = (core::str::from_utf8(&bytes), no_string) {
-            serializer.serialize_str(s)
+        if let Ok(s) = String::try_from(self) {
+            serializer.serialize_str(&s)
         } else {
             let mut bytes = vec![];
 
@@ -597,6 +633,13 @@ mod tests {
     // /j b crates/iris-nockchain-types/test_vectors/1123.block
     const BLOCK_1123: &[u8] = include_bytes!("../../test_vectors/1123.block");
 
+    // Burned TX from block 5629
+    // /( tx raw-transaction/3srZpNCmbcu5V3BAahWS8wSApju6JfxByLPPuxUBZB3TMLhHw8tHMtv
+    // /j tx crates/iris-nockchain-types/test_vectors/3srZpNCmbcu5V3BAahWS8wSApju6JfxByLPPuxUBZB3TMLhHw8tHMtv.tx
+    const TX_BURNED: &[u8] = include_bytes!(
+        "../../test_vectors/3srZpNCmbcu5V3BAahWS8wSApju6JfxByLPPuxUBZB3TMLhHw8tHMtv.tx"
+    );
+
     #[test]
     fn check_tx_id() {
         let noun = iris_ztd::cue(TX1).unwrap();
@@ -626,10 +669,19 @@ mod tests {
         let mut outs: Vec<NoteV0> = NounDecode::from_noun(&out_noun).unwrap();
         outs.sort_by_key(|note| note.name);
 
-        let mut tx_outs = tx.outputs();
+        let mut tx_outs = tx.outputs(0);
         tx_outs.sort_by_key(|note| note.name);
 
         assert_eq!(outs, tx_outs);
+    }
+
+    #[test]
+    fn parse_burn_tx() {
+        let noun = iris_ztd::cue(TX_BURNED).unwrap();
+        let _tx = <Option<Option<RawTxV0>>>::from_noun(&noun)
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

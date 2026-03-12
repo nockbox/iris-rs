@@ -1,7 +1,7 @@
-use super::note::{Note, Version};
+use super::note::{BlockHeight, Name, Note, Version};
 use crate::Nicks;
 use alloc::vec::Vec;
-use iris_ztd::{Digest, Noun, NounDecode, NounEncode};
+use iris_ztd::{Bignum, Digest, Noun, ZSet};
 
 #[cfg(feature = "wasm")]
 use alloc::{boxed::Box, format, string::ToString};
@@ -10,13 +10,85 @@ pub type TxId = Digest;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
-#[serde(untagged)]
+#[iris_ztd::noun_derive(
+    Debug,
+    Clone,
+    NounEncode,
+    NounDecode,
+    Serialize,
+    Deserialize,
+    tsify_wasm
+)]
+#[iris_ztd::wasm_noun_codec(no_derive, no_hash, noun_tag = "version")]
+pub enum Tx {
+    #[noun(tag = 0)]
+    V0(crate::v0::TxV0),
+    #[noun(tag = 1)]
+    V1(crate::v1::TxV1),
+}
+
+impl Tx {
+    pub fn version(&self) -> Version {
+        match self {
+            Tx::V0(_) => Version::V0,
+            Tx::V1(_) => Version::V1,
+        }
+    }
+
+    pub fn total_size(&self) -> u64 {
+        match self {
+            Tx::V0(tx) => tx.total_size,
+            Tx::V1(tx) => tx.total_size,
+        }
+    }
+
+    pub fn outputs(&self) -> Outputs {
+        match self {
+            Tx::V0(tx) => Outputs::V0(tx.outputs.clone()),
+            Tx::V1(tx) => Outputs::V1(tx.outputs.clone()),
+        }
+    }
+
+    pub fn raw(&self) -> RawTx {
+        match self {
+            Tx::V0(tx) => RawTx::V0(tx.raw.clone()),
+            Tx::V1(tx) => RawTx::V1(tx.raw.clone()),
+        }
+    }
+}
+
+#[iris_ztd::noun_derive(Debug, Clone, Serialize, Deserialize, tsify_wasm)]
+pub enum Outputs {
+    #[noun(tag = 0)]
+    V0(crate::v0::OutputsV0),
+    #[noun(tag = 1)]
+    V1(crate::v1::OutputsV1),
+}
+
+impl Outputs {
+    pub fn notes(&self) -> Vec<Note> {
+        match self {
+            Self::V0(o) => o.0.iter().map(|e| Note::V0(e.1.note.clone())).collect(),
+            Self::V1(o) => o.0.iter().map(|e| Note::V1(e.note.clone())).collect(),
+        }
+    }
+}
+
+#[iris_ztd::noun_derive(
+    Debug,
+    Clone,
+    NounEncode,
+    NounDecode,
+    Serialize,
+    Deserialize,
+    tsify_wasm
+)]
+#[iris_ztd::wasm_noun_codec(no_derive, no_hash, noun_tag = "version")]
 pub enum RawTx {
-    V0(super::v0::RawTxV0),
-    V1(super::v1::RawTxV1),
+    #[noun(cell)]
+    V0(crate::v0::RawTxV0),
+    #[noun(embedded_tag)]
+    V1(crate::v1::RawTxV1),
 }
 
 #[iris_ztd_derive::wasm_member_methods]
@@ -35,33 +107,32 @@ impl RawTx {
         }
     }
 
-    pub fn outputs(&self) -> Vec<Note> {
+    pub fn outputs(
+        &self,
+        block_height: BlockHeight,
+        tx_engine_settings: TxEngineSettings,
+    ) -> Vec<Note> {
         match self {
-            RawTx::V0(tx) => tx.outputs().into_iter().map(Note::V0).collect(),
-            RawTx::V1(tx) => tx.outputs().into_iter().map(Note::V1).collect(),
+            RawTx::V0(tx) => tx.outputs(block_height).into_iter().map(Note::V0).collect(),
+            RawTx::V1(tx) => tx
+                .outputs(block_height, tx_engine_settings)
+                .into_iter()
+                .map(Note::V1)
+                .collect(),
         }
     }
-}
 
-impl NounEncode for RawTx {
-    fn to_noun(&self) -> Noun {
+    pub fn input_names(&self) -> Vec<Name> {
         match self {
-            RawTx::V0(tx) => tx.to_noun(),
-            RawTx::V1(tx) => (1u32, tx).to_noun(),
+            RawTx::V0(tx) => tx.input_names(),
+            RawTx::V1(tx) => tx.input_names(),
         }
     }
-}
 
-impl NounDecode for RawTx {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        // TODO: instead check whether head is a cell or an atom
-        if let Some(tx) = super::v0::RawTxV0::from_noun(noun) {
-            return Some(RawTx::V0(tx));
-        }
-        let (version, tx): (u32, super::v1::RawTxV1) = NounDecode::from_noun(noun)?;
-        match version {
-            1 => Some(RawTx::V1(tx)),
-            _ => None,
+    pub fn total_fees(&self) -> Nicks {
+        match self {
+            RawTx::V0(tx) => tx.total_fees,
+            RawTx::V1(tx) => tx.spends.total_fees(),
         }
     }
 }
@@ -104,6 +175,16 @@ impl TxEngineSettings {
 
     pub fn v1_bythos_default() -> Self {
         Self::v1_bythos_with_word_cost((1 << 14).into())
+    }
+
+    pub fn v0_default() -> Self {
+        Self {
+            tx_engine_version: Version::V0,
+            tx_engine_patch: 0,
+            min_fee: 0u64.into(),
+            cost_per_word: 0u64.into(),
+            witness_word_div: 0,
+        }
     }
 }
 
@@ -166,6 +247,78 @@ impl Page {
         match self {
             Self::V0(p) => p.block_commitment(),
             Self::V1(p) => p.block_commitment(),
+        }
+    }
+}
+
+impl Page {
+    pub fn pow_mut(&mut self) -> &mut Option<Noun> {
+        match self {
+            Self::V0(p) => &mut p.pow,
+            Self::V1(p) => &mut p.pow,
+        }
+    }
+
+    pub fn version(&self) -> Version {
+        match self {
+            Self::V0(_) => Version::V0,
+            Self::V1(_) => Version::V1,
+        }
+    }
+
+    pub fn parent(&self) -> Digest {
+        match self {
+            Page::V0(p) => p.parent,
+            Page::V1(p) => p.parent,
+        }
+    }
+
+    pub fn tx_ids(&self) -> &ZSet<Digest> {
+        match self {
+            Page::V0(p) => &p.tx_ids,
+            Page::V1(p) => &p.tx_ids,
+        }
+    }
+
+    pub fn timestamp(&self) -> u64 {
+        match self {
+            Page::V0(p) => p.timestamp,
+            Page::V1(p) => p.timestamp,
+        }
+    }
+
+    pub fn epoch_counter(&self) -> u32 {
+        match self {
+            Page::V0(p) => p.epoch_counter,
+            Page::V1(p) => p.epoch_counter,
+        }
+    }
+
+    pub fn target(&self) -> &Bignum {
+        match self {
+            Page::V0(p) => &p.target,
+            Page::V1(p) => &p.target,
+        }
+    }
+
+    pub fn accumulated_work(&self) -> &Bignum {
+        match self {
+            Page::V0(p) => &p.accumulated_work,
+            Page::V1(p) => &p.accumulated_work,
+        }
+    }
+
+    pub fn height(&self) -> &crate::BlockHeight {
+        match self {
+            Page::V0(p) => &p.height,
+            Page::V1(p) => &p.height,
+        }
+    }
+
+    pub fn msg(&self) -> &crate::v0::PageMsg {
+        match self {
+            Page::V0(p) => &p.msg,
+            Page::V1(p) => &p.msg,
         }
     }
 }

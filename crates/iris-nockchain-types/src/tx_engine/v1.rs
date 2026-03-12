@@ -1060,6 +1060,10 @@ impl SpendsV1 {
         core::cmp::max(settings.min_fee, self.unclamped_fee(settings))
     }
 
+    pub fn total_fees(&self) -> Nicks {
+        self.0.iter().fold(Nicks(0), |acc, (_, s)| acc + s.fee())
+    }
+
     pub fn apply_witness(&self, witness_data: &WitnessData) -> SpendsV1 {
         let mut spends = SpendsV1::default();
         for (name, spend) in &self.0 {
@@ -1074,6 +1078,25 @@ impl SpendsV1 {
         }
         spends
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode, Hashable)]
+#[iris_ztd::wasm_noun_codec]
+pub struct OutputV1 {
+    pub note: NoteV1,
+    pub seeds: SeedsV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode, Hashable)]
+#[iris_ztd::wasm_noun_codec]
+pub struct OutputsV1(pub ZSet<OutputV1>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode)]
+#[iris_ztd::wasm_noun_codec(no_hash)]
+pub struct TxV1 {
+    pub raw: RawTxV1,
+    pub total_size: u64,
+    pub outputs: OutputsV1,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode)]
@@ -1103,17 +1126,21 @@ impl RawTxV1 {
     /// Calculate output notes from the transaction spends.
     ///
     /// This function combines seeds across multiple spends into one output note per-lock-root.
-    pub fn outputs(&self) -> Vec<NoteV1> {
+    pub fn outputs(
+        &self,
+        origin_page: BlockHeight,
+        tx_engine_settings: TxEngineSettings,
+    ) -> Vec<NoteV1> {
         // Already a ZMap, no conversion needed
         let spends = &self.spends.0;
 
-        let mut seeds_by_lock: BTreeMap<Digest, ZSet<SeedV1>> = BTreeMap::new();
+        let mut seeds_by_lock: BTreeMap<Digest, Vec<SeedV1>> = BTreeMap::new();
         for (_, spend) in spends {
             for seed in spend.seeds().0.iter() {
                 seeds_by_lock
                     .entry(seed.lock_root.hash())
                     .or_default()
-                    .insert(seed.clone());
+                    .push(seed.clone());
             }
         }
 
@@ -1128,8 +1155,18 @@ impl RawTxV1 {
 
             let total_assets: Nicks = seeds.iter().map(|s| s.gift).sum();
 
-            // Hoon code ends up taking the last note-data for the output note, by the tap order of z-set.
-            let note_data = seeds[seeds.len() - 1].note_data.clone();
+            let note_data = if tx_engine_settings.tx_engine_patch >= 1 {
+                // Post-bythos, we're now unifying the data
+                seeds.iter().fold(NoteData::empty(), |mut acc, seed| {
+                    for (k, v) in seed.note_data.0.clone() {
+                        acc.0.insert(k, v);
+                    }
+                    acc
+                })
+            } else {
+                // Pre-bythos behavior (only take the first note-data).
+                seeds[0].note_data.clone()
+            };
 
             let mut normalized_seeds_set: ZSet<SeedV1> = ZSet::new();
             for seed in seeds {
@@ -1147,19 +1184,16 @@ impl RawTxV1 {
 
             let name = Name::new_v1(lock_root_hash, src);
 
-            let note = NoteV1::new(
-                Version::V1,
-                // As opposed to `None`.
-                0,
-                name,
-                note_data,
-                total_assets,
-            );
+            let note = NoteV1::new(Version::V1, origin_page, name, note_data, total_assets);
 
             outputs.push(note);
         }
 
         outputs
+    }
+
+    pub fn input_names(&self) -> Vec<Name> {
+        self.spends.0.iter().map(|(n, _)| *n).collect()
     }
 
     pub fn to_nockchain_tx(&self) -> NockchainTx {
@@ -1208,8 +1242,12 @@ impl NockchainTx {
         }
     }
 
-    pub fn outputs(&self) -> Vec<NoteV1> {
-        self.to_raw_tx().outputs()
+    pub fn outputs(
+        &self,
+        origin_page: BlockHeight,
+        tx_engine_settings: TxEngineSettings,
+    ) -> Vec<NoteV1> {
+        self.to_raw_tx().outputs(origin_page, tx_engine_settings)
     }
 }
 
@@ -1316,17 +1354,17 @@ pub struct TransactionDisplay {
 #[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
 #[iris_ztd::wasm_noun_codec(no_hash, no_noun)]
 pub struct PageV1 {
-    digest: Digest,
-    pow: Option<Noun>,
-    parent: Digest,
-    tx_ids: ZSet<Digest>,
-    coinbase: CoinbaseSplitV1,
-    timestamp: u64,
-    epoch_counter: u32,
-    target: Bignum,
-    accumulated_work: Bignum,
-    height: BlockHeight,
-    msg: crate::v0::PageMsg,
+    pub digest: Digest,
+    pub pow: Option<Noun>,
+    pub parent: Digest,
+    pub tx_ids: ZSet<Digest>,
+    pub coinbase: CoinbaseSplitV1,
+    pub timestamp: u64,
+    pub epoch_counter: u32,
+    pub target: Bignum,
+    pub accumulated_work: Bignum,
+    pub height: BlockHeight,
+    pub msg: crate::v0::PageMsg,
 }
 
 impl PageV1 {
@@ -1404,12 +1442,12 @@ pub struct CoinbaseSplitV1(ZMap<Digest, Nicks>);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Page;
+    use crate::{Page, RawTx, Tx};
     use bip39::Mnemonic;
     use iris_crypto::derive_master_key;
     use iris_ztd::Hashable;
 
-    use super::{RawTxV1 as RawTx, SeedV1 as Seed, SpendV1 as Spend, SpendsV1 as Spends};
+    use super::{RawTxV1, SeedV1 as Seed, SpendV1 as Spend, SpendsV1 as Spends};
 
     fn check_hash(name: &str, h: &impl Hashable, exp: &str) {
         assert_eq!(h.hash().to_string(), exp, "hash mismatch for {}", name);
@@ -1428,15 +1466,49 @@ mod tests {
         "../../test_vectors/6bh1qizhspMEMeLWpB5bf6GRgcxKxPZyuYRpGBaV2Dc1kLPoyFRRbBf.tx"
     );
 
+    // /( tx raw-transaction/AkZYChVAdPSv4WnGkCBgnsxGLgT4hJxGmZ8Q38XPLuKPYCRuP214WAF
+    // /j tx crates/iris-nockchain-types/test_vectors/AkZYChVAdPSv4WnGkCBgnsxGLgT4hJxGmZ8Q38XPLuKPYCRuP214WAF.tx
+    const TX3: &[u8] = include_bytes!(
+        "../../test_vectors/AkZYChVAdPSv4WnGkCBgnsxGLgT4hJxGmZ8Q38XPLuKPYCRuP214WAF.tx"
+    );
+
+    // /( tx block-transaction/6nRbf6A9W4bTQUdB36KKASwtz9XYNX2aoFHfHvpjLZkQgUDoTxhV9D8/C6BgvFrBmT4cVHcXNN2W3FWUuKZauK7Dv1LgRCZQc5zsVGRK8u9hoyW
+    // /j tx crates/iris-nockchain-types/test_vectors/C6BgvFrBmT4cVHcXNN2W3FWUuKZauK7Dv1LgRCZQc5zsVGRK8u9hoyW.tx
+    const TX4: &[u8] = include_bytes!(
+        "../../test_vectors/C6BgvFrBmT4cVHcXNN2W3FWUuKZauK7Dv1LgRCZQc5zsVGRK8u9hoyW.tx"
+    );
+
+    // This transaction is unique in a sense that it has 2 seeds to the same lock root. One of the seeds has note data, other doesn't.
+    // In terms of z-order, the output should have no note-data created.
     // /( b block/77aAcbLMWfbhFw6Mfj7VT1xyrgNFkbT1TyD7yqAtnKQ5DTArCftz5jj
     // /j b crates/iris-nockchain-types/test_vectors/53384.block
     const BLOCK_53384: &[u8] = include_bytes!("../../test_vectors/53384.block");
 
     #[test]
+    fn check_tx_note_data_order() {
+        let noun = iris_ztd::cue(TX3).unwrap();
+        let Some(Some(tx)): Option<Option<RawTxV1>> = NounDecode::from_noun(&noun).unwrap() else {
+            panic!("Cannot parse tx");
+        };
+        for note in tx.outputs(52561, TxEngineSettings::v1_default()) {
+            assert_eq!(note.note_data.0, ZMap::default());
+        }
+    }
+
+    #[test]
+    fn check_tx_42560() {
+        let noun = iris_ztd::cue(TX4).unwrap();
+        let Some(Some(Tx::V1(_))): Option<Option<Tx>> = NounDecode::from_noun(&noun).unwrap()
+        else {
+            panic!("Cannot parse tx");
+        };
+    }
+
+    #[test]
     fn check_tx_v0_v1() {
         let noun = iris_ztd::cue(TX1).unwrap();
         let (txid, spends): (String, Spends) = NounDecode::from_noun(&noun).unwrap();
-        let tx = RawTx::new(spends);
+        let tx = RawTxV1::new(spends);
         let id = tx.calc_id();
         assert_eq!(id.to_string(), txid);
 
@@ -1444,7 +1516,7 @@ mod tests {
         let mut outs: Vec<NoteV1> = NounDecode::from_noun(&out_noun).unwrap();
         outs.sort_by_key(|note| note.name);
 
-        let mut tx_outs = tx.outputs();
+        let mut tx_outs = tx.outputs(0, TxEngineSettings::v1_default());
         tx_outs.sort_by_key(|note| note.name);
 
         assert_eq!(outs, tx_outs);
@@ -1473,7 +1545,12 @@ mod tests {
         let _zm_decode = ZSet::<Noun>::from_noun(&zm_noun).unwrap();
 
         let _: (Version, TxId, ZMap<Name, Noun>) = NounDecode::from_noun(&noun).unwrap();
-        let tx = RawTx::from_noun(&noun).unwrap();
+        let Some(RawTx::V1(_)) = RawTx::from_noun(&noun) else {
+            panic!("Cannot parse tx");
+        };
+        let Some(tx) = RawTxV1::from_noun(&noun) else {
+            panic!("Cannot parse tx v1");
+        };
         check_hash(
             "tx_id",
             &tx.id,
@@ -1628,7 +1705,7 @@ mod tests {
             "7WHUF24eUFiKm4gZ7Rw9EyB9FygRth9o7KVa7G3wKizb8xXR3hm4vjW",
         );
 
-        let tx = RawTx::new(spends);
+        let tx = RawTxV1::new(spends);
         check_hash(
             "transaction id",
             &tx.id,
@@ -1637,7 +1714,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_block_53383() {
+    fn parse_block_53384() {
         let noun = iris_ztd::cue(BLOCK_53384).unwrap();
         let Some(Some(Page::V1(block))): Option<Option<Page>> =
             NounDecode::from_noun(&noun).unwrap()
@@ -1654,7 +1731,7 @@ mod tests {
             coinbase.iter().map(|v| v.name()).collect::<Vec<_>>(),
             &[
                 Name::new(
-                    "3VmnKbeM61f3s5oovtMvxyTeaf46Ap5UnuQCB5DWnu3DgXZsKRi1iAt"
+                    "4g8Dsxjj7QCvHwz67cFPu9qE8BohCSusRXAXYknix6Q8X8KuqJhFdG8"
                         .try_into()
                         .unwrap(),
                     "5Vndp49nTLS9TTy95iq3cFqqtnkk3C2hz446y82QNsfsb6TuWCtgQMW"
@@ -1662,13 +1739,13 @@ mod tests {
                         .unwrap()
                 ),
                 Name::new(
-                    "4g8Dsxjj7QCvHwz67cFPu9qE8BohCSusRXAXYknix6Q8X8KuqJhFdG8"
+                    "3VmnKbeM61f3s5oovtMvxyTeaf46Ap5UnuQCB5DWnu3DgXZsKRi1iAt"
                         .try_into()
                         .unwrap(),
                     "5Vndp49nTLS9TTy95iq3cFqqtnkk3C2hz446y82QNsfsb6TuWCtgQMW"
                         .try_into()
                         .unwrap()
-                )
+                ),
             ],
             "{coinbase:?}",
         );

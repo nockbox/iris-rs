@@ -372,6 +372,7 @@ impl<T: NounDecode> NounDecode for Zeroable<T> {
     fn from_noun(noun: &Noun) -> Option<Self> {
         match noun {
             Noun::Atom(x) if x.is_zero() => Some(Zeroable(None)),
+            Noun::Atom(_) => None,
             v => Some(Zeroable(Some(T::from_noun(v)?))),
         }
     }

@@ -17,7 +17,7 @@ pub const PRIME_128: u128 = 18446744069414584321;
 const RP: u128 = 340282366841710300967557013911933812736;
 pub const R2: u128 = 18446744065119617025;
 
-#[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Serialize, Deserialize, Hash)]
 #[repr(transparent)]
 pub struct Belt(pub u64);
 

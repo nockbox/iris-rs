@@ -17,7 +17,7 @@ pub trait ZEntry {
     type Key: NounEncode;
     type Value;
     type Pair;
-    type BorrowPair<'a>: Hashable + NounEncode + 'a
+    type BorrowPair<'a>: NounEncode + 'a
     where
         Self: 'a;
 
@@ -31,6 +31,13 @@ pub trait ZEntry {
     fn into_pair(self) -> Self::Pair;
 
     fn from_pair(pair: Self::Pair) -> Self;
+}
+
+pub trait ZHashableEntry: ZEntry {
+    type HashableBorrowPair<'a>: Hashable + 'a
+    where
+        Self: 'a;
+    fn hashable_pair(&self) -> Self::HashableBorrowPair<'_>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Ord, PartialOrd)]
@@ -215,15 +222,15 @@ impl<E: ZEntry> core::iter::FromIterator<E::Pair> for ZBase<E> {
     }
 }
 
-impl<E: ZEntry> Hashable for ZBase<E> {
+impl<E: ZHashableEntry> Hashable for ZBase<E> {
     fn hash(&self) -> Digest {
-        fn hash_node<E: ZEntry>(node: &Zeroable<Box<Node<E>>>) -> Digest {
+        fn hash_node<E: ZHashableEntry>(node: &Zeroable<Box<Node<E>>>) -> Digest {
             match &node.0 {
                 None => 0.hash(),
                 Some(n) => {
                     let left_hash = hash_node(&n.left);
                     let right_hash = hash_node(&n.right);
-                    (n.entry.pair(), (left_hash, right_hash)).hash()
+                    (n.entry.hashable_pair(), (left_hash, right_hash)).hash()
                 }
             }
         }
@@ -283,18 +290,12 @@ pub struct ZBaseIntoIterator<E> {
     stack: Vec<Box<Node<E>>>,
 }
 
-impl<E: ZEntry> Iterator for ZBaseIntoIterator<E> {
-    type Item = E::Pair;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let cur = self.stack.pop()?;
-        if let Some(n) = cur.left.0 {
+impl<E: ZEntry> ZBaseIntoIterator<E> {
+    fn push_right_spine(&mut self, mut node: Option<Box<Node<E>>>) {
+        while let Some(mut n) = node {
+            node = n.right.0.take();
             self.stack.push(n);
         }
-        if let Some(n) = cur.right.0 {
-            self.stack.push(n);
-        }
-        Some(cur.entry.into_pair())
     }
 }
 
@@ -302,12 +303,21 @@ impl<E: ZEntry> IntoIterator for ZBase<E> {
     type Item = E::Pair;
     type IntoIter = ZBaseIntoIterator<E>;
 
-    fn into_iter(self) -> Self::IntoIter {
-        let mut stack = vec![];
-        if let Some(n) = self.root.0 {
-            stack.push(n);
-        }
-        ZBaseIntoIterator { stack }
+    fn into_iter(mut self) -> Self::IntoIter {
+        let mut it = ZBaseIntoIterator { stack: vec![] };
+        it.push_right_spine(self.root.0.take());
+        it
+    }
+}
+
+impl<E: ZEntry> Iterator for ZBaseIntoIterator<E> {
+    type Item = E::Pair;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut cur = self.stack.pop()?;
+        let left = cur.left.0.take();
+        self.push_right_spine(left);
+        Some(cur.entry.into_pair())
     }
 }
 
@@ -315,17 +325,21 @@ pub struct ZBaseIterator<'a, E> {
     stack: Vec<&'a Node<E>>,
 }
 
+impl<'a, E: ZEntry> ZBaseIterator<'a, E> {
+    fn push_right_spine(&mut self, mut node: Option<&'a Node<E>>) {
+        while let Some(n) = node {
+            self.stack.push(n);
+            node = n.right.0.as_deref();
+        }
+    }
+}
+
 impl<'a, E: ZEntry> Iterator for ZBaseIterator<'a, E> {
     type Item = E::BorrowPair<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let cur = self.stack.pop()?;
-        if let Some(n) = cur.left.0.as_deref() {
-            self.stack.push(n);
-        }
-        if let Some(n) = cur.right.0.as_deref() {
-            self.stack.push(n);
-        }
+        self.push_right_spine(cur.left.0.as_deref());
         Some(cur.entry.pair())
     }
 }
@@ -341,11 +355,9 @@ impl<'a, E: ZEntry> IntoIterator for &'a ZBase<E> {
     type IntoIter = ZBaseIterator<'a, E>;
 
     fn into_iter(self) -> Self::IntoIter {
-        let mut stack = vec![];
-        if let Some(n) = self.root.0.as_deref() {
-            stack.push(n);
-        }
-        ZBaseIterator { stack }
+        let mut it = ZBaseIterator { stack: vec![] };
+        it.push_right_spine(self.root.0.as_deref());
+        it
     }
 }
 

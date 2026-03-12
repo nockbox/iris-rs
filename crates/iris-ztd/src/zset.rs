@@ -1,5 +1,5 @@
 use super::{Hashable, NounDecode, NounEncode};
-use crate::zbase::{ZBase, ZEntry};
+use crate::zbase::{ZBase, ZEntry, ZHashableEntry};
 use alloc::fmt::Debug;
 #[cfg(feature = "wasm")]
 use alloc::{boxed::Box, format, string::ToString};
@@ -50,6 +50,17 @@ impl<T: Hashable + NounEncode> ZEntry for ZSetEntry<T> {
 
     fn from_pair(pair: Self::Pair) -> Self {
         Self { key: pair }
+    }
+}
+
+impl<T: Hashable + NounEncode> ZHashableEntry for ZSetEntry<T> {
+    type HashableBorrowPair<'a>
+        = &'a T
+    where
+        T: 'a;
+
+    fn hashable_pair(&self) -> Self::HashableBorrowPair<'_> {
+        &self.key
     }
 }
 
@@ -197,5 +208,38 @@ mod tests {
         let zm_noun = zm.to_noun();
         let zm_decode = ZSet::<String>::from_noun(&zm_noun).unwrap();
         assert_eq!(Vec::from(zm), Vec::from(zm_decode));
+    }
+
+    #[test]
+    fn test_zset_order() {
+        let zs_noun = (1, (2, (3, (), ()), (4, (5, (), ()), ())), (10, (), ())).to_noun();
+        let zs = ZSet::<u64>::from_noun(&zs_noun).unwrap();
+        assert_eq!(zs.iter().copied().collect::<Vec<_>>(), &[10, 1, 4, 5, 2, 3]);
+        assert_eq!(zs.into_iter().collect::<Vec<_>>(), &[10, 1, 4, 5, 2, 3]);
+    }
+
+    #[test]
+    fn test_zset_ins_order() {
+        let expected_order = [
+            20, 4, 15, 14, 2, 19, 6, 5, 8, 7, 11, 1, 17, 16, 3, 13, 10, 12, 18, 9,
+        ];
+
+        let mut zs = ZSet::<u64>::new();
+
+        for i in 1u64..=20 {
+            zs.insert(i);
+        }
+
+        assert_eq!(zs.iter().copied().collect::<Vec<_>>(), &expected_order);
+        assert_eq!(zs.into_iter().collect::<Vec<_>>(), &expected_order);
+
+        let mut zs = ZSet::<u64>::new();
+
+        for i in expected_order {
+            zs.insert(i);
+        }
+
+        assert_eq!(zs.iter().copied().collect::<Vec<_>>(), &expected_order);
+        assert_eq!(zs.into_iter().collect::<Vec<_>>(), &expected_order);
     }
 }

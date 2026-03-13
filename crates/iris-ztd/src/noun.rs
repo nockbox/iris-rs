@@ -50,6 +50,73 @@ where
     T::from_noun(&r).ok_or_else(|| DeError::custom("unable to parse noun"))
 }
 
+const fn mug(mut x: u64) -> u64 {
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9u64);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111ebu64);
+    x ^ (x >> 31)
+}
+
+const fn mug_bytes(b: &[u8]) -> u64 {
+    let mut ret = 0u64;
+
+    let mut i = 0;
+
+    while i < b.len() {
+        ret = mug(ret.wrapping_add(b[i] as u64));
+        i += 1;
+    }
+
+    mug(ret)
+}
+
+fn mug_noun(noun: &Noun) -> u32 {
+    match noun {
+        Noun::Atom(atom) => mug(mug_bytes(&atom.to_le_bytes())) as u32,
+        Noun::Cell(left, right) => mug(left.0.mug as u64 | ((right.0.mug as u64) << 32)) as u32,
+    }
+}
+
+fn weight_noun(noun: &Noun) -> u32 {
+    match noun {
+        Noun::Atom(_) => 1,
+        Noun::Cell(left, right) => 1 + left.0.weight + right.0.weight,
+    }
+}
+
+#[derive(Clone, Debug)]
+struct HashNounContents {
+    noun: Noun,
+    mug: u32,
+    weight: u32,
+}
+
+impl From<Noun> for HashNounContents {
+    fn from(noun: Noun) -> Self {
+        Self {
+            mug: mug_noun(&noun),
+            weight: weight_noun(&noun),
+            noun,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct HashNoun(Arc<HashNounContents>);
+
+impl From<Noun> for HashNoun {
+    fn from(noun: Noun) -> Self {
+        Self(Arc::new(noun.into()))
+    }
+}
+
+impl core::ops::Deref for HashNoun {
+    type Target = Noun;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.noun
+    }
+}
+
 /// Nock-native data structure
 ///
 /// A Noun is an Atom or a Cell.
@@ -59,7 +126,7 @@ where
 /// An Atom is a natural number.
 ///
 /// Specific to iris, serialized atoms are encoded as little-endian hex strings.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(
     feature = "wasm",
@@ -67,8 +134,29 @@ where
 )]
 pub enum Noun {
     Atom(UBig),
-    Cell(Arc<Noun>, Arc<Noun>),
+    Cell(HashNoun, HashNoun),
 }
+
+impl PartialEq for Noun {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Noun::Atom(a), Noun::Atom(b)) => a == b,
+            (Noun::Cell(a1, b1), Noun::Cell(a2, b2)) => {
+                (Arc::as_ptr(&a1.0) == Arc::as_ptr(&a2.0)
+                    && Arc::as_ptr(&b1.0) == Arc::as_ptr(&b2.0))
+                    || (a1.0.mug == a2.0.mug
+                        && b1.0.mug == b2.0.mug
+                        && a1.0.weight == a2.0.weight
+                        && b1.0.weight == b2.0.weight
+                        && a1.0.noun == a2.0.noun
+                        && b1.0.noun == b2.0.noun)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Noun {}
 
 impl core::fmt::Display for Noun {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -103,12 +191,12 @@ impl Serialize for Noun {
             Self::Cell(a, b) => {
                 let mut seq = serializer.serialize_seq(None)?;
 
-                seq.serialize_element(a)?;
+                seq.serialize_element(&**a)?;
 
                 let mut b = b.clone();
 
-                while let Self::Cell(left, right) = b.as_ref() {
-                    seq.serialize_element(left)?;
+                while let Self::Cell(left, right) = &*b {
+                    seq.serialize_element(&**left)?;
                     b = right.clone();
                 }
 
@@ -159,7 +247,7 @@ impl<'de> Deserialize<'de> for Noun {
                 let mut top = stack.pop().ok_or_else(|| DeError::custom("empty cell"))?;
 
                 while let Some(noun) = stack.pop() {
-                    top = Noun::Cell(Arc::new(noun), Arc::new(top));
+                    top = Noun::Cell(noun.into(), top.into());
                 }
 
                 Ok(top)
@@ -186,7 +274,7 @@ fn atom(value: u64) -> Noun {
 }
 
 fn cons(left: Noun, right: Noun) -> Noun {
-    Noun::Cell(Arc::new(left), Arc::new(right))
+    Noun::Cell(left.into(), right.into())
 }
 
 impl<T: NounEncode + ?Sized> NounEncode for &T {
@@ -538,59 +626,61 @@ pub fn jam(noun: Noun) -> Vec<u8> {
         atom.bit_len()
     }
 
-    fn mat_backref(buffer: &mut BitVec<u8, Lsb0>, backref: usize) {
+    fn mat_backref(writer: &mut BitWriter, backref: usize) {
         if backref == 0 {
-            buffer.push(true);
-            buffer.push(true);
-            buffer.push(true);
+            writer.write_bits_from_value(0b111, 3); // 1 1 1
             return;
         }
         let backref_sz = met0_u64_to_usize(backref as u64);
         let backref_sz_sz = met0_u64_to_usize(backref_sz as u64);
-        buffer.push(true);
-        buffer.push(true);
-        let buffer_len = buffer.len();
-        buffer.resize(buffer_len + backref_sz_sz, false);
-        buffer.push(true);
-        let size_bits = BitSlice::<usize, Lsb0>::from_element(&backref_sz);
-        buffer.extend_from_bitslice(&size_bits[..backref_sz_sz - 1]);
-        let backref_bits = BitSlice::<usize, Lsb0>::from_element(&backref);
-        buffer.extend_from_bitslice(&backref_bits[..backref_sz]);
+        // backref tag 1 1
+        writer.write_bit(true);
+        writer.write_bit(true);
+        // write backref_sz_sz zeros
+        writer.write_zeros(backref_sz_sz);
+        // delimiter 1
+        writer.write_bit(true);
+        // write backref_sz_sz-1 bits of backref_sz (LSB first)
+        writer.write_bits_from_value(backref_sz, backref_sz_sz - 1);
+        // write backref bits (backref_sz bits)
+        writer.write_bits_from_value(backref, backref_sz);
     }
 
-    fn mat_atom(buffer: &mut BitVec<u8, Lsb0>, atom: &UBig) {
+    fn mat_atom(writer: &mut BitWriter, atom: &UBig) {
         if atom.is_zero() {
-            buffer.push(false);
-            buffer.push(true);
+            writer.write_bits_from_value(0b10, 2); // 0 1
             return;
         }
         let atom_sz = met0_atom(atom);
         let atom_sz_sz = met0_u64_to_usize(atom_sz as u64);
-        buffer.push(false);
-        let buffer_len = buffer.len();
-        buffer.resize(buffer_len + atom_sz_sz, false);
-        buffer.push(true);
-        let size_bits = BitSlice::<usize, Lsb0>::from_element(&atom_sz);
-        buffer.extend_from_bitslice(&size_bits[..atom_sz_sz - 1]);
-        let atom_bytes = atom.to_le_bytes();
-        let atom_bits = BitSlice::<u8, Lsb0>::from_slice(&atom_bytes);
-        buffer.extend_from_bitslice(&atom_bits[..atom_sz]);
+        writer.write_bit(false); // atom tag 0
+        writer.write_zeros(atom_sz_sz); // size zeros
+        writer.write_bit(true); // delimiter
+                                // write size bits (atom_sz_sz - 1)
+        writer.write_bits_from_value(atom_sz, atom_sz_sz - 1);
+        // write atom bits (little-endian order)
+        writer.write_bits_from_le_bytes(&atom.to_le_bytes(), atom_sz);
     }
 
-    fn find_backref(backrefs: &[(Noun, usize)], target: &Noun) -> Option<usize> {
+    fn find_backref(
+        backrefs: &BTreeMap<(u32, u32), Vec<(Noun, usize)>>,
+        weight: u32,
+        mug: u32,
+        target: &Noun,
+    ) -> Option<usize> {
         backrefs
-            .iter()
-            .find(|(noun, _)| noun == target)
+            .get(&(weight, mug))
+            .and_then(|vec| vec.iter().find(|(n, _)| n == target))
             .map(|(_, offset)| *offset)
     }
 
-    let mut backrefs: Vec<(Noun, usize)> = Vec::new();
+    let mut backrefs: BTreeMap<(u32, u32), Vec<(Noun, usize)>> = BTreeMap::new();
     let mut stack = Vec::new();
-    stack.push(noun);
-    let mut buffer = BitVec::<u8, Lsb0>::new();
+    stack.push((weight_noun(&noun), mug_noun(&noun), noun));
+    let mut buffer = BitWriter::new();
 
-    while let Some(current) = stack.pop() {
-        if let Some(backref) = find_backref(&backrefs, &current) {
+    while let Some((weight, mug, current)) = stack.pop() {
+        if let Some(backref) = find_backref(&backrefs, weight, mug, &current) {
             match &current {
                 Noun::Atom(atom) => {
                     if met0_u64_to_usize(backref as u64) < met0_atom(atom) {
@@ -604,17 +694,20 @@ pub fn jam(noun: Noun) -> Vec<u8> {
                 }
             }
         } else {
-            let offset = buffer.len();
-            backrefs.push((current.clone(), offset));
+            let offset = buffer.bit_len();
+            backrefs
+                .entry((weight, mug))
+                .or_default()
+                .push((current.clone(), offset));
             match current {
                 Noun::Atom(atom) => {
                     mat_atom(&mut buffer, &atom);
                 }
                 Noun::Cell(left, right) => {
-                    buffer.push(true);
-                    buffer.push(false);
-                    stack.push((*right).clone());
-                    stack.push((*left).clone());
+                    buffer.write_bit(true);
+                    buffer.write_bit(false);
+                    stack.push((right.0.weight, right.0.mug, (*right).clone()));
+                    stack.push((left.0.weight, left.0.mug, (*left).clone()));
                 }
             }
         }
@@ -741,10 +834,10 @@ pub fn cue_bitslice(buffer: &BitSlice<u8, Lsb0>) -> Option<Noun> {
                             *dest_ptr = (**backref_map.get(&backref)?).clone();
                         } else {
                             // 10 tag: cell
-                            let head = Arc::new(atom(0));
-                            let head_ptr = Arc::as_ptr(&head) as *mut _;
-                            let tail = Arc::new(atom(0));
-                            let tail_ptr = Arc::as_ptr(&tail) as *mut _;
+                            let head = HashNoun::from(atom(0));
+                            let head_ptr = Arc::as_ptr(&head.0) as *mut _;
+                            let tail = HashNoun::from(atom(0));
+                            let tail_ptr = Arc::as_ptr(&tail.0) as *mut _;
                             *dest_ptr = Noun::Cell(head, tail);
                             let backref = (cursor - 2) as u64;
                             backref_map.insert(backref, dest_ptr);
@@ -767,4 +860,166 @@ pub fn cue_bitslice(buffer: &BitSlice<u8, Lsb0>) -> Option<Noun> {
     }
 
     Some(result)
+}
+
+// Fast bit writer that appends bits LSB-first into an underlying Vec<u8>
+pub struct BitWriter {
+    buf: Vec<u8>,   // final byte buffer (little-endian bit order per byte)
+    acc: u8,        // in-progress byte accumulator
+    nbits: u8,      // number of bits currently stored in `acc` (0-7)
+    bit_len: usize, // total number of bits written so far
+}
+impl Default for BitWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BitWriter {
+    #[inline]
+    pub fn new() -> Self {
+        BitWriter {
+            buf: Vec::with_capacity(1024),
+            acc: 0,
+            nbits: 0,
+            bit_len: 0,
+        }
+    }
+
+    #[inline]
+    pub fn bit_len(&self) -> usize {
+        self.bit_len
+    }
+
+    #[inline]
+    pub fn write_bit(&mut self, bit: bool) {
+        if bit {
+            self.acc |= 1 << self.nbits;
+        }
+        self.nbits += 1;
+        self.bit_len += 1;
+        if self.nbits == 8 {
+            self.flush_acc();
+        }
+    }
+
+    #[inline]
+    pub fn write_zeros(&mut self, count: usize) {
+        // produce `count` zero bits quickly
+        // Fill partial acc first
+        let mut remaining = count;
+        if self.nbits != 0 {
+            let space = 8 - self.nbits;
+            if remaining < space as usize {
+                // // just bump counters – acc already contains zeros in high bits
+                // self.nbits += remaining as u8;
+                // self.bit_len += remaining;
+                // return;
+                // keep the valid low bits we already had, clear the bits we are about to add
+                let mask = (1u16 << self.nbits) - 1; // e.g. nbits = 3  -> 0b00000111
+                self.acc &= mask as u8; // zero out bits [self.nbits .. 7]
+
+                // now bump the cursors exactly as before
+                self.nbits += remaining as u8;
+                self.bit_len += remaining;
+                return;
+            } else {
+                // fill acc with zeros and flush
+                // self.nbits = 8;
+                // self.bit_len += space as usize;
+                // remaining -= space as usize;
+                // zero-fill high bits we are about to claim
+                let mask = (1u16 << self.nbits) - 1; // keep the `nbits` low bits
+                self.acc &= mask as u8; // clear [self.nbits .. 7]
+
+                // now top-off the byte and flush
+                self.nbits = 8;
+                self.bit_len += space as usize;
+                remaining -= space as usize;
+                self.flush_acc();
+            }
+        }
+        // Now we are byte-aligned
+        let full_bytes = remaining / 8;
+        if full_bytes > 0 {
+            self.buf.extend(core::iter::repeat_n(0u8, full_bytes));
+            self.bit_len += full_bytes * 8;
+            remaining -= full_bytes * 8;
+        }
+        // Remaining < 8, leave in acc (which is zero)
+        self.nbits = remaining as u8;
+        self.acc = 0; // already zero
+        self.bit_len += remaining;
+    }
+
+    #[inline]
+    pub fn write_bits_from_value(&mut self, mut value: usize, count: usize) {
+        for _ in 0..count {
+            self.write_bit((value & 1) == 1);
+            value >>= 1;
+        }
+    }
+
+    #[inline]
+    pub fn write_bits_from_le_bytes(&mut self, bytes: &[u8], total_bits: usize) {
+        if total_bits == 0 {
+            return;
+        }
+
+        let full_bytes = total_bits / 8;
+        let rem_bits: usize = total_bits % 8;
+
+        if self.nbits == 0 {
+            // Aligned path: copy full bytes directly
+            if full_bytes > 0 {
+                self.buf.extend_from_slice(&bytes[..full_bytes]);
+                self.bit_len += full_bytes * 8;
+            }
+        } else if full_bytes > 0 {
+            // Unaligned path: merge each byte with current accumulator
+            let shift = self.nbits;
+            let mut carry = self.acc;
+            for &byte in &bytes[..full_bytes] {
+                let combined = carry | (byte << shift);
+                self.buf.push(combined);
+                self.bit_len += 8;
+                carry = byte >> (8 - shift);
+            }
+            self.acc = carry;
+            // note: nbits unchanged
+        }
+
+        // Handle remaining bits (<8) from the next byte
+        if rem_bits > 0 {
+            let src_byte = if full_bytes < bytes.len() {
+                bytes[full_bytes]
+            } else {
+                0
+            };
+            for i in 0..rem_bits {
+                self.write_bit(((src_byte >> i) & 1) == 1);
+            }
+        }
+        // Update bit_len to reflect the total number of bits written so far
+        // This didn't work.
+        // self.bit_len = self.buf.len() * 8 + self.nbits as usize;
+    }
+
+    #[inline]
+    pub fn flush_acc(&mut self) {
+        if self.nbits == 0 {
+            return;
+        }
+        self.buf.push(self.acc);
+        self.acc = 0;
+        self.nbits = 0;
+    }
+
+    pub fn into_vec(mut self) -> Vec<u8> {
+        if self.nbits > 0 {
+            // Flush final partial byte (upper bits remain 0)
+            self.flush_acc();
+        }
+        self.buf
+    }
 }

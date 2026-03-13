@@ -380,7 +380,7 @@ pub struct PageV0 {
     pub parent: Digest,
     pub tx_ids: ZSet<Digest>,
     pub coinbase: CoinbaseSplitV0,
-    pub timestamp: u64,
+    pub timestamp: ChainTimestamp,
     pub epoch_counter: u32,
     pub target: Bignum,
     pub accumulated_work: Bignum,
@@ -470,6 +470,73 @@ impl PageV0 {
 #[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
 #[iris_ztd::wasm_noun_codec]
 pub struct CoinbaseSplitV0(ZMap<Sig, Nicks>);
+
+/// Chain timestamp, displayed in unix seconds.
+#[derive(Clone, Copy, Hashable, NounDecode, NounEncode, PartialEq, Eq)]
+#[iris_ztd::wasm_noun_codec]
+#[cfg_attr(
+    feature = "wasm",
+    tsify(type = "number | { __tag_chain_timestamp: undefined }")
+)]
+pub struct ChainTimestamp(pub u64);
+
+impl Serialize for ChainTimestamp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u64(
+            self.as_unix_seconds()
+                .ok_or(serde::ser::Error::custom("Timestamp outside unix epoch"))?,
+        )
+    }
+}
+
+impl<'de> Deserialize<'de> for ChainTimestamp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let unix_seconds = u64::deserialize(deserializer)?;
+        Ok(Self::from_unix_seconds(unix_seconds))
+    }
+}
+
+impl ChainTimestamp {
+    // `@ux`(rsh 6 ~1970.1.1)
+    // 0x8000.000c.ce9e.0d80
+    const EPOCH_OFFSET: u64 = 0x8000_000c_ce9e_0d80;
+
+    pub fn from_unix_seconds(unix_seconds: u64) -> Self {
+        Self(unix_seconds + Self::EPOCH_OFFSET)
+    }
+
+    pub fn as_unix_seconds(&self) -> Option<u64> {
+        self.0.checked_sub(Self::EPOCH_OFFSET)
+    }
+}
+
+impl core::fmt::Debug for ChainTimestamp {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // We do not expect a timestamp outside of the unix epoch.
+        let unix_seconds = self.as_unix_seconds().unwrap_or(0);
+        write!(f, "ChainTimestamp({})", unix_seconds)
+    }
+}
+
+impl core::fmt::Display for ChainTimestamp {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // We do not expect a timestamp outside of the unix epoch.
+        let unix_seconds = self.as_unix_seconds().unwrap_or(0);
+        write!(f, "{}", unix_seconds)
+    }
+}
+
+impl From<u64> for ChainTimestamp {
+    fn from(other: u64) -> Self {
+        Self(other)
+    }
+}
 
 #[derive(Debug, Clone, Hashable, NounDecode, NounEncode, PartialEq, Eq)]
 #[iris_ztd::wasm_noun_codec]

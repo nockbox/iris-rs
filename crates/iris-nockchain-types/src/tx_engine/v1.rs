@@ -1359,7 +1359,7 @@ pub struct PageV1 {
     pub parent: Digest,
     pub tx_ids: ZSet<Digest>,
     pub coinbase: CoinbaseSplitV1,
-    pub timestamp: u64,
+    pub timestamp: crate::v0::ChainTimestamp,
     pub epoch_counter: u32,
     pub target: Bignum,
     pub accumulated_work: Bignum,

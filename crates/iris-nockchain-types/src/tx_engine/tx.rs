@@ -280,7 +280,7 @@ impl Page {
         }
     }
 
-    pub fn timestamp(&self) -> u64 {
+    pub fn timestamp(&self) -> crate::v0::ChainTimestamp {
         match self {
             Page::V0(p) => p.timestamp,
             Page::V1(p) => p.timestamp,

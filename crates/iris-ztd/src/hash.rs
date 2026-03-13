@@ -112,7 +112,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 #[iris_ztd_derive::wasm_noun_codec]
 #[cfg_attr(feature = "wasm", tsify(type = "string | { __tag_digest: undefined }"))]
 #[serde(from = "Base58Belts<5>")]
@@ -407,6 +407,12 @@ where
 impl fmt::Display for Digest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Base58Belts::<5>::from(*self).fmt(f)
+    }
+}
+
+impl fmt::Debug for Digest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Digest({})", self)
     }
 }
 

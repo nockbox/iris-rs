@@ -28,6 +28,13 @@ pub enum Tx {
 }
 
 impl Tx {
+    pub fn id(&self) -> TxId {
+        match self {
+            Tx::V0(tx) => tx.raw.id,
+            Tx::V1(tx) => tx.raw.id,
+        }
+    }
+
     pub fn version(&self) -> Version {
         match self {
             Tx::V0(_) => Version::V0,
@@ -53,6 +60,20 @@ impl Tx {
         match self {
             Tx::V0(tx) => RawTx::V0(tx.raw.clone()),
             Tx::V1(tx) => RawTx::V1(tx.raw.clone()),
+        }
+    }
+
+    pub fn input_names(&self) -> Vec<Name> {
+        match self {
+            Tx::V0(tx) => tx.raw.input_names(),
+            Tx::V1(tx) => tx.raw.input_names(),
+        }
+    }
+
+    pub fn total_fees(&self) -> Nicks {
+        match self {
+            Tx::V0(tx) => tx.raw.total_fees,
+            Tx::V1(tx) => tx.raw.spends.total_fees(),
         }
     }
 }

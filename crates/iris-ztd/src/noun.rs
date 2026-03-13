@@ -7,7 +7,7 @@ use alloc::string::ToString;
 use alloc::{
     boxed::Box, collections::btree_map::BTreeMap, string::String, sync::Arc, vec, vec::Vec,
 };
-use bitvec::prelude::{BitSlice, BitVec, Lsb0};
+use bitvec::prelude::{BitSlice, Lsb0};
 use ibig::UBig;
 use num_traits::Zero;
 use serde::de::{Error as DeError, SeqAccess, Visitor};

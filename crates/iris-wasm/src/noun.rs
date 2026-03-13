@@ -1,5 +1,4 @@
 use iris_ztd::{cue as cue_internal, jam as jam_internal, Belt, Noun, NounDecode, NounEncode};
-use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
 /// Cue a jammed Uint8Array into a Noun (see `jam`).
@@ -58,7 +57,7 @@ pub fn atom_to_belts(atom: Noun) -> Result<Noun, JsValue> {
 pub fn belts_to_atom(noun: Noun) -> Result<Noun, JsValue> {
     // Append tail so that this is parsed as list
     // TODO: don't do this
-    let noun = Noun::Cell(Arc::new(noun), Arc::new(0u64.to_noun()));
+    let noun = Noun::Cell(noun.into(), 0u64.to_noun().into());
     let belts: Vec<Belt> =
         NounDecode::from_noun(&noun).ok_or_else(|| JsValue::from_str("unable to parse belts"))?;
     Ok(Noun::Atom(iris_ztd::belts_to_ubig(&belts)))

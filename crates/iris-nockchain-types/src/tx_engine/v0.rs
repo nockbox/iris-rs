@@ -469,7 +469,7 @@ impl PageV0 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
 #[iris_ztd::wasm_noun_codec]
-pub struct CoinbaseSplitV0(ZMap<Sig, Nicks>);
+pub struct CoinbaseSplitV0(pub ZMap<Sig, Nicks>);
 
 /// Chain timestamp, displayed in unix seconds.
 #[derive(Clone, Copy, Hashable, NounDecode, NounEncode, PartialEq, Eq)]

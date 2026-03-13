@@ -1437,7 +1437,7 @@ impl PageV1 {
 /// Maps Pkh -> Nicks (coins)
 #[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
 #[iris_ztd::wasm_noun_codec]
-pub struct CoinbaseSplitV1(ZMap<Digest, Nicks>);
+pub struct CoinbaseSplitV1(pub ZMap<Digest, Nicks>);
 
 #[cfg(test)]
 mod tests {

@@ -14,9 +14,22 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[cfg_attr(feature = "alloc", derive(NounEncode, NounDecode))]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct PublicKey(pub CheetahPoint);
+
+impl core::fmt::Display for PublicKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl TryFrom<&str> for PublicKey {
+    type Error = iris_ztd::crypto::cheetah::CheetahError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.try_into().map(Self)
+    }
+}
 
 impl PublicKey {
     pub fn verify(&self, m: &Digest, sig: &Signature) -> bool {
@@ -170,8 +183,7 @@ impl Hashable for PublicKey {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+#[iris_ztd::wasm_noun_codec]
 pub struct Signature {
     /// Challenge part in little-endian hex
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]

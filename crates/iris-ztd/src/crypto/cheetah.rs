@@ -94,6 +94,14 @@ pub struct CheetahPoint {
     pub inf: bool,
 }
 
+impl fmt::Display for CheetahPoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (buf, len) = self.into_base58_buf().unwrap();
+        let s = core::str::from_utf8(&buf[..len]).unwrap();
+        write!(f, "{}", s)
+    }
+}
+
 impl Serialize for CheetahPoint {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -128,6 +136,14 @@ impl<'de> Deserialize<'de> for CheetahPoint {
         }
 
         deserializer.deserialize_str(CheetahVisitor)
+    }
+}
+
+impl TryFrom<&str> for CheetahPoint {
+    type Error = CheetahError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::from_base58(value)
     }
 }
 

@@ -54,13 +54,10 @@ impl MerkleProof {
     }
 
     pub fn verify(&self, mut axis: u64, hashable: &impl Hashable) -> bool {
-        if axis == 0 {
-            return false;
-        }
         let mut leaf = hashable.hash();
         let mut path = &self.path[..];
 
-        while axis > 3 {
+        while axis > 1 {
             let Some((sib, rest)) = path.split_first() else {
                 return false;
             };
@@ -73,14 +70,38 @@ impl MerkleProof {
             axis /= 2;
         }
 
-        if axis == 1 {
-            self.root == leaf && path.is_empty()
-        } else if axis == 2 && path.len() == 1 {
-            self.root == (leaf, path[0]).hash()
-        } else if axis == 3 && path.len() == 1 {
-            self.root == (path[0], leaf).hash()
+        axis == 1 && self.root == leaf && path.is_empty()
+    }
+
+    pub fn visible_hashes(
+        &self,
+        mut axis: u64,
+        hashable: &impl Hashable,
+    ) -> Option<Vec<(u64, Digest)>> {
+        let mut hashes = Vec::new();
+        let mut leaf = hashable.hash();
+        let mut path = &self.path[..];
+
+        while axis > 1 {
+            let (sib, rest) = path.split_first()?;
+            path = rest;
+            if axis.is_multiple_of(2) {
+                hashes.push((axis ^ 1, *sib));
+                hashes.push((axis, leaf));
+                leaf = (leaf, sib).hash();
+            } else {
+                hashes.push((axis, leaf));
+                hashes.push((axis ^ 1, *sib));
+                leaf = (sib, leaf).hash();
+            }
+            axis /= 2;
+        }
+
+        if axis == 1 && self.root == leaf && path.is_empty() {
+            hashes.push((1, leaf));
+            Some(hashes)
         } else {
-            false
+            None
         }
     }
 }
@@ -98,6 +119,13 @@ mod tests {
         assert_eq!(proof.root.to_string(), ().hash().to_string());
         assert_eq!(proof.path.len(), 0);
         assert!(proof.verify(axis, &()));
+        let all_hashes = proof.visible_hashes(axis, &());
+        let all_hashes = all_hashes
+            .unwrap()
+            .iter()
+            .map(|(a, h)| (*a, h.to_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(all_hashes, &[(1, ().hash().to_string())]);
     }
 
     #[test]
@@ -113,6 +141,21 @@ mod tests {
             ["3Ssr4tiWsbX5CE3AG6p5qPHP51fiyvtt1XEEHmSbGgDjp3qjUew6DFB"]
         );
         assert!(proof.verify(axis, &()));
+
+        let all_hashes = proof.visible_hashes(axis, &());
+        let all_hashes = all_hashes
+            .unwrap()
+            .iter()
+            .map(|(a, h)| (*a, h.to_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            all_hashes,
+            &[
+                (3, ().hash().to_string()),
+                (2, ().hash().to_string()),
+                (1, proof.root.to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -128,6 +171,21 @@ mod tests {
         );
         assert_eq!(axis, 3);
         assert!(proof.verify(axis, &()));
+
+        let all_hashes = proof.visible_hashes(axis, &());
+        let all_hashes = all_hashes
+            .unwrap()
+            .iter()
+            .map(|(a, h)| (*a, h.to_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            all_hashes,
+            &[
+                (3, ().hash().to_string()),
+                (2, ().hash().to_string()),
+                (1, proof.root.to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -147,6 +205,23 @@ mod tests {
         );
         assert_eq!(axis, 6);
         assert!(proof.verify(axis, &3u64));
+
+        let all_hashes = proof.visible_hashes(axis, &3u64);
+        let all_hashes = all_hashes
+            .unwrap()
+            .iter()
+            .map(|(a, h)| (*a, h.to_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            all_hashes,
+            &[
+                (7, 4.hash().to_string()),
+                (6, 3.hash().to_string()),
+                (3, (3, 4).hash().to_string()),
+                (2, (1, 2).hash().to_string()),
+                (1, proof.root.to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -164,5 +239,20 @@ mod tests {
             ["3Ssr4tiWsbX5CE3AG6p5qPHP51fiyvtt1XEEHmSbGgDjp3qjUew6DFB"]
         );
         assert!(proof.verify(axis, &lst));
+
+        let all_hashes = proof.visible_hashes(axis, &lst);
+        let all_hashes = all_hashes
+            .unwrap()
+            .iter()
+            .map(|(a, h)| (*a, h.to_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            all_hashes,
+            &[
+                (3, ().hash().to_string()),
+                (2, lst.hash().to_string()),
+                (1, proof.root.to_string()),
+            ]
+        );
     }
 }

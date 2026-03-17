@@ -276,7 +276,11 @@ impl From<LockPrimitive> for PbLockPrimitive {
             LockPrimitive::Pkh(pkh) => lock_primitive::Primitive::Pkh(pkh.into()),
             LockPrimitive::Tim(tim) => lock_primitive::Primitive::Tim(tim.into()),
             LockPrimitive::Hax(hax) => {
-                let mut hashes = hax.0.into_iter().map(PbHash::from).collect::<Vec<_>>();
+                let mut hashes = hax
+                    .preimages
+                    .into_iter()
+                    .map(PbHash::from)
+                    .collect::<Vec<_>>();
                 hashes.dedup();
                 lock_primitive::Primitive::Hax(PbHaxLock { hashes })
             }
@@ -1092,7 +1096,7 @@ impl TryFrom<PbLockPrimitive> for LockPrimitive {
             lock_primitive::Primitive::Hax(hax) => {
                 let hashes: Result<ZSet<Digest>, ConversionError> =
                     hax.hashes.into_iter().map(|h| h.try_into()).collect();
-                Ok(LockPrimitive::Hax(Hax(hashes?)))
+                Ok(LockPrimitive::Hax(Hax { preimages: hashes? }))
             }
             lock_primitive::Primitive::Burn(_) => Ok(LockPrimitive::Brn),
         }

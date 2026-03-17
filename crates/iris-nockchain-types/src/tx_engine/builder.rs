@@ -207,7 +207,7 @@ impl SpendBuilder {
                 }
 
                 for h in sc.hax() {
-                    let valid_hax = h.0.iter().cloned().collect::<BTreeSet<_>>();
+                    let valid_hax = h.preimages.iter().cloned().collect::<BTreeSet<_>>();
 
                     let current_hax = match &self.spend {
                         Spend::S1(spend) => spend
@@ -245,7 +245,7 @@ impl SpendBuilder {
         let digest = preimage.hash();
 
         for h in spend.witness.lock_merkle_proof.spend_condition().hax() {
-            if h.0.contains(&digest) {
+            if h.preimages.contains(&digest) {
                 spend.witness.hax_map.insert(digest, preimage);
                 return Some(digest);
             }

@@ -958,7 +958,9 @@ impl LockTim {
 
 #[derive(Debug, Clone, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
 #[iris_ztd::wasm_noun_codec]
-pub struct Hax(pub ZSet<Digest>);
+pub struct Hax {
+    pub preimages: ZSet<Digest>,
+}
 
 pub fn words_for_unordered_spends<'a>(
     spends: impl Iterator<Item = (Name, &'a SpendV1)> + 'a,

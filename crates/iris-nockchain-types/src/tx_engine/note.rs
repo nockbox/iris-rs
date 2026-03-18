@@ -265,16 +265,14 @@ impl Hashable for Note {
 
 impl NounDecode for Note {
     fn from_noun(noun: &Noun) -> Option<Self> {
-        if let Some(n) = super::v0::NoteV0::from_noun(noun) {
-            return Some(Note::V0(n));
+        let Noun::Cell(left, _) = noun else {
+            return None;
+        };
+
+        match &**left {
+            Noun::Cell(_, _) => super::v0::NoteV0::from_noun(noun).map(Note::V0),
+            _ => super::v1::NoteV1::from_noun(noun).map(Note::V1),
         }
-
-        let v: u32 = NounDecode::from_noun(noun)?;
-
-        Some(match v {
-            1 => Note::V1(super::v1::NoteV1::from_noun(noun)?),
-            _ => return None,
-        })
     }
 }
 

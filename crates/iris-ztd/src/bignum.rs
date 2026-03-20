@@ -12,7 +12,7 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 /// In wasm, this is encoded as a string of hex digits, with no padding. This is the same as Noun's atom case.
 #[derive(NounEncode, NounDecode, Hashable, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[wasm_noun_codec]
-#[cfg_attr(feature = "wasm", tsify(type = "string | { __tag_bignum: undefined }"))]
+#[cfg_attr(feature = "wasm", tsify(type = "string & { __tag_bignum: undefined }"))]
 pub struct Bignum {
     tag: ftas!("bn"),
     vals: Vec<u32>,

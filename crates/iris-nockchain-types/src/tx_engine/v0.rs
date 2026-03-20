@@ -476,7 +476,7 @@ pub struct CoinbaseSplitV0(pub ZMap<Sig, Nicks>);
 #[iris_ztd::wasm_noun_codec]
 #[cfg_attr(
     feature = "wasm",
-    tsify(type = "number | { __tag_chain_timestamp: undefined }")
+    tsify(type = "number & { __tag_chain_timestamp: undefined }")
 )]
 pub struct ChainTimestamp(pub u64);
 
@@ -542,7 +542,7 @@ impl From<u64> for ChainTimestamp {
 #[iris_ztd::wasm_noun_codec]
 #[cfg_attr(
     feature = "wasm",
-    tsify(type = "string | number[] | { __tag_page_msg: undefined }")
+    tsify(type = "(string | number[]) & { __tag_page_msg: undefined }")
 )]
 pub struct PageMsg(pub Vec<Belt>);
 

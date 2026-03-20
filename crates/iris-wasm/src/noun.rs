@@ -38,13 +38,13 @@ pub fn untas(noun: Noun) -> Result<String, JsValue> {
 /// Belts are Atoms that fit the goldilocks prime field.
 ///
 /// If a transaction contains non-based (not-fitting) atoms, it will be rejected.
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "tasBelts")]
 pub fn tas_belts(s: &str) -> Noun {
     atom_to_belts(tas(s)).unwrap()
 }
 
 /// Convert an Atom to belts.
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "atomToBelts")]
 pub fn atom_to_belts(atom: Noun) -> Result<Noun, JsValue> {
     match atom {
         Noun::Atom(atom) => Ok((&iris_ztd::belts_from_ubig(atom)[..]).to_noun()),
@@ -53,7 +53,7 @@ pub fn atom_to_belts(atom: Noun) -> Result<Noun, JsValue> {
 }
 
 /// Convert a sequence of belts back into one atom.
-#[wasm_bindgen]
+#[wasm_bindgen(js_name = "beltsToAtom")]
 pub fn belts_to_atom(noun: Noun) -> Result<Noun, JsValue> {
     // Append tail so that this is parsed as list
     // TODO: don't do this

@@ -85,7 +85,7 @@ const CHEETAH_BS58_BUF: usize = 200;
     tsify(
         into_wasm_abi,
         from_wasm_abi,
-        type = "string | { __tag_cheetah_point: undefined }"
+        type = "string & { __tag_cheetah_point: undefined }"
     )
 )]
 pub struct CheetahPoint {

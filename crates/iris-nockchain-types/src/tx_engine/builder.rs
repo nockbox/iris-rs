@@ -10,9 +10,10 @@ use serde::{Deserialize, Serialize};
 use alloc::{boxed::Box, format, string::ToString};
 
 use super::note::Note;
+use super::v0::Sig;
 use super::v1::{
-    words_for_unordered_spends, InputDisplay, Lock, LockRoot, NockchainTx, NoteData, Pkh,
-    SeedV1 as Seed, SeedsV1 as Seeds, SpendCondition, SpendV1 as Spend, SpendsV1 as Spends,
+    words_for_unordered_spends, DisplayInput, InputDisplay, Lock, LockRoot, NockchainTx, NoteData,
+    Pkh, SeedV1 as Seed, SeedsV1 as Seeds, SpendCondition, SpendV1 as Spend, SpendsV1 as Spends,
     TransactionDisplay, Witness,
 };
 use super::{Name, TxEngineSettings, Version};
@@ -36,9 +37,69 @@ pub enum MissingUnlocks {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct NoteInfo {
+    pub name: Name,
+    pub version: Version,
+    pub assets: Nicks,
+    pub hash: Digest,
+    pub sig: Option<Sig>,
+}
+
+impl NoteInfo {
+    pub fn from_spend(name: Name, spend: &Spend) -> Option<Self> {
+        let total_gifts = spend.total_gifts();
+        let total_fees = spend.fee();
+        match spend {
+            Spend::S0(_) => None,
+            Spend::S1(spend) => {
+                let hash = spend.seeds.0.iter().next()?.parent_hash;
+                let note_info = NoteInfo {
+                    name,
+                    version: Version::V1,
+                    assets: total_gifts + total_fees,
+                    hash,
+                    sig: None,
+                };
+                Some(note_info)
+            }
+        }
+    }
+
+    pub fn from_spend_and_input(name: Name, spend: &Spend, input: DisplayInput) -> Option<Self> {
+        let total_gifts = spend.total_gifts();
+        let total_fees = spend.fee();
+        match (spend, input) {
+            (Spend::S0(spend), DisplayInput::V0(sig)) => {
+                let hash = spend.seeds.0.iter().next()?.parent_hash;
+                let note_info = NoteInfo {
+                    name,
+                    version: Version::V0,
+                    assets: total_gifts + total_fees,
+                    hash,
+                    sig: Some(sig),
+                };
+                Some(note_info)
+            }
+            (Spend::S1(spend), DisplayInput::V1(_)) => {
+                let hash = spend.seeds.0.iter().next()?.parent_hash;
+                let note_info = NoteInfo {
+                    name,
+                    version: Version::V1,
+                    assets: total_gifts + total_fees,
+                    hash,
+                    sig: None,
+                };
+                Some(note_info)
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SpendBuilder {
-    note: Note,
+    note_info: NoteInfo,
     #[serde(
         serialize_with = "noun_serialize",
         deserialize_with = "noun_deserialize"
@@ -57,32 +118,60 @@ impl SpendBuilder {
         spend_condition: Option<(Lock, usize)>,
         refund_lock: Option<LockRoot>,
     ) -> Result<Self, BuildError> {
-        let spend = if note.version() == Version::V0 {
-            Spend::new_legacy(Seeds(Default::default()), 0.into())
-        } else {
-            let (lock, sp_index) = spend_condition.ok_or(BuildError::MissingSpendCondition)?;
-            Spend::new_witness(
-                Witness::new(lock, sp_index),
-                Seeds(Default::default()),
-                Nicks(0),
-            )
+        let (note_info, spend) = match note {
+            Note::V0(note) => {
+                let note_info = NoteInfo {
+                    name: note.name,
+                    version: note.inner.version,
+                    assets: note.assets,
+                    hash: note.hash(),
+                    sig: Some(note.sig),
+                };
+                let spend = Spend::new_legacy(Seeds(Default::default()), 0.into());
+                (note_info, spend)
+            }
+            Note::V1(note) => {
+                let note_info = NoteInfo {
+                    name: note.name,
+                    version: note.version,
+                    assets: note.assets,
+                    hash: note.hash(),
+                    sig: None,
+                };
+                let (lock, sp_index) = spend_condition.ok_or(BuildError::MissingSpendCondition)?;
+                let spend = Spend::new_witness(
+                    Witness::new(lock, sp_index),
+                    Seeds(Default::default()),
+                    Nicks(0),
+                );
+                (note_info, spend)
+            }
         };
         Ok(Self {
-            note,
+            note_info,
             spend,
             refund_lock,
         })
     }
 
-    pub fn from_spend(spend: Spend, note: Note, refund_lock: Option<LockRoot>) -> Option<Self> {
-        match (note.version(), &spend) {
-            (Version::V0, Spend::S0 { .. }) => (),
-            (Version::V1, Spend::S1 { .. }) => (),
-            _ => return None,
-        }
-
+    pub fn from_spend(name: Name, spend: Spend, refund_lock: Option<LockRoot>) -> Option<Self> {
+        let note_info = NoteInfo::from_spend(name, &spend)?;
         Some(Self {
-            note,
+            note_info,
+            spend,
+            refund_lock,
+        })
+    }
+
+    pub fn from_spend_and_input(
+        name: Name,
+        spend: Spend,
+        input: DisplayInput,
+        refund_lock: Option<LockRoot>,
+    ) -> Option<Self> {
+        let note_info = NoteInfo::from_spend_and_input(name, &spend, input)?;
+        Some(Self {
+            note_info,
             spend,
             refund_lock,
         })
@@ -103,7 +192,7 @@ impl SpendBuilder {
             self.spend
                 .seeds_mut()
                 .retain(|v| v.lock_root.hash() != lock_root.hash());
-            let refund = self.note.assets()
+            let refund = self.note_info.assets
                 - self.spend.fee()
                 - self.spend.seeds().0.iter().map(|v| v.gift).sum::<Nicks>();
             if refund > 0 {
@@ -126,7 +215,7 @@ impl SpendBuilder {
 
     pub fn is_balanced(&self) -> bool {
         let spend_sum: Nicks = self.spend.seeds().0.iter().map(|v| v.gift).sum();
-        self.note.assets() == spend_sum + self.spend.fee()
+        self.note_info.assets == spend_sum + self.spend.fee()
     }
 
     pub fn build_seed(&self, lock_root: LockRoot, gift: Nicks, include_lock_data: bool) -> Seed {
@@ -137,7 +226,7 @@ impl SpendBuilder {
             };
             note_data.push_lock(lock);
         }
-        let parent_hash = self.note.hash();
+        let parent_hash = self.note_info.hash;
         Seed {
             output_source: None,
             lock_root,
@@ -163,20 +252,20 @@ impl SpendBuilder {
 
         match &self.spend {
             Spend::S0(spend) => {
-                let Note::V0(note) = &self.note else {
+                let Some(sig) = &self.note_info.sig else {
                     panic!("Note is not V0");
                 };
-                let sig = &spend.signature;
-                let present_pks: BTreeSet<PublicKey> = sig.0.iter().map(|(pk, _)| *pk).collect();
-                let valid_pk = note.sig.pubkeys.iter().cloned().collect::<BTreeSet<_>>();
+                let present_pks: BTreeSet<PublicKey> =
+                    spend.signature.0.iter().map(|(pk, _)| *pk).collect();
+                let valid_pk = sig.pubkeys.iter().cloned().collect::<BTreeSet<_>>();
 
                 let checked_pk: BTreeSet<PublicKey> =
                     present_pks.intersection(&valid_pk).cloned().collect();
 
-                if (checked_pk.len() as u64) < note.sig.m {
+                if (checked_pk.len() as u64) < sig.m {
                     let sig_of = &valid_pk ^ &checked_pk;
                     missing_unlocks.push(MissingUnlocks::Sig {
-                        num_sigs: note.sig.m - checked_pk.len() as u64,
+                        num_sigs: sig.m - checked_pk.len() as u64,
                         sig_of,
                     })
                 }
@@ -273,10 +362,10 @@ impl SpendBuilder {
                 }
             }
             Spend::S0(spend) => {
-                let Note::V0(note) = &self.note else {
+                let Some(sig) = &self.note_info.sig else {
                     panic!("Note is not V0");
                 };
-                if note.sig.pubkeys.contains(&signing_key.public_key()) {
+                if sig.pubkeys.contains(&signing_key.public_key()) {
                     spend.signature.0.insert(
                         signing_key.public_key(),
                         signing_key.sign(&spend.sig_hash()),
@@ -325,11 +414,7 @@ impl TxBuilder {
         }
     }
 
-    pub fn from_tx(
-        tx: RawTx,
-        mut notes: BTreeMap<Name, (Note, Option<LockRoot>)>,
-        settings: TxEngineSettings,
-    ) -> Result<Self, BuildError> {
+    pub fn from_raw_tx(tx: RawTx, settings: TxEngineSettings) -> Result<Self, BuildError> {
         let RawTx::V1(tx) = tx else {
             return Err(BuildError::InvalidVersion);
         };
@@ -340,11 +425,37 @@ impl TxBuilder {
                 .0
                 .into_iter()
                 .map(|(n, s)| {
-                    let (note, refund_lock) =
-                        notes.remove(&n).ok_or(BuildError::NoteNotFound(n))?;
                     Ok((
                         n,
-                        SpendBuilder::from_spend(s, note, refund_lock)
+                        SpendBuilder::from_spend(n, s, None)
+                            .ok_or(BuildError::InvalidSpendCondition)?,
+                    ))
+                })
+                .collect::<Result<BTreeMap<_, _>, _>>()?,
+            fee_pool: vec![],
+            settings,
+        })
+    }
+
+    pub fn from_nockchain_tx(
+        tx: NockchainTx,
+        settings: TxEngineSettings,
+    ) -> Result<Self, BuildError> {
+        let raw = tx.to_raw_tx();
+        Ok(Self {
+            spends: raw
+                .spends
+                .0
+                .into_iter()
+                .map(|(n, s)| {
+                    let inp = tx
+                        .display
+                        .inputs
+                        .get(&n)
+                        .ok_or(BuildError::InvalidSpendCondition)?;
+                    Ok((
+                        n,
+                        SpendBuilder::from_spend_and_input(n, s, inp, None)
                             .ok_or(BuildError::InvalidSpendCondition)?,
                     ))
                 })
@@ -356,7 +467,7 @@ impl TxBuilder {
 
     /// Append a `SpendBuilder` to this transaction
     pub fn spend(&mut self, spend: SpendBuilder) -> Option<SpendBuilder> {
-        let name = spend.note.name();
+        let name = spend.note_info.name;
         self.spends.insert(name, spend)
     }
 
@@ -467,23 +578,17 @@ impl TxBuilder {
         let mut display = TransactionDisplay::default();
         let mut spends = Spends(ZMap::new());
 
+        let mut inputs = ZMap::new();
+
         for (name, spend) in &self.spends {
-            match (&spend.spend, &spend.note, &mut display.inputs) {
-                (Spend::S0(_), Note::V0(n), InputDisplay::V0(p)) => {
-                    p.insert(*name, n.sig.clone());
+            match (&spend.spend, &spend.note_info.sig) {
+                (Spend::S0(_), Some(sig)) => {
+                    inputs.insert(*name, DisplayInput::V0(sig.clone()));
                 }
-                (Spend::S1(ws), _, InputDisplay::V0(_)) => {
-                    let mut map = ZMap::new();
-                    map.insert(
+                (Spend::S1(ws), _) => {
+                    inputs.insert(
                         *name,
-                        ws.witness.lock_merkle_proof.spend_condition().clone(),
-                    );
-                    display.inputs = InputDisplay::V1(map);
-                }
-                (Spend::S1(ws), _, InputDisplay::V1(p)) => {
-                    p.insert(
-                        *name,
-                        ws.witness.lock_merkle_proof.spend_condition().clone(),
+                        DisplayInput::V1(ws.witness.lock_merkle_proof.spend_condition().clone()),
                     );
                 }
                 _ => (),
@@ -494,6 +599,14 @@ impl TxBuilder {
                 }
             }
             spends.0.insert(*name, spend.spend.clone());
+        }
+
+        // Best-effort standardization to single input type
+        // If the transaction is complex, this will fail and we will stick to mixed inputs.
+        // nockchain CLI wallet will not display inputs, but Iris will.
+        match (InputDisplay::Mixed { inputs }).standardize() {
+            Ok(i) => display.inputs = i,
+            Err(i) => display.inputs = i,
         }
 
         let version = Version::V1;
@@ -509,13 +622,6 @@ impl TxBuilder {
         }
     }
 
-    pub fn all_notes(&self) -> BTreeMap<Name, Note> {
-        self.spends
-            .iter()
-            .map(|(a, b)| (*a, b.note.clone()))
-            .collect()
-    }
-
     pub fn all_spends(&self) -> &BTreeMap<Name, SpendBuilder> {
         &self.spends
     }
@@ -528,7 +634,7 @@ impl TxBuilder {
         let mut fee = Nicks(0);
 
         let (sw, ww) = words_for_unordered_spends(
-            self.spends.values().map(|v| (v.note.name(), &v.spend)),
+            self.spends.values().map(|v| (v.note_info.name, &v.spend)),
             &self.settings,
         );
         fee += self.settings.cost_per_word * sw
@@ -586,8 +692,8 @@ impl TxBuilder {
 
             // Sort by non-refund assets, so that we prioritize refunds from used-up notes
             spends.sort_by(|a, b| {
-                let anra = a.note.assets() - a.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
-                let bnra = b.note.assets() - b.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
+                let anra = a.note_info.assets - a.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
+                let bnra = b.note_info.assets - b.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
                 if anra != bnra {
                     // By default, put the greatest non-refund transfers first
                     bnra.cmp(&anra)
@@ -596,7 +702,7 @@ impl TxBuilder {
                     b.spend.fee().cmp(&a.spend.fee())
                 } else {
                     // Otherwise, sort by name
-                    b.note.name().cmp(&a.note.name())
+                    b.note_info.name.cmp(&a.note_info.name)
                 }
             });
 
@@ -621,7 +727,7 @@ impl TxBuilder {
 
             // Pop entries from the fee pool, so that we can cover any excess fees. These shall be
             // sorted by assets.
-            self.fee_pool.sort_by_key(|v| v.note.assets());
+            self.fee_pool.sort_by_key(|v| v.note_info.assets);
             while fee_left > 0 {
                 let Some(mut r) = self.fee_pool.pop() else {
                     break;
@@ -661,8 +767,8 @@ impl TxBuilder {
             // Sort by smallest fee, so that we can return as many low-fee notes to fee pool as
             // possible.
             spends.sort_by(|a, b| {
-                let anra = a.note.assets() - a.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
-                let bnra = b.note.assets() - b.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
+                let anra = a.note_info.assets - a.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
+                let bnra = b.note_info.assets - b.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
                 let aor = a.spend.seeds().0.len() == 1 && a.cur_refund().is_some();
                 let bor = b.spend.seeds().0.len() == 1 && b.cur_refund().is_some();
                 if aor != bor {
@@ -677,7 +783,7 @@ impl TxBuilder {
                     anra.cmp(&bnra)
                 } else {
                     // Otherwise, sort by name
-                    b.note.name().cmp(&a.note.name())
+                    b.note_info.name.cmp(&a.note_info.name)
                 }
             });
 
@@ -696,7 +802,7 @@ impl TxBuilder {
                     }
 
                     if s.spend.fee() == add_refund {
-                        return_to_pool.push(s.note.name());
+                        return_to_pool.push(s.note_info.name);
                         // We are returning this note to pool (making it unused), all its required
                         // fee shall disappear. The only case we don't handle here is whenever we
                         // reach the MIN_FEE (256 nicks). Hence, TODO: handle MIN_FEE case. This is
@@ -869,7 +975,14 @@ mod tests {
                 .unwrap()
                 .build();
 
+            let InputDisplay::V1 { .. } = tx.display.inputs else {
+                panic!("Expected V1 inputs");
+            };
+
             assert_eq!(tx.id.to_string(), expected_id);
+
+            serde_json::to_string(&tx.display).unwrap();
+            serde_json::to_string(&tx.witness_data).unwrap();
         }
 
         let fee = Nicks(2850816);

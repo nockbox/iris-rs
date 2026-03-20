@@ -27,7 +27,7 @@ let insideGuard = false;
 let currentGuardName = '';
 
 let dtsContent = fs.readFileSync(dtsIn, 'utf8');
-const tagTypeRegex = /export type ([A-Za-z0-9_]+) = string \| \{\s*__tag_[a-z0-9_]+:\s*undefined\s*\};/g;
+const tagTypeRegex = /export type ([A-Za-z0-9_]+) = string \& \{\s*__tag_[a-z0-9_]+:\s*undefined\s*\};/g;
 const taggedTypes = new Set();
 let match;
 while ((match = tagTypeRegex.exec(dtsContent)) !== null) {
@@ -53,17 +53,7 @@ const customGuardImplementations = {
 let insideTaggedGuard = false;
 let currentTaggedGuardName = '';
 
-// Re-write dtsContent and save it
-if (taggedTypes.size > 0) {
-    console.log("Replacing", taggedTypes);
-    const dtsReplaced = dtsContent.replace(
-        /export type ([A-Za-z0-9_ \|]+) = ([a-z]+) \| \{\s*__tag_[a-z0-9_]+:\s*undefined\s*\};/g,
-        'export type $1 = $2;'
-    );
-    fs.writeFileSync(dtsOut, dtsReplaced);
-} else {
-    fs.writeFileSync(dtsOut, dtsContent);
-}
+fs.writeFileSync(dtsOut, dtsContent);
 
 for (let i = 0; i < lines.length; i++) {
     let line = lines[i];

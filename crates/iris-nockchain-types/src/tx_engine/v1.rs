@@ -411,6 +411,13 @@ impl SpendV1 {
         }
     }
 
+    pub fn total_gifts(&self) -> Nicks {
+        match self {
+            SpendV1::S0(spend) => spend.seeds.0.iter().fold(Nicks(0), |acc, s| acc + s.gift),
+            SpendV1::S1(spend) => spend.seeds.0.iter().fold(Nicks(0), |acc, s| acc + s.gift),
+        }
+    }
+
     #[transform_output(SeedsV1, out.clone())]
     pub fn seeds(&self) -> &SeedsV1 {
         match self {
@@ -1066,6 +1073,12 @@ impl SpendsV1 {
         self.0.iter().fold(Nicks(0), |acc, (_, s)| acc + s.fee())
     }
 
+    pub fn total_gifts(&self) -> Nicks {
+        self.0
+            .iter()
+            .fold(Nicks(0), |acc, (_, s)| acc + s.total_gifts())
+    }
+
     pub fn apply_witness(&self, witness_data: &WitnessData) -> SpendsV1 {
         let mut spends = SpendsV1::default();
         for (name, spend) in &self.0 {
@@ -1123,6 +1136,19 @@ impl RawTxV1 {
 
     pub fn version(&self) -> Version {
         Version::V1
+    }
+
+    pub fn input_spend_conditions(&self) -> Vec<SpendCondition> {
+        let mut conditions = vec![];
+        for (_, spend) in &self.spends.0 {
+            match spend {
+                SpendV1::S0(_) => return Default::default(),
+                SpendV1::S1(ws) => {
+                    conditions.push(ws.witness.lock_merkle_proof.spend_condition().clone())
+                }
+            }
+        }
+        conditions
     }
 
     /// Calculate output notes from the transaction spends.
@@ -1333,16 +1359,76 @@ impl From<Lock> for LockMetadata {
     tsify_wasm
 )]
 #[iris_ztd::wasm_noun_codec(no_derive, no_hash)]
-pub enum InputDisplay {
+pub enum DisplayInput {
     #[noun(tag = 0)]
-    V0(ZMap<Name, crate::v0::Sig>),
+    V0(crate::v0::Sig),
     #[noun(tag = 1)]
-    V1(ZMap<Name, SpendCondition>),
+    V1(SpendCondition),
+}
+
+#[iris_ztd::noun_derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    NounEncode,
+    NounDecode,
+    tsify_wasm
+)]
+#[iris_ztd::wasm_noun_codec(no_derive, no_hash)]
+pub enum InputDisplay {
+    // NOTE: non-standard. TODO: upstream this
+    #[noun(cell)]
+    Mixed { inputs: ZMap<Name, DisplayInput> },
+    #[noun(tag = 0)]
+    V0 { inputs: ZMap<Name, crate::v0::Sig> },
+    #[noun(tag = 1)]
+    V1 { inputs: ZMap<Name, SpendCondition> },
 }
 
 impl Default for InputDisplay {
     fn default() -> Self {
-        Self::V0(ZMap::new())
+        Self::V0 {
+            inputs: ZMap::new(),
+        }
+    }
+}
+
+impl InputDisplay {
+    pub fn standardize(self) -> Result<Self, Self> {
+        let Self::Mixed { inputs } = self else {
+            return Ok(self);
+        };
+        let mut v0 = ZMap::new();
+        let mut v1 = ZMap::new();
+        for (name, input) in inputs {
+            match input {
+                DisplayInput::V0(sig) => v0.insert(name, sig),
+                DisplayInput::V1(spend_condition) => v1.insert(name, spend_condition),
+            }
+        }
+        if v0.is_empty() {
+            Ok(Self::V1 { inputs: v1 })
+        } else if v1.is_empty() {
+            Ok(Self::V0 { inputs: v0 })
+        } else {
+            let mut inputs = ZMap::new();
+            for (name, sig) in v0 {
+                inputs.insert(name, DisplayInput::V0(sig));
+            }
+            for (name, spend_condition) in v1 {
+                inputs.insert(name, DisplayInput::V1(spend_condition));
+            }
+            Err(Self::Mixed { inputs })
+        }
+    }
+
+    pub fn get(&self, name: &Name) -> Option<DisplayInput> {
+        match self {
+            Self::Mixed { inputs } => inputs.get(name).cloned(),
+            Self::V0 { inputs } => inputs.get(name).cloned().map(DisplayInput::V0),
+            Self::V1 { inputs } => inputs.get(name).cloned().map(DisplayInput::V1),
+        }
     }
 }
 
@@ -1528,6 +1614,12 @@ mod tests {
     fn check_1padding() {
         let noun = iris_ztd::cue(TX2).unwrap();
         let tx: NockchainTx = NounDecode::from_noun(&noun).unwrap();
+        let _ = tx
+            .display
+            .inputs
+            .clone()
+            .standardize()
+            .expect("Did not standardise to norm");
         let id = tx.to_raw_tx().calc_id();
         assert_eq!(
             id.to_string(),

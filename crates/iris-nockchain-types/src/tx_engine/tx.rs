@@ -150,6 +150,18 @@ impl RawTx {
         }
     }
 
+    /// Returns the spend conditions for each input.
+    /// For V0 transactions, this is always None.
+    #[deprecated(
+        note = "This returns empty vec for V0 transactions, and will be removed in future release. Only kept for Iris wallet V0 support."
+    )]
+    pub fn input_spend_conditions(&self) -> Vec<crate::v1::SpendCondition> {
+        match self {
+            RawTx::V0(_) => Default::default(),
+            RawTx::V1(tx) => tx.input_spend_conditions(),
+        }
+    }
+
     pub fn total_fees(&self) -> Nicks {
         match self {
             RawTx::V0(tx) => tx.total_fees,

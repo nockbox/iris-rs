@@ -11,7 +11,7 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
     tsify(
         into_wasm_abi,
         from_wasm_abi,
-        type = "string | { __tag_nicks: undefined }"
+        type = "string & { __tag_nicks: undefined }"
     )
 )]
 #[allow(clippy::derive_ord_xor_partial_ord)]

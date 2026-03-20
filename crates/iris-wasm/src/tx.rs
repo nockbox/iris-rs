@@ -1,14 +1,13 @@
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use std::collections::BTreeMap;
 
 use iris_crypto::PrivateKey as CryptoPrivateKey;
 use iris_grpc_proto::pb::common::v1 as pb_v1;
 use iris_grpc_proto::pb::common::v2 as pb;
 use iris_nockchain_types::{
     builder::{MissingUnlocks, TxBuilder},
-    note::{Name, Note},
+    note::Note,
     tx::RawTx,
     v1::{Lock, LockRoot, NockchainTx, RawTxV1, SeedV1 as Seed, SpendCondition},
     Nicks, SpendBuilder, TxEngineSettings,
@@ -20,6 +19,11 @@ use wasm_bindgen::prelude::*;
 // ============================================================================
 // Wasm Types - Adapters and Helpers
 // ============================================================================
+
+#[wasm_bindgen(js_name = initPanicHook)]
+pub fn init_panic_hook() {
+    console_error_panic_hook::set_once();
+}
 
 #[wasm_bindgen(js_name = digestToProtobuf)]
 pub fn digest_to_protobuf(d: Digest) -> pb_v1::Hash {
@@ -231,22 +235,17 @@ impl WasmTxBuilder {
         }
     }
 
-    /// Reconstruct a builder from raw transaction and its input notes.
-    #[wasm_bindgen(js_name = fromTx)]
-    pub fn from_tx(
-        tx: RawTx,
-        notes: Vec<Note>,
-        refund_lock: Option<LockRoot>,
-        settings: TxEngineSettings,
-    ) -> Result<Self, JsValue> {
-        let internal_notes: BTreeMap<Name, (Note, Option<LockRoot>)> = notes
-            .into_iter()
-            .map(|n| (n.name(), (n, refund_lock.clone())))
-            .collect();
+    /// Reconstruct a builder from raw transaction.
+    #[wasm_bindgen(js_name = fromRawTx)]
+    pub fn from_raw_tx(tx: RawTx, settings: TxEngineSettings) -> Result<Self, JsValue> {
+        let builder = TxBuilder::from_raw_tx(tx, settings).map_err(|e| e.to_string())?;
+        Ok(Self { builder })
+    }
 
-        let builder =
-            TxBuilder::from_tx(tx, internal_notes, settings).map_err(|e| e.to_string())?;
-
+    /// Reconstruct a builder from Nockchain transaction.
+    #[wasm_bindgen(js_name = fromNockchainTx)]
+    pub fn from_nockchain_tx(tx: NockchainTx, settings: TxEngineSettings) -> Result<Self, JsValue> {
+        let builder = TxBuilder::from_nockchain_tx(tx, settings).map_err(|e| e.to_string())?;
         Ok(Self { builder })
     }
 
@@ -351,15 +350,6 @@ impl WasmTxBuilder {
     #[wasm_bindgen(js_name = calcFee)]
     pub fn calc_fee(&self) -> Nicks {
         self.builder.calc_fee()
-    }
-
-    #[wasm_bindgen(js_name = allNotes)]
-    pub fn all_notes(&self) -> Result<Vec<Note>, JsValue> {
-        let mut ret = Vec::new();
-        for note in self.builder.all_notes().into_values() {
-            ret.push(note);
-        }
-        Ok(ret)
     }
 
     #[wasm_bindgen]

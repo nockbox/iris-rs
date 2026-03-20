@@ -114,7 +114,7 @@ where
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 #[iris_ztd_derive::wasm_noun_codec]
-#[cfg_attr(feature = "wasm", tsify(type = "string | { __tag_digest: undefined }"))]
+#[cfg_attr(feature = "wasm", tsify(type = "string & { __tag_digest: undefined }"))]
 #[serde(from = "Base58Belts<5>")]
 #[serde(into = "Base58Belts<5>")]
 pub struct Digest(pub [Belt; 5]);

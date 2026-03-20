@@ -10,7 +10,7 @@ try {
     // Append missing type definitions
     const missingTypes = `
 export type TxId = Digest;
-export type BlockHeight = number | { __tag_block_height: undefined };
+export type BlockHeight = number & { __tag_block_height: undefined };
 export type LockTim = Timelock;
 `;
 

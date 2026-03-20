@@ -992,10 +992,91 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
         EmbedTag,       // #[noun(embedded_tag = 123)]
     }
 
+    /// Pre-computed destructure/construction helpers for a variant's fields.
+    struct VariantFieldInfo {
+        /// The pattern for destructuring: `(v)` or `{ a, b }` or empty
+        decl_pattern: proc_macro2::TokenStream,
+        /// The variable idents used in expressions
+        vars: Vec<syn::Ident>,
+        /// The field types in order
+        types: Vec<syn::Type>,
+        /// Whether the fields are named
+        named: bool,
+    }
+
+    impl VariantFieldInfo {
+        fn from_fields(fields: &syn::Fields) -> Self {
+            match fields {
+                Fields::Named(f) => {
+                    let names: Vec<syn::Ident> = f
+                        .named
+                        .iter()
+                        .map(|fld| fld.ident.clone().unwrap())
+                        .collect();
+                    let types: Vec<syn::Type> = f.named.iter().map(|fld| fld.ty.clone()).collect();
+                    let decl_pattern = if names.is_empty() {
+                        quote! { {} }
+                    } else {
+                        quote! { { #(#names),* } }
+                    };
+                    VariantFieldInfo {
+                        decl_pattern,
+                        vars: names,
+                        types,
+                        named: true,
+                    }
+                }
+                Fields::Unnamed(f) => {
+                    let count = f.unnamed.len();
+                    let names: Vec<syn::Ident> =
+                        (0..count).map(|i| format_ident!("v{}", i)).collect();
+                    let types: Vec<syn::Type> =
+                        f.unnamed.iter().map(|fld| fld.ty.clone()).collect();
+                    let decl_pattern = if count == 0 {
+                        quote! {}
+                    } else {
+                        quote! { ( #(#names),* ) }
+                    };
+                    VariantFieldInfo {
+                        decl_pattern,
+                        vars: names,
+                        types,
+                        named: false,
+                    }
+                }
+                Fields::Unit => VariantFieldInfo {
+                    decl_pattern: quote! {},
+                    vars: vec![],
+                    types: vec![],
+                    named: false,
+                },
+            }
+        }
+
+        fn len(&self) -> usize {
+            self.vars.len()
+        }
+
+        /// Build a nested tuple expression from the vars for NounEncode
+        fn nested_tuple_expr(&self) -> proc_macro2::TokenStream {
+            if self.vars.is_empty() {
+                return quote! {};
+            }
+            let mut iter = self.vars.iter().rev();
+            let last = iter.next().unwrap();
+            let mut result = quote! { #last };
+            for ident in iter {
+                result = quote! { (#ident, &#result) };
+            }
+            result
+        }
+    }
+
     struct VariantInfo {
         ident: syn::Ident,
         kind: NounVariantKind,
         fields: syn::Fields,
+        fi: VariantFieldInfo,
     }
 
     let mut variants_info = Vec::new();
@@ -1036,10 +1117,12 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let kind = kind.unwrap_or_else(|| NounVariantKind::TagStr(variant.ident.to_string()));
 
+        let fi = VariantFieldInfo::from_fields(&variant.fields);
         variants_info.push(VariantInfo {
             ident: variant.ident.clone(),
             kind,
             fields: variant.fields.clone(),
+            fi,
         });
     }
 
@@ -1052,65 +1135,70 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
         let mut arms = Vec::new();
         for vi in &variants_info {
             let vident = &vi.ident;
+            let decl = &vi.fi.decl_pattern;
             match &vi.kind {
-                NounVariantKind::Cell => {
+                NounVariantKind::Cell | NounVariantKind::EmbedTag => {
                     // Encode inner value directly
-                    match &vi.fields {
-                        Fields::Unnamed(f) if f.unnamed.len() == 1 => {
-                            arms.push(quote! {
-                                Self::#vident(v) => #crate_path::NounEncode::to_noun(v),
-                            });
-                        }
-                        _ => panic!("noun(cell) variant must have exactly one unnamed field"),
-                    }
-                }
-                NounVariantKind::EmbedTag => {
-                    // Encode inner value directly
-                    match &vi.fields {
-                        Fields::Unnamed(f) if f.unnamed.len() == 1 => {
-                            arms.push(quote! {
-                                Self::#vident(v) => #crate_path::NounEncode::to_noun(v),
-                            });
-                        }
-                        _ => {
-                            panic!("noun(embedded_tag) variant must have exactly one unnamed field")
-                        }
-                    }
-                }
-                NounVariantKind::TagU64(tag) => match &vi.fields {
-                    Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+                    if vi.fi.len() == 0 {
                         arms.push(quote! {
-                            Self::#vident(v) => {
-                                let tag_noun = #crate_path::NounEncode::to_noun(&(#tag as u64));
-                                let rest_noun = #crate_path::NounEncode::to_noun(v);
-                                #crate_path::NounEncode::to_noun(&(tag_noun, rest_noun))
-                            }
+                            Self::#vident #decl => #crate_path::NounEncode::to_noun(&0u64),
+                        });
+                    } else if vi.fi.len() == 1 {
+                        let var = &vi.fi.vars[0];
+                        arms.push(quote! {
+                            Self::#vident #decl => #crate_path::NounEncode::to_noun(#var),
+                        });
+                    } else {
+                        let tuple_expr = vi.fi.nested_tuple_expr();
+                        arms.push(quote! {
+                            Self::#vident #decl => #crate_path::NounEncode::to_noun(&(#tuple_expr)),
                         });
                     }
-                    Fields::Unit => {
+                }
+                NounVariantKind::TagU64(tag) => {
+                    if vi.fi.len() == 0 {
                         arms.push(quote! {
                             Self::#vident => #crate_path::NounEncode::to_noun(&(#tag as u64)),
                         });
-                    }
-                    _ => panic!("noun(tag = N) variant must have 0 or 1 unnamed field"),
-                },
-                NounVariantKind::TagStr(tag) => match &vi.fields {
-                    Fields::Unnamed(f) if f.unnamed.len() == 1 => {
+                    } else {
+                        let rest_expr = if vi.fi.len() == 1 {
+                            let var = &vi.fi.vars[0];
+                            quote! { #crate_path::NounEncode::to_noun(#var) }
+                        } else {
+                            let tuple_expr = vi.fi.nested_tuple_expr();
+                            quote! { #crate_path::NounEncode::to_noun(&(#tuple_expr)) }
+                        };
                         arms.push(quote! {
-                            Self::#vident(v) => {
-                                let tag_noun = #crate_path::NounEncode::to_noun(&#tag);
-                                let rest_noun = #crate_path::NounEncode::to_noun(v);
+                            Self::#vident #decl => {
+                                let tag_noun = #crate_path::NounEncode::to_noun(&(#tag as u64));
+                                let rest_noun = #rest_expr;
                                 #crate_path::NounEncode::to_noun(&(tag_noun, rest_noun))
                             }
                         });
                     }
-                    Fields::Unit => {
+                }
+                NounVariantKind::TagStr(tag) => {
+                    if vi.fi.len() == 0 {
                         arms.push(quote! {
                             Self::#vident => #crate_path::NounEncode::to_noun(&#tag),
                         });
+                    } else {
+                        let rest_expr = if vi.fi.len() == 1 {
+                            let var = &vi.fi.vars[0];
+                            quote! { #crate_path::NounEncode::to_noun(#var) }
+                        } else {
+                            let tuple_expr = vi.fi.nested_tuple_expr();
+                            quote! { #crate_path::NounEncode::to_noun(&(#tuple_expr)) }
+                        };
+                        arms.push(quote! {
+                            Self::#vident #decl => {
+                                let tag_noun = #crate_path::NounEncode::to_noun(&#tag);
+                                let rest_noun = #rest_expr;
+                                #crate_path::NounEncode::to_noun(&(tag_noun, rest_noun))
+                            }
+                        });
                     }
-                    _ => panic!("noun(tag = \"str\") variant must have 0 or 1 unnamed field"),
-                },
+                }
             }
         }
         quote! {
@@ -1135,9 +1223,31 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let cell_fallback = if let Some(cv) = cell_variant {
             let cv_ident = &cv.ident;
-            quote! {
-                // Tag is not an atom (it's a cell), try the cell variant
-                return Some(Self::#cv_ident(#crate_path::NounDecode::from_noun(noun)?));
+            if cv.fi.len() == 0 {
+                quote! {
+                    return Some(Self::#cv_ident);
+                }
+            } else if cv.fi.len() == 1 {
+                let var = &cv.fi.vars[0];
+                let construct = if cv.fi.named {
+                    quote! { Self::#cv_ident { #var: #crate_path::NounDecode::from_noun(noun)? } }
+                } else {
+                    quote! { Self::#cv_ident(#crate_path::NounDecode::from_noun(noun)?) }
+                };
+                quote! {
+                    return Some(#construct);
+                }
+            } else {
+                let vars = &cv.fi.vars;
+                let construct = if cv.fi.named {
+                    quote! { Self::#cv_ident { #(#vars),* } }
+                } else {
+                    quote! { Self::#cv_ident( #(#vars),* ) }
+                };
+                quote! {
+                    let ( #(#vars),* ) = #crate_path::NounDecode::from_noun(noun)?;
+                    return Some(#construct);
+                }
             }
         } else {
             quote! { return None; }
@@ -1148,18 +1258,33 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
         for vi in &variants_info {
             if let NounVariantKind::TagU64(tag) = &vi.kind {
                 let vident = &vi.ident;
-                match &vi.fields {
-                    Fields::Unnamed(f) if f.unnamed.len() == 1 => {
-                        u64_tag_arms.push(quote! {
-                            #tag => return Some(Self::#vident(#crate_path::NounDecode::from_noun(rest)?)),
-                        });
-                    }
-                    Fields::Unit => {
-                        u64_tag_arms.push(quote! {
-                            #tag => return Some(Self::#vident),
-                        });
-                    }
-                    _ => {}
+                if vi.fi.len() == 0 {
+                    u64_tag_arms.push(quote! {
+                        #tag => return Some(Self::#vident),
+                    });
+                } else if vi.fi.len() == 1 {
+                    let var = &vi.fi.vars[0];
+                    let construct = if vi.fi.named {
+                        quote! { Self::#vident { #var: #crate_path::NounDecode::from_noun(rest)? } }
+                    } else {
+                        quote! { Self::#vident(#crate_path::NounDecode::from_noun(rest)?) }
+                    };
+                    u64_tag_arms.push(quote! {
+                        #tag => return Some(#construct),
+                    });
+                } else {
+                    let vars = &vi.fi.vars;
+                    let construct = if vi.fi.named {
+                        quote! { Self::#vident { #(#vars),* } }
+                    } else {
+                        quote! { Self::#vident( #(#vars),* ) }
+                    };
+                    u64_tag_arms.push(quote! {
+                        #tag => {
+                            let ( #(#vars),* ) = #crate_path::NounDecode::from_noun(rest)?;
+                            return Some(#construct);
+                        }
+                    });
                 }
             }
         }
@@ -1169,18 +1294,33 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
         for vi in &variants_info {
             if let NounVariantKind::TagStr(tag) = &vi.kind {
                 let vident = &vi.ident;
-                match &vi.fields {
-                    Fields::Unnamed(f) if f.unnamed.len() == 1 => {
-                        str_tag_arms.push(quote! {
-                            #tag => return Some(Self::#vident(#crate_path::NounDecode::from_noun(rest)?)),
-                        });
-                    }
-                    Fields::Unit => {
-                        str_tag_arms.push(quote! {
-                            #tag => return Some(Self::#vident),
-                        });
-                    }
-                    _ => {}
+                if vi.fi.len() == 0 {
+                    str_tag_arms.push(quote! {
+                        #tag => return Some(Self::#vident),
+                    });
+                } else if vi.fi.len() == 1 {
+                    let var = &vi.fi.vars[0];
+                    let construct = if vi.fi.named {
+                        quote! { Self::#vident { #var: #crate_path::NounDecode::from_noun(rest)? } }
+                    } else {
+                        quote! { Self::#vident(#crate_path::NounDecode::from_noun(rest)?) }
+                    };
+                    str_tag_arms.push(quote! {
+                        #tag => return Some(#construct),
+                    });
+                } else {
+                    let vars = &vi.fi.vars;
+                    let construct = if vi.fi.named {
+                        quote! { Self::#vident { #(#vars),* } }
+                    } else {
+                        quote! { Self::#vident( #(#vars),* ) }
+                    };
+                    str_tag_arms.push(quote! {
+                        #tag => {
+                            let ( #(#vars),* ) = #crate_path::NounDecode::from_noun(rest)?;
+                            return Some(#construct);
+                        }
+                    });
                 }
             }
         }
@@ -1226,6 +1366,14 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                         embed_match_arms.push(quote! {
                             if let Some(v) = #crate_path::NounDecode::from_noun(noun).map(Self::#vident) {
                                 return Some(v);
+                            }
+                        });
+                    }
+                    Fields::Named(f) if f.named.len() == 1 => {
+                        let var = &vi.fi.vars[0];
+                        embed_match_arms.push(quote! {
+                            if let Some(#var) = #crate_path::NounDecode::from_noun(noun) {
+                                return Some(Self::#vident { #var });
                             }
                         });
                     }
@@ -1292,21 +1440,22 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                 cur_eithers.iter().rev().fold(a, |acc, f| quote!(#f(#acc)))
             };
             match &vi.kind {
-                NounVariantKind::Cell => match &vi.fields {
-                    Fields::Unnamed(_) => {
+                NounVariantKind::Cell | NounVariantKind::EmbedTag => {
+                    let decl = &vi.fi.decl_pattern;
+                    if vi.fi.len() >= 1 {
+                        let var = &vi.fi.vars[0];
                         arms_hash.push(quote! {
-                            Self::#vident(v) => #crate_path::Hashable::hash(v),
+                            Self::#vident #decl => #crate_path::Hashable::hash(#var),
                         });
                         arms_leaves.push(quote! {
-                            Self::#vident(v) => #crate_path::Hashable::leaf_count(v),
+                            Self::#vident #decl => #crate_path::Hashable::leaf_count(#var),
                         });
                         let nested_a = nest(quote!(a));
                         let nested_b = nest(quote!(b));
                         arms_pairs.push(quote! {
-                            Self::#vident(v) => #crate_path::Hashable::hashable_pair(v).map(|(a, b)| (#nested_a, #nested_b)),
+                            Self::#vident #decl => #crate_path::Hashable::hashable_pair(#var).map(|(a, b)| (#nested_a, #nested_b)),
                         });
-                    }
-                    Fields::Unit => {
+                    } else {
                         arms_hash.push(quote! {
                             Self::#vident => #crate_path::Hashable::hash(&0u64),
                         });
@@ -1319,52 +1468,24 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                             Self::#vident => Option::<((),())>::None.map(|(a, b)| (#nested_a, #nested_b)),
                         });
                     }
-                    _ => {}
-                },
-                NounVariantKind::EmbedTag => match &vi.fields {
-                    Fields::Unnamed(_) => {
+                }
+                NounVariantKind::TagU64(tag) => {
+                    let decl = &vi.fi.decl_pattern;
+                    if vi.fi.len() >= 1 {
+                        // For single-field: hash(&(tag, v)), for multi: hash(&(tag, &(v0, &v1)))
+                        let tuple_expr = vi.fi.nested_tuple_expr();
                         arms_hash.push(quote! {
-                            Self::#vident(v) => #crate_path::Hashable::hash(v),
+                            Self::#vident #decl => #crate_path::Hashable::hash(&(#tag as u64, &(#tuple_expr))),
                         });
                         arms_leaves.push(quote! {
-                            Self::#vident(v) => #crate_path::Hashable::leaf_count(v),
-                        });
-                        let nested_a = nest(quote!(a));
-                        let nested_b = nest(quote!(b));
-                        arms_pairs.push(quote! {
-                            Self::#vident(v) => #crate_path::Hashable::hashable_pair(v).map(|(a, b)| (#nested_a, #nested_b)),
-                        });
-                    }
-                    Fields::Unit => {
-                        arms_hash.push(quote! {
-                            Self::#vident => #crate_path::Hashable::hash(&0u64),
-                        });
-                        arms_leaves.push(quote! {
-                            Self::#vident => #crate_path::Hashable::leaf_count(&0u64),
-                        });
-                        let nested_a = nest(quote!(a));
-                        let nested_b = nest(quote!(b));
-                        arms_pairs.push(quote! {
-                            Self::#vident => Option::<((),())>::None.map(|(a, b)| (#nested_a, #nested_b)),
-                        });
-                    }
-                    _ => {}
-                },
-                NounVariantKind::TagU64(tag) => match &vi.fields {
-                    Fields::Unnamed(_) => {
-                        arms_hash.push(quote! {
-                            Self::#vident(v) => #crate_path::Hashable::hash(&(#tag as u64, v)),
-                        });
-                        arms_leaves.push(quote! {
-                            Self::#vident(v) => #crate_path::Hashable::leaf_count(&(#tag as u64, v)),
+                            Self::#vident #decl => #crate_path::Hashable::leaf_count(&(#tag as u64, &(#tuple_expr))),
                         });
                         let nested_tag = nest(quote!(#tag as u64));
-                        let nested_value = nest(quote!(v));
+                        let nested_value = nest(quote!(v_rest));
                         arms_pairs.push(quote! {
-                            Self::#vident(v) => Some((#nested_tag, #nested_value)),
+                            Self::#vident #decl => { let v_rest = (#tuple_expr); Some((#nested_tag, #nested_value)) },
                         });
-                    }
-                    Fields::Unit => {
+                    } else {
                         arms_hash.push(quote! {
                             Self::#vident => #crate_path::Hashable::hash(&(#tag as u64)),
                         });
@@ -1377,23 +1498,23 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                             Self::#vident => Option::<((),())>::None.map(|(a, b)| (#nested_a, #nested_b)),
                         });
                     }
-                    _ => {}
-                },
-                NounVariantKind::TagStr(tag) => match &vi.fields {
-                    Fields::Unnamed(_) => {
+                }
+                NounVariantKind::TagStr(tag) => {
+                    let decl = &vi.fi.decl_pattern;
+                    if vi.fi.len() >= 1 {
+                        let tuple_expr = vi.fi.nested_tuple_expr();
                         arms_hash.push(quote! {
-                            Self::#vident(v) => #crate_path::Hashable::hash(&(#tag, v)),
+                            Self::#vident #decl => #crate_path::Hashable::hash(&(#tag, &(#tuple_expr))),
                         });
                         arms_leaves.push(quote! {
-                            Self::#vident(v) => #crate_path::Hashable::leaf_count(&(#tag, v)),
+                            Self::#vident #decl => #crate_path::Hashable::leaf_count(&(#tag, &(#tuple_expr))),
                         });
                         let nested_tag = nest(quote!(#tag));
-                        let nested_value = nest(quote!(v));
+                        let nested_value = nest(quote!(v_rest));
                         arms_pairs.push(quote! {
-                            Self::#vident(v) => Some((#nested_tag, #nested_value)),
+                            Self::#vident #decl => { let v_rest = (#tuple_expr); Some((#nested_tag, #nested_value)) },
                         });
-                    }
-                    Fields::Unit => {
+                    } else {
                         arms_hash.push(quote! {
                             Self::#vident => #crate_path::Hashable::hash(&#tag),
                         });
@@ -1406,8 +1527,7 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
                             Self::#vident => Option::<((),())>::None.map(|(a, b)| (#nested_a, #nested_b)),
                         });
                     }
-                    _ => {}
-                },
+                }
             }
             eithers.push(quote!(#crate_path::Either::Right));
         }
@@ -1455,158 +1575,213 @@ pub fn noun_derive(attr: TokenStream, item: TokenStream) -> TokenStream {
         for vi in &variants_info {
             let vident = &vi.ident;
             match &vi.kind {
-                NounVariantKind::Cell => {
+                NounVariantKind::Cell | NounVariantKind::EmbedTag => {
                     // Untagged: transparent
-                    match &vi.fields {
-                        Fields::Unnamed(f) => {
-                            let inner_ty = &f.unnamed[0].ty;
-                            shadow_owned_variants.push(quote! {
-                                #vident(#inner_ty),
-                            });
-                            shadow_borrowed_variants.push(quote! {
-                                #vident(&'a #inner_ty),
-                            });
-                            from_shadow_arms.push(quote! {
-                                #shadow_owned_name::#vident(v) => super::#enum_name::#vident(v),
-                            });
-                            to_shadow_owned_arms.push(quote! {
-                                super::#enum_name::#vident(v) => #shadow_owned_name::#vident(v),
-                            });
-                            into_shadow_arms.push(quote! {
-                                super::#enum_name::#vident(ref v) => #shadow_borrowed_name::#vident(v),
-                            });
-                        }
-                        _ => panic!("noun(cell) variant must have unnamed fields"),
-                    }
-                }
-                NounVariantKind::EmbedTag => {
-                    // Untagged: transparent
-                    match &vi.fields {
-                        Fields::Unnamed(f) => {
-                            let inner_ty = &f.unnamed[0].ty;
-                            shadow_owned_variants.push(quote! {
-                                #vident(#inner_ty),
-                            });
-                            shadow_borrowed_variants.push(quote! {
-                                #vident(&'a #inner_ty),
-                            });
-                            from_shadow_arms.push(quote! {
-                                #shadow_owned_name::#vident(v) => super::#enum_name::#vident(v),
-                            });
-                            to_shadow_owned_arms.push(quote! {
-                                super::#enum_name::#vident(v) => #shadow_owned_name::#vident(v),
-                            });
-                            into_shadow_arms.push(quote! {
-                                super::#enum_name::#vident(ref v) => #shadow_borrowed_name::#vident(v),
-                            });
-                        }
-                        _ => panic!("noun(embed_tag) variant must have unnamed fields"),
+                    let decl = &vi.fi.decl_pattern;
+                    let vars = &vi.fi.vars;
+                    let types = &vi.fi.types;
+                    if vi.fi.len() == 0 {
+                        shadow_owned_variants.push(quote! {
+                            #vident,
+                        });
+                        shadow_borrowed_variants.push(quote! {
+                            #vident,
+                        });
+                        from_shadow_arms.push(quote! {
+                            #shadow_owned_name::#vident => super::#enum_name::#vident,
+                        });
+                        to_shadow_owned_arms.push(quote! {
+                            super::#enum_name::#vident => #shadow_owned_name::#vident,
+                        });
+                        into_shadow_arms.push(quote! {
+                            super::#enum_name::#vident => #shadow_borrowed_name::#vident,
+                        });
+                    } else if vi.fi.len() == 1 && !vi.fi.named {
+                        let inner_ty = &types[0];
+                        shadow_owned_variants.push(quote! {
+                            #vident(#inner_ty),
+                        });
+                        shadow_borrowed_variants.push(quote! {
+                            #vident(&'a #inner_ty),
+                        });
+                        from_shadow_arms.push(quote! {
+                            #shadow_owned_name::#vident(v) => super::#enum_name::#vident(v),
+                        });
+                        to_shadow_owned_arms.push(quote! {
+                            super::#enum_name::#vident(v) => #shadow_owned_name::#vident(v),
+                        });
+                        into_shadow_arms.push(quote! {
+                            super::#enum_name::#vident(ref v) => #shadow_borrowed_name::#vident(v),
+                        });
+                    } else {
+                        // Named fields or multi-field: include all fields by name
+                        shadow_owned_variants.push(quote! {
+                            #vident { #(#vars: #types),* },
+                        });
+                        shadow_borrowed_variants.push(quote! {
+                            #vident { #(#vars: &'a #types),* },
+                        });
+                        from_shadow_arms.push(quote! {
+                            #shadow_owned_name::#vident { #(#vars),* } => super::#enum_name::#vident #decl,
+                        });
+                        to_shadow_owned_arms.push(quote! {
+                            super::#enum_name::#vident #decl => #shadow_owned_name::#vident { #(#vars),* },
+                        });
+                        into_shadow_arms.push(quote! {
+                            super::#enum_name::#vident { #(ref #vars),* } => #shadow_borrowed_name::#vident { #(#vars),* },
+                        });
                     }
                 }
                 NounVariantKind::TagU64(tag) => {
                     let tag_str = tag.to_string();
-                    match &vi.fields {
-                        Fields::Unnamed(f) if f.unnamed.len() == 1 => {
-                            let inner_ty = &f.unnamed[0].ty;
-                            shadow_owned_variants.push(quote! {
-                                #vident {
-                                    #[cfg_attr(feature = "wasm", tsify(type = #tag_str))]
-                                    #tag_ident: u64,
-                                    #[serde(flatten)]
-                                    value: #inner_ty,
-                                },
-                            });
-                            shadow_borrowed_variants.push(quote! {
-                                #vident {
-                                    #tag_ident: u64,
-                                    #[serde(flatten)]
-                                    value: &'a #inner_ty,
-                                },
-                            });
-                            from_shadow_arms.push(quote! {
-                                #shadow_owned_name::#vident { value, .. } => super::#enum_name::#vident(value),
-                            });
-                            to_shadow_owned_arms.push(quote! {
-                                super::#enum_name::#vident(v) => #shadow_owned_name::#vident { #tag_ident: #tag, value: v },
-                            });
-                            into_shadow_arms.push(quote! {
-                                super::#enum_name::#vident(ref v) => #shadow_borrowed_name::#vident { #tag_ident: #tag, value: v },
-                            });
-                        }
-                        Fields::Unit => {
-                            shadow_owned_variants.push(quote! {
-                                #vident {
-                                    #[cfg_attr(feature = "wasm", tsify(type = #tag_str))]
-                                    #tag_ident: u64
-                                },
-                            });
-                            shadow_borrowed_variants.push(quote! {
-                                #vident { #tag_ident: u64 },
-                            });
-                            from_shadow_arms.push(quote! {
-                                #shadow_owned_name::#vident { .. } => super::#enum_name::#vident,
-                            });
-                            to_shadow_owned_arms.push(quote! {
-                                super::#enum_name::#vident => #shadow_owned_name::#vident { #tag_ident: #tag },
-                            });
-                            into_shadow_arms.push(quote! {
-                                super::#enum_name::#vident => #shadow_borrowed_name::#vident { #tag_ident: #tag },
-                            });
-                        }
-                        _ => panic!("noun(tag = N) variant must have 0 or 1 unnamed field"),
+                    let decl = &vi.fi.decl_pattern;
+                    let vars = &vi.fi.vars;
+                    let types = &vi.fi.types;
+                    if vi.fi.len() == 0 {
+                        shadow_owned_variants.push(quote! {
+                            #vident {
+                                #[cfg_attr(feature = "wasm", tsify(type = #tag_str))]
+                                #tag_ident: u64
+                            },
+                        });
+                        shadow_borrowed_variants.push(quote! {
+                            #vident { #tag_ident: u64 },
+                        });
+                        from_shadow_arms.push(quote! {
+                            #shadow_owned_name::#vident { .. } => super::#enum_name::#vident,
+                        });
+                        to_shadow_owned_arms.push(quote! {
+                            super::#enum_name::#vident => #shadow_owned_name::#vident { #tag_ident: #tag },
+                        });
+                        into_shadow_arms.push(quote! {
+                            super::#enum_name::#vident => #shadow_borrowed_name::#vident { #tag_ident: #tag },
+                        });
+                    } else if vi.fi.len() == 1 && !vi.fi.named {
+                        let inner_ty = &types[0];
+                        shadow_owned_variants.push(quote! {
+                            #vident {
+                                #[cfg_attr(feature = "wasm", tsify(type = #tag_str))]
+                                #tag_ident: u64,
+                                #[serde(flatten)]
+                                value: #inner_ty,
+                            },
+                        });
+                        shadow_borrowed_variants.push(quote! {
+                            #vident {
+                                #tag_ident: u64,
+                                #[serde(flatten)]
+                                value: &'a #inner_ty,
+                            },
+                        });
+                        from_shadow_arms.push(quote! {
+                            #shadow_owned_name::#vident { value, .. } => super::#enum_name::#vident(value),
+                        });
+                        to_shadow_owned_arms.push(quote! {
+                            super::#enum_name::#vident(v) => #shadow_owned_name::#vident { #tag_ident: #tag, value: v },
+                        });
+                        into_shadow_arms.push(quote! {
+                            super::#enum_name::#vident(ref v) => #shadow_borrowed_name::#vident { #tag_ident: #tag, value: v },
+                        });
+                    } else {
+                        // Named fields or multi-field: include tag + all fields by name
+                        shadow_owned_variants.push(quote! {
+                            #vident {
+                                #[cfg_attr(feature = "wasm", tsify(type = #tag_str))]
+                                #tag_ident: u64,
+                                #(#vars: #types),*
+                            },
+                        });
+                        shadow_borrowed_variants.push(quote! {
+                            #vident {
+                                #tag_ident: u64,
+                                #(#vars: &'a #types),*
+                            },
+                        });
+                        from_shadow_arms.push(quote! {
+                            #shadow_owned_name::#vident { #(#vars),*, .. } => super::#enum_name::#vident #decl,
+                        });
+                        to_shadow_owned_arms.push(quote! {
+                            super::#enum_name::#vident #decl => #shadow_owned_name::#vident { #tag_ident: #tag, #(#vars),* },
+                        });
+                        into_shadow_arms.push(quote! {
+                            super::#enum_name::#vident { #(ref #vars),* } => #shadow_borrowed_name::#vident { #tag_ident: #tag, #(#vars),* },
+                        });
                     }
                 }
                 NounVariantKind::TagStr(tag) => {
                     let tag_str = format!("\"{}\"", tag);
-                    match &vi.fields {
-                        Fields::Unnamed(f) if f.unnamed.len() == 1 => {
-                            let inner_ty = &f.unnamed[0].ty;
-                            shadow_owned_variants.push(quote! {
-                                #vident {
-                                    #[cfg_attr(feature = "wasm", tsify(type = #tag_str))]
-                                    #tag_ident: alloc::string::String,
-                                    #[serde(flatten)]
-                                    value: #inner_ty,
-                                },
-                            });
-                            shadow_borrowed_variants.push(quote! {
-                                #vident {
-                                    #tag_ident: &'a str,
-                                    #[serde(flatten)]
-                                    value: &'a #inner_ty,
-                                },
-                            });
-                            from_shadow_arms.push(quote! {
-                                #shadow_owned_name::#vident { value, .. } => super::#enum_name::#vident(value),
-                            });
-                            to_shadow_owned_arms.push(quote! {
-                                super::#enum_name::#vident(v) => #shadow_owned_name::#vident { #tag_ident: #tag.into(), value: v },
-                            });
-                            into_shadow_arms.push(quote! {
-                                super::#enum_name::#vident(ref v) => #shadow_borrowed_name::#vident { #tag_ident: #tag, value: v },
-                            });
-                        }
-                        Fields::Unit => {
-                            shadow_owned_variants.push(quote! {
-                                #vident {
-                                    #[cfg_attr(feature = "wasm", tsify(type = #tag_str))]
-                                    #tag_ident: alloc::string::String
-                                },
-                            });
-                            shadow_borrowed_variants.push(quote! {
-                                #vident { #tag_ident: &'a str },
-                            });
-                            from_shadow_arms.push(quote! {
-                                #shadow_owned_name::#vident { .. } => super::#enum_name::#vident,
-                            });
-                            to_shadow_owned_arms.push(quote! {
-                                super::#enum_name::#vident => #shadow_owned_name::#vident { #tag_ident: #tag.into() },
-                            });
-                            into_shadow_arms.push(quote! {
-                                super::#enum_name::#vident => #shadow_borrowed_name::#vident { #tag_ident: #tag },
-                            });
-                        }
-                        _ => panic!("noun(tag = \"str\") variant must have 0 or 1 unnamed field"),
+                    let decl = &vi.fi.decl_pattern;
+                    let vars = &vi.fi.vars;
+                    let types = &vi.fi.types;
+                    if vi.fi.len() == 0 {
+                        shadow_owned_variants.push(quote! {
+                            #vident {
+                                #[cfg_attr(feature = "wasm", tsify(type = #tag_str))]
+                                #tag_ident: alloc::string::String
+                            },
+                        });
+                        shadow_borrowed_variants.push(quote! {
+                            #vident { #tag_ident: &'a str },
+                        });
+                        from_shadow_arms.push(quote! {
+                            #shadow_owned_name::#vident { .. } => super::#enum_name::#vident,
+                        });
+                        to_shadow_owned_arms.push(quote! {
+                            super::#enum_name::#vident => #shadow_owned_name::#vident { #tag_ident: #tag.into() },
+                        });
+                        into_shadow_arms.push(quote! {
+                            super::#enum_name::#vident => #shadow_borrowed_name::#vident { #tag_ident: #tag },
+                        });
+                    } else if vi.fi.len() == 1 && !vi.fi.named {
+                        let inner_ty = &types[0];
+                        shadow_owned_variants.push(quote! {
+                            #vident {
+                                #[cfg_attr(feature = "wasm", tsify(type = #tag_str))]
+                                #tag_ident: alloc::string::String,
+                                #[serde(flatten)]
+                                value: #inner_ty,
+                            },
+                        });
+                        shadow_borrowed_variants.push(quote! {
+                            #vident {
+                                #tag_ident: &'a str,
+                                #[serde(flatten)]
+                                value: &'a #inner_ty,
+                            },
+                        });
+                        from_shadow_arms.push(quote! {
+                            #shadow_owned_name::#vident { value, .. } => super::#enum_name::#vident(value),
+                        });
+                        to_shadow_owned_arms.push(quote! {
+                            super::#enum_name::#vident(v) => #shadow_owned_name::#vident { #tag_ident: #tag.into(), value: v },
+                        });
+                        into_shadow_arms.push(quote! {
+                            super::#enum_name::#vident(ref v) => #shadow_borrowed_name::#vident { #tag_ident: #tag, value: v },
+                        });
+                    } else {
+                        // Named fields or multi-field: include tag + all fields by name
+                        shadow_owned_variants.push(quote! {
+                            #vident {
+                                #[cfg_attr(feature = "wasm", tsify(type = #tag_str))]
+                                #tag_ident: alloc::string::String,
+                                #(#vars: #types),*
+                            },
+                        });
+                        shadow_borrowed_variants.push(quote! {
+                            #vident {
+                                #tag_ident: &'a str,
+                                #(#vars: &'a #types),*
+                            },
+                        });
+                        from_shadow_arms.push(quote! {
+                            #shadow_owned_name::#vident { #(#vars),*, .. } => super::#enum_name::#vident #decl,
+                        });
+                        to_shadow_owned_arms.push(quote! {
+                            super::#enum_name::#vident #decl => #shadow_owned_name::#vident { #tag_ident: #tag.into(), #(#vars),* },
+                        });
+                        into_shadow_arms.push(quote! {
+                            super::#enum_name::#vident { #(ref #vars),* } => #shadow_borrowed_name::#vident { #tag_ident: #tag, #(#vars),* },
+                        });
                     }
                 }
             }

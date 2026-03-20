@@ -1,5 +1,10 @@
 #[cfg(feature = "alloc")]
-use alloc::{boxed::Box, format, string::ToString};
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 use arrayvec::ArrayVec;
 use iris_ztd::{
     crypto::cheetah::{
@@ -31,6 +36,7 @@ impl TryFrom<&str> for PublicKey {
     }
 }
 
+#[iris_ztd::wasm_member_methods]
 impl PublicKey {
     pub fn verify(&self, m: &Digest, sig: &Signature) -> bool {
         if sig.c == U256::ZERO || sig.c >= G_ORDER || sig.s == U256::ZERO || sig.s >= G_ORDER {
@@ -64,23 +70,6 @@ impl PublicKey {
         chal == sig.c
     }
 
-    pub fn to_be_bytes(&self) -> [u8; 97] {
-        let mut data = [0u8; 97];
-        data[0] = 0x01; // prefix byte
-        let mut offset = 1;
-        // y-coordinate: 6 belts × 8 bytes = 48 bytes
-        for belt in self.0.y.0.iter().rev() {
-            data[offset..offset + 8].copy_from_slice(&belt.0.to_be_bytes());
-            offset += 8;
-        }
-        // x-coordinate: 6 belts × 8 bytes = 48 bytes
-        for belt in self.0.x.0.iter().rev() {
-            data[offset..offset + 8].copy_from_slice(&belt.0.to_be_bytes());
-            offset += 8;
-        }
-        data
-    }
-
     pub fn from_be_bytes(bytes: &[u8]) -> PublicKey {
         let mut x = [Belt(0); 6];
         let mut y = [Belt(0); 6];
@@ -106,6 +95,44 @@ impl PublicKey {
             y: F6lt(y),
             inf: false,
         })
+    }
+
+    #[cfg(feature = "alloc")]
+    pub fn to_be_bytes_vec(&self) -> Vec<u8> {
+        self.to_be_bytes().to_vec()
+    }
+
+    #[cfg(feature = "alloc")]
+    pub fn from_hex(hex: &str) -> Option<PublicKey> {
+        let bytes = hex::decode(hex).ok()?;
+        if bytes.len() != 97 {
+            return None;
+        }
+        Some(Self::from_be_bytes(&bytes))
+    }
+
+    #[cfg(feature = "alloc")]
+    pub fn to_hex(&self) -> String {
+        hex::encode(self.to_be_bytes())
+    }
+}
+
+impl PublicKey {
+    pub fn to_be_bytes(&self) -> [u8; 97] {
+        let mut data = [0u8; 97];
+        data[0] = 0x01; // prefix byte
+        let mut offset = 1;
+        // y-coordinate: 6 belts × 8 bytes = 48 bytes
+        for belt in self.0.y.0.iter().rev() {
+            data[offset..offset + 8].copy_from_slice(&belt.0.to_be_bytes());
+            offset += 8;
+        }
+        // x-coordinate: 6 belts × 8 bytes = 48 bytes
+        for belt in self.0.x.0.iter().rev() {
+            data[offset..offset + 8].copy_from_slice(&belt.0.to_be_bytes());
+            offset += 8;
+        }
+        data
     }
 
     /// SLIP-10 compatible serialization (legacy 65-byte format for compatibility)

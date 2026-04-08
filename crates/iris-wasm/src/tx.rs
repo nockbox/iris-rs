@@ -3,6 +3,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use iris_crypto::PrivateKey as CryptoPrivateKey;
+use iris_crypto::{PublicKey, Signature};
 use iris_grpc_proto::pb::common::v1 as pb_v1;
 use iris_grpc_proto::pb::common::v2 as pb;
 use iris_nockchain_types::{
@@ -14,7 +15,9 @@ use iris_nockchain_types::{
 };
 use iris_ztd::{cue, Digest, U256};
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
 
 // ============================================================================
 // Wasm Types - Adapters and Helpers
@@ -127,11 +130,49 @@ impl TxLock {
 
 enum PrivateKeyBackend {
     Bytes(BytesPrivateKeyBackend),
+    Callback(CallbackPrivateKeyBackend),
 }
 
 struct BytesPrivateKeyBackend {
     signing_key: CryptoPrivateKey,
     public_key_bytes: [u8; 97],
+}
+
+struct CallbackPrivateKeyBackend {
+    public_key: PublicKey,
+    public_key_bytes: [u8; 97],
+    signer: js_sys::Function,
+}
+
+fn jsvalue_to_u256_be(value: JsValue) -> Result<U256, JsValue> {
+    if value.is_null() || value.is_undefined() {
+        return Err(JsValue::from_str("Expected 32-byte Uint8Array, got null/undefined"));
+    }
+
+    let arr = js_sys::Uint8Array::new(&value);
+    if arr.length() != 32 {
+        return Err(JsValue::from_str("Expected 32-byte Uint8Array"));
+    }
+
+    let mut bytes = [0u8; 32];
+    arr.copy_to(&mut bytes);
+    Ok(U256::from_be_slice(&bytes))
+}
+
+fn jsvalue_to_signature(value: JsValue) -> Result<Signature, JsValue> {
+    if !value.is_object() {
+        return Err(JsValue::from_str(
+            "Signer must return an object { c: Uint8Array(32), s: Uint8Array(32) }",
+        ));
+    }
+    let obj = js_sys::Object::from(value);
+    let c_val = js_sys::Reflect::get(&obj, &JsValue::from_str("c"))?;
+    let s_val = js_sys::Reflect::get(&obj, &JsValue::from_str("s"))?;
+
+    Ok(Signature {
+        c: jsvalue_to_u256_be(c_val)?,
+        s: jsvalue_to_u256_be(s_val)?,
+    })
 }
 
 #[wasm_bindgen(js_name = PrivateKey)]
@@ -185,11 +226,49 @@ impl WasmPrivateKey {
         })
     }
 
+    /// Construct a callback-backed key.
+    ///
+    /// This is intended for hardware wallets / remote signers where the private key
+    /// is not available in WASM memory.
+    ///
+    /// The callback is invoked with a 40-byte digest (`Uint8Array`) and must return
+    /// a signature object (or a `Promise` that resolves to it):
+    /// `{ c: Uint8Array(32), s: Uint8Array(32) }`, where `c` and `s` are big-endian bytes.
+    ///
+    /// # JavaScript example
+    ///
+    /// ```javascript
+    /// const key = PrivateKey.fromCallback(pubkeyBytes, async (digestBytes) => {
+    ///   // digestBytes is Uint8Array(40)
+    ///   // return { c: Uint8Array(32), s: Uint8Array(32) }
+    ///   return await hwWalletSignDigest(digestBytes);
+    /// });
+    /// await builder.sign(key);
+    /// ```
+    #[wasm_bindgen(js_name = fromCallback)]
+    pub fn from_callback(public_key_bytes: &[u8], signer: js_sys::Function) -> Result<Self, JsValue> {
+        if public_key_bytes.len() != 97 {
+            return Err(JsValue::from_str("Public key must be 97 bytes"));
+        }
+        let mut pk_bytes = [0u8; 97];
+        pk_bytes.copy_from_slice(public_key_bytes);
+        let public_key = PublicKey::from_be_bytes(&pk_bytes);
+
+        Ok(Self {
+            backend: PrivateKeyBackend::Callback(CallbackPrivateKeyBackend {
+                public_key,
+                public_key_bytes: pk_bytes,
+                signer,
+            }),
+        })
+    }
+
     /// Return this key's public key as 97-byte uncompressed bytes.
     #[wasm_bindgen(getter, js_name = publicKey)]
     pub fn public_key(&self) -> Vec<u8> {
         match &self.backend {
             PrivateKeyBackend::Bytes(bytes_backend) => bytes_backend.public_key_bytes.to_vec(),
+            PrivateKeyBackend::Callback(cb_backend) => cb_backend.public_key_bytes.to_vec(),
         }
     }
 
@@ -200,6 +279,7 @@ impl WasmPrivateKey {
     pub fn derivation_path(&self) -> Option<String> {
         match &self.backend {
             PrivateKeyBackend::Bytes(_) => None,
+            PrivateKeyBackend::Callback(_) => None,
         }
     }
 
@@ -208,6 +288,7 @@ impl WasmPrivateKey {
     pub fn backend_kind(&self) -> String {
         match &self.backend {
             PrivateKeyBackend::Bytes(_) => "bytes".to_string(),
+            PrivateKeyBackend::Callback(_) => "callback".to_string(),
         }
     }
 }
@@ -216,6 +297,9 @@ impl WasmPrivateKey {
     fn signing_key(&self) -> &CryptoPrivateKey {
         match &self.backend {
             PrivateKeyBackend::Bytes(bytes_backend) => &bytes_backend.signing_key,
+            PrivateKeyBackend::Callback(_) => {
+                unreachable!("callback-backed keys do not expose a local signing key")
+            }
         }
     }
 }
@@ -328,7 +412,41 @@ impl WasmTxBuilder {
 
     #[wasm_bindgen]
     pub async fn sign(&mut self, signing_key: &WasmPrivateKey) -> Result<(), JsValue> {
-        self.builder.sign(signing_key.signing_key());
+        match &signing_key.backend {
+            PrivateKeyBackend::Bytes(_) => {
+                self.builder.sign(signing_key.signing_key());
+            }
+            PrivateKeyBackend::Callback(cb) => {
+                let spends = self.builder.all_spends_mut();
+                for spend in spends.values_mut() {
+                    if !spend.needs_signature_from(&cb.public_key) {
+                        continue;
+                    }
+
+                    let digest = spend.sig_hash();
+                    let digest_bytes = digest.to_bytes();
+                    let digest_u8 = js_sys::Uint8Array::from(digest_bytes.as_slice());
+
+                    let returned = cb
+                        .signer
+                        .call1(&JsValue::UNDEFINED, &digest_u8.into())?;
+
+                    let resolved = if js_sys::Promise::instanceof(&returned) {
+                        JsFuture::from(js_sys::Promise::from(returned)).await?
+                    } else {
+                        returned
+                    };
+
+                    let sig: Signature = jsvalue_to_signature(resolved)?;
+                    let ok = spend.add_external_signature(cb.public_key, sig);
+                    if !ok {
+                        return Err(JsValue::from_str(
+                            "Signer returned a signature for a spend that does not require this key",
+                        ));
+                    }
+                }
+            }
+        }
 
         Ok(())
     }

@@ -170,6 +170,21 @@ const signedTx = builder.build();
 const txProtobuf = signedTx.toProtobuf();
 await client.sendTransaction(txProtobuf);
 
+// ============================================================================
+// Callback-based signing (hardware wallet / remote signer)
+// ============================================================================
+//
+// If you don't want private key bytes in WASM memory, construct a callback-backed key.
+// The callback receives the 40-byte spend digest (Uint8Array) and must return a
+// signature object `{ c: Uint8Array(32), s: Uint8Array(32) }` (or a Promise resolving to it),
+// where `c` and `s` are big-endian bytes.
+//
+// const pubkeyBytes = Uint8Array.from([/* 97 bytes */]);
+// const hwKey = PrivateKey.fromCallback(pubkeyBytes, async (digestBytes) => {
+//   return await hwWalletSignDigest(digestBytes);
+// });
+// await builder.sign(hwKey);
+
 // Check if a transaction was accepted
 const accepted = await client.transactionAccepted(signedTx.id.value);
 console.log('Transaction accepted:', accepted);

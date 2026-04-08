@@ -204,6 +204,51 @@ impl SpendBuilder {
         self
     }
 
+    /// Return the signature hash for this spend.
+    ///
+    /// This is the digest that must be signed to satisfy signature-based unlocks.
+    pub fn sig_hash(&self) -> Digest {
+        self.spend.sig_hash()
+    }
+
+    /// Returns true if `pubkey` is one of the required keys for this spend.
+    ///
+    /// For V1 spends (`Spend::S1`), this checks PKH in the spend condition.
+    /// For legacy spends (`Spend::S0`), this checks pubkey in the note signature set.
+    pub fn needs_signature_from(&self, pubkey: &PublicKey) -> bool {
+        match &self.spend {
+            Spend::S1(spend) => {
+                let pkpkh = pubkey.hash();
+                spend
+                    .witness
+                    .lock_merkle_proof
+                    .spend_condition()
+                    .pkh()
+                    .any(|p| p.hashes.contains(&pkpkh))
+            }
+            Spend::S0(_) => {
+                let Some(sig) = &self.note_info.sig else {
+                    return false;
+                };
+                sig.pubkeys.contains(pubkey)
+            }
+        }
+    }
+
+    /// Add a signature produced externally (e.g. from a hardware wallet).
+    ///
+    /// Returns `true` if the signature was accepted for this spend (i.e. this spend
+    /// actually requires `pubkey`), otherwise returns `false` and does not modify
+    /// the spend.
+    pub fn add_external_signature(&mut self, pubkey: PublicKey, signature: iris_crypto::Signature) -> bool {
+        if !self.needs_signature_from(&pubkey) {
+            return false;
+        }
+
+        self.spend.add_signature(pubkey, signature);
+        true
+    }
+
     pub fn cur_refund(&self) -> Option<&Seed> {
         let lock_root = self.refund_lock.clone()?;
         self.spend
@@ -624,6 +669,10 @@ impl TxBuilder {
 
     pub fn all_spends(&self) -> &BTreeMap<Name, SpendBuilder> {
         &self.spends
+    }
+
+    pub fn all_spends_mut(&mut self) -> &mut BTreeMap<Name, SpendBuilder> {
+        &mut self.spends
     }
 
     pub fn cur_fee(&self) -> Nicks {

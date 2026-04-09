@@ -293,6 +293,24 @@
                 log('Transaction built successfully!', 'success');
                 log('Transaction ID: ' + rawTx.id.value, 'info');
 
+                // new idea
+                let callbacks = {
+                    get_public_key: () => {
+                        // TODO: return public key
+                    },
+                    sign: (blob) => {
+                        // TODO: Sign blob
+                    }
+                };
+                const privateKey2 = PrivateKey.fromCallbacks(callbacks);
+                // new idea
+
+                /*
+                iris-rs wasm module < signing
+                -> iris < webapp
+                -> ledger library (usb connection) + handles adpus
+                */
+
                 client = new GrpcClient(endpoint);
                 const result = await client.sendTransaction(rawTx.toProtobuf());
                 log('Transaction submitted! ' + result, 'success');

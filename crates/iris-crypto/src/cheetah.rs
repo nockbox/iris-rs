@@ -277,10 +277,12 @@ impl Hashable for Signature {
     }
 }
 
+// TODO: This should go away and be replaced by a trait thats implemented by WasmPrivateKey
 #[derive(Debug, Clone)]
 pub struct PrivateKey(pub U256);
 
 impl Drop for PrivateKey {
+    // TODO: Move this to WasmPrivateKey as well since it can store private key data, too.
     fn drop(&mut self) {
         unsafe {
             core::ptr::write_volatile(&mut self.0, U256::ZERO);

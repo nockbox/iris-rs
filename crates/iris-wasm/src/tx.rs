@@ -133,13 +133,14 @@ enum PrivateKeyBackend {
     Callback(CallbackPrivateKeyBackend),
 }
 
+// TODO: On drop, zero memory
 struct BytesPrivateKeyBackend {
     signing_key: CryptoPrivateKey,
     public_key_bytes: [u8; 97],
 }
 
 struct CallbackPrivateKeyBackend {
-    public_key: PublicKey,
+    public_key: PublicKey, // TODO: maybe a public key function would be better here
     public_key_bytes: [u8; 97],
     signer: js_sys::Function,
 }
@@ -263,6 +264,7 @@ impl WasmPrivateKey {
         })
     }
 
+    // TODO: Make async
     /// Return this key's public key as 97-byte uncompressed bytes.
     #[wasm_bindgen(getter, js_name = publicKey)]
     pub fn public_key(&self) -> Vec<u8> {
@@ -294,6 +296,7 @@ impl WasmPrivateKey {
 }
 
 impl WasmPrivateKey {
+    // TODO: Async + Create trait for PrivateKey with public_key()  sign() functions
     fn signing_key(&self) -> &CryptoPrivateKey {
         match &self.backend {
             PrivateKeyBackend::Bytes(bytes_backend) => &bytes_backend.signing_key,

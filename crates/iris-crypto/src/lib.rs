@@ -8,7 +8,7 @@ use alloc::string::{String, ToString};
 pub mod cheetah;
 pub mod slip10;
 
-pub use cheetah::{PrivateKey, PublicKey, Signature};
+pub use cheetah::{PrivateKey, PublicKey, Signature, SigningKey};
 pub use slip10::{derive_master_key, ExtendedKey};
 
 #[cfg(feature = "mnemonic")]

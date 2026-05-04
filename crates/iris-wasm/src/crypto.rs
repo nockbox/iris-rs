@@ -137,6 +137,31 @@ pub fn hash_noun(noun: &[u8]) -> Result<String, JsValue> {
     Ok(digest.to_string())
 }
 
+/// Sign a 40-byte digest (same encoding as [`iris_ztd::Digest::to_bytes`]) with a 32-byte
+/// private key. Returns 64 bytes: `c` then `s`, each 32-byte little-endian scalars.
+#[wasm_bindgen(js_name = signDigestBytes)]
+pub fn sign_digest_bytes(
+    private_key_bytes: &[u8],
+    digest_bytes: &[u8],
+) -> Result<js_sys::Uint8Array, JsValue> {
+    use iris_ztd::Digest;
+    if private_key_bytes.len() != 32 {
+        return Err(JsValue::from_str("Private key must be 32 bytes"));
+    }
+    if digest_bytes.len() != 40 {
+        return Err(JsValue::from_str(
+            "Digest must be 40 bytes (nockchain digest limb encoding)",
+        ));
+    }
+    let private_key = PrivateKey(U256::from_be_slice(private_key_bytes));
+    let digest = Digest::from_bytes(digest_bytes);
+    let sig = private_key.sign(&digest);
+    let mut out = [0u8; 64];
+    out[..32].copy_from_slice(&sig.c.to_le_bytes());
+    out[32..].copy_from_slice(&sig.s.to_le_bytes());
+    Ok(js_sys::Uint8Array::from(out.as_slice()))
+}
+
 /// Sign a message string with a private key
 #[wasm_bindgen(js_name = signMessage)]
 pub fn sign_message(private_key_bytes: &[u8], message: &str) -> Result<Signature, JsValue> {

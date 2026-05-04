@@ -2,7 +2,7 @@ use alloc::collections::btree_map::BTreeMap;
 use alloc::collections::btree_set::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
-use iris_crypto::{PrivateKey, PublicKey};
+use iris_crypto::{PublicKey, Signature, SigningKey};
 use iris_ztd::{noun_deserialize, noun_serialize, Digest, Hashable as HashableTrait, Noun, ZMap};
 use serde::{Deserialize, Serialize};
 
@@ -343,19 +343,43 @@ impl SpendBuilder {
         None
     }
 
-    pub fn sign(&mut self, signing_key: &PrivateKey) -> bool {
+    pub fn sig_hash(&self) -> Digest {
+        self.spend.sig_hash()
+    }
+
+    pub fn accepts_signing_pubkey(&self, public_key: &PublicKey) -> bool {
+        match &self.spend {
+            Spend::S1(spend) => {
+                let pkpkh = public_key.hash();
+                spend
+                    .witness
+                    .lock_merkle_proof
+                    .spend_condition()
+                    .pkh()
+                    .any(|p| p.hashes.contains(&pkpkh))
+            }
+            Spend::S0(_) => {
+                let Some(sig) = &self.note_info.sig else {
+                    panic!("Note is not V0");
+                };
+                sig.pubkeys.contains(public_key)
+            }
+        }
+    }
+
+    pub fn try_apply_signature(
+        &mut self,
+        public_key: PublicKey,
+        signature: Signature,
+    ) -> bool {
         match &mut self.spend {
             Spend::S1(spend) => {
-                let pkpkh = signing_key.public_key().hash();
-
+                let pkpkh = public_key.hash();
                 for p in spend.witness.lock_merkle_proof.spend_condition().pkh() {
                     if p.hashes.contains(&pkpkh) {
                         spend.witness.pkh_signature.0.insert(
-                            signing_key.public_key().hash(),
-                            (
-                                signing_key.public_key(),
-                                signing_key.sign(&spend.sig_hash()),
-                            ),
+                            public_key.hash(),
+                            (public_key, signature),
                         );
                         return true;
                     }
@@ -365,17 +389,23 @@ impl SpendBuilder {
                 let Some(sig) = &self.note_info.sig else {
                     panic!("Note is not V0");
                 };
-                if sig.pubkeys.contains(&signing_key.public_key()) {
-                    spend.signature.0.insert(
-                        signing_key.public_key(),
-                        signing_key.sign(&spend.sig_hash()),
-                    );
+                if sig.pubkeys.contains(&public_key) {
+                    spend.signature.0.insert(public_key, signature);
                     return true;
                 }
             }
         }
-
         false
+    }
+
+    pub fn sign(&mut self, signing_key: &impl SigningKey) -> bool {
+        let pk = signing_key.signing_public_key();
+        if !self.accepts_signing_pubkey(&pk) {
+            return false;
+        }
+        let digest = self.sig_hash();
+        let sig = signing_key.sign_digest(&digest);
+        self.try_apply_signature(pk, sig)
     }
 
     fn missing_unlocks_fee(&self, settings: &TxEngineSettings) -> Nicks {
@@ -544,11 +574,16 @@ impl TxBuilder {
         ret
     }
 
-    pub fn sign(&mut self, signing_key: &PrivateKey) -> &mut Self {
+    pub fn sign(&mut self, signing_key: &impl SigningKey) -> &mut Self {
         for spend in self.spends.values_mut() {
             spend.sign(signing_key);
         }
         self
+    }
+
+    /// Mutable spend map for embedders (e.g. async WASM signers) that apply signatures out of band.
+    pub fn spends_mut(&mut self) -> &mut BTreeMap<Name, SpendBuilder> {
+        &mut self.spends
     }
 
     pub fn validate(&mut self) -> Result<&mut Self, BuildError> {
@@ -901,7 +936,7 @@ mod tests {
     use crate::v1::{self, LockPrimitive, LockTim};
     use alloc::{string::ToString, vec};
     use bip39::Mnemonic;
-    use iris_crypto::{derive_master_key, PublicKey};
+    use iris_crypto::{derive_master_key, PrivateKey, PublicKey};
     use iris_ztd::{jam, NounEncode};
 
     fn keys() -> (PrivateKey, PublicKey) {

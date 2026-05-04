@@ -277,8 +277,25 @@ impl Hashable for Signature {
     }
 }
 
+/// ECDSA signing for transaction witnesses. Implemented by [`PrivateKey`] and
+/// wasm-side key handles that delegate to local or external signers.
+pub trait SigningKey {
+    fn signing_public_key(&self) -> PublicKey;
+    fn sign_digest(&self, digest: &Digest) -> Signature;
+}
+
 #[derive(Debug, Clone)]
 pub struct PrivateKey(pub U256);
+
+impl SigningKey for PrivateKey {
+    fn signing_public_key(&self) -> PublicKey {
+        PrivateKey::public_key(self)
+    }
+
+    fn sign_digest(&self, digest: &Digest) -> Signature {
+        PrivateKey::sign(self, digest)
+    }
+}
 
 impl Drop for PrivateKey {
     fn drop(&mut self) {

@@ -50,6 +50,46 @@ const customGuardImplementations = {
     'PageMsg': `return (typeof typedObj === "string") || (Array.isArray(typedObj) && typedObj.every((e: any) => (typeof e === "number" && e < 256)))`,
     'Bignum': `return (typeof typedObj === "string" && ${nockchainHexRegex}.test(typedObj))`,
 };
+
+// Enforce non-empty aliases whose generated guard is otherwise just Array.isArray + every(...).
+const nonEmptyArrayAliasGuards = ['SeedsV1'];
+
+// ts-auto-guard misinterprets protobuf tuple rest arrays like `[PbCom2Seed, ...PbCom2Seed[]]`
+// as requiring indexes 0 and 1. The intended runtime check is one-or-more.
+const nonEmptyTupleFieldGuardPatches = [
+    { field: 'seeds', guard: 'isPbCom2Seed' },
+];
+
+function patchNonEmptyArrayAliasGuard(content, typeName) {
+    const guardPattern = new RegExp(
+        `export function is${typeName}\\(obj: unknown\\): obj is ${typeName} \\{\\n[\\s\\S]*?\\n\\}`,
+        'm'
+    );
+    const guardMatch = content.match(guardPattern);
+    if (!guardMatch || guardMatch[0].includes('typedObj.length >= 1')) {
+        return content;
+    }
+
+    const patchedGuard = guardMatch[0].replace(
+        'Array.isArray(typedObj) &&',
+        'Array.isArray(typedObj) &&\n        typedObj.length >= 1 &&'
+    );
+    return content.replace(guardMatch[0], patchedGuard);
+}
+
+function patchNonEmptyTupleFieldGuard(line) {
+    for (const { field, guard } of nonEmptyTupleFieldGuardPatches) {
+        line = line.replace(
+            `${guard}(typedObj["${field}"][0]) as boolean &&`,
+            `typedObj["${field}"].length >= 1 &&`
+        );
+        line = line.replace(
+            `${guard}(typedObj["${field}"][1]) as boolean`,
+            `typedObj["${field}"].every((e: any) => ${guard}(e) as boolean)`
+        );
+    }
+    return line;
+}
 let insideTaggedGuard = false;
 let currentTaggedGuardName = '';
 
@@ -137,6 +177,8 @@ for (let i = 0; i < lines.length; i++) {
         line = line.replace(/as .+$/, 'as any');
     }
 
+    line = patchNonEmptyTupleFieldGuard(line);
+
     if (!insideTaggedGuard) {
         let matchedTaggedGuard = false;
         for (const typeName of Array.from(taggedTypes).concat(Object.keys(customGuardImplementations))) {
@@ -209,4 +251,8 @@ export function isZMap<K, V>(obj: unknown, isK: (k: unknown) => k is K, isV: (v:
 newLines.push(genericGuards);
 
 // Write the result
-fs.writeFileSync(guardOut, newLines.join('\n'));
+let guardContent = newLines.join('\n');
+for (const typeName of nonEmptyArrayAliasGuards) {
+    guardContent = patchNonEmptyArrayAliasGuard(guardContent, typeName);
+}
+fs.writeFileSync(guardOut, guardContent);

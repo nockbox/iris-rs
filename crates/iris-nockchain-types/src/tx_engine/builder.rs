@@ -558,6 +558,14 @@ impl TxBuilder {
             return Err(BuildError::InvalidFee(needed_fee, cur_fee));
         }
 
+        if let Some(name) = self
+            .spends
+            .iter()
+            .find_map(|(name, spend)| spend.spend.seeds().0.is_empty().then_some(*name))
+        {
+            return Err(BuildError::SpendWithoutSeed(name));
+        }
+
         if self.spends.values().any(|v| !v.is_balanced()) {
             return Err(BuildError::UnbalancedSpends);
         }
@@ -709,7 +717,14 @@ impl TxBuilder {
             for s in spends {
                 if let Some(rs) = s.cur_refund() {
                     let words = rs.note_data_words();
-                    let sub_refund = rs.gift.min(fee_left);
+                    let refund_gift = rs.gift;
+                    let only_refund_seed = s.spend.seeds().0.len() == 1;
+                    let max_sub_refund = if only_refund_seed {
+                        refund_gift.saturating_sub(Nicks(1))
+                    } else {
+                        refund_gift
+                    };
+                    let sub_refund = max_sub_refund.min(fee_left);
                     if sub_refund > 0 {
                         let cur_fee = s.spend.fee();
                         s.fee(cur_fee + sub_refund);
@@ -734,6 +749,7 @@ impl TxBuilder {
                 };
                 r.compute_refund(include_lock_data);
                 let rs = r.cur_refund().expect("Fee pool entry must have refund");
+                let refund_gift = rs.gift;
                 if adjust_fee {
                     let (mut sw, ww) = r.spend.calc_words();
                     // If we are on Bythos, then seed words are merged by lock root, i.e. we don't need to pay for this one refund pool entry.
@@ -746,7 +762,13 @@ impl TxBuilder {
                         + self.settings.cost_per_word * ww / self.settings.witness_word_div;
                     fee_left += r.missing_unlocks_fee(&self.settings);
                 }
-                let sub_refund = rs.gift.min(fee_left);
+                let only_refund_seed = r.spend.seeds().0.len() == 1;
+                let max_sub_refund = if only_refund_seed {
+                    refund_gift.saturating_sub(Nicks(1))
+                } else {
+                    refund_gift
+                };
+                let sub_refund = max_sub_refund.min(fee_left);
                 if sub_refund > 0 {
                     let cur_fee = r.spend.fee();
                     r.fee(cur_fee + sub_refund);
@@ -849,6 +871,7 @@ pub enum BuildError {
     InvalidVersion,
     InvalidSpendCondition,
     UnbalancedSpends,
+    SpendWithoutSeed(Name),
     MissingSpendCondition,
     MissingUnlocks(Vec<MissingUnlocks>),
 }
@@ -878,6 +901,11 @@ impl core::fmt::Display for BuildError {
                 f,
                 "Some spends are not balanced (forgot to compute refunds?)"
             ),
+            BuildError::SpendWithoutSeed(name) => write!(
+                f,
+                "Spend [{} {}] must contain at least one seed",
+                name.first, name.last
+            ),
             BuildError::MissingSpendCondition => {
                 write!(f, "Spend condition is missing for this input note")
             }
@@ -899,15 +927,57 @@ impl core::fmt::Display for BuildError {
 mod tests {
     use super::*;
     use crate::v1::{self, LockPrimitive, LockTim};
-    use alloc::{string::ToString, vec};
+    use alloc::{collections::btree_set::BTreeSet, string::ToString, vec};
     use bip39::Mnemonic;
     use iris_crypto::{derive_master_key, PublicKey};
-    use iris_ztd::{jam, NounEncode};
+    use iris_ztd::{cue, jam, NounDecode, NounEncode};
 
     fn keys() -> (PrivateKey, PublicKey) {
         let mnemonic = Mnemonic::parse("dice domain inspire horse time initial monitor nature mass impose tone benefit vibrant dash kiss mosquito rice then color ribbon agent method drop fat").unwrap();
         let ek = derive_master_key(&mnemonic.to_seed(""));
         (ek.private_key.unwrap(), ek.public_key)
+    }
+
+    #[test]
+    fn test_v0_migration_fixture_spends_have_seeds() {
+        const FIXTURE_JAM: &[u8] = include_bytes!("../../test_vectors/test_notes.jam");
+        let noun = cue(FIXTURE_JAM).expect("fixture jam");
+        let mut notes = Vec::<Note>::from_noun(&noun).expect("fixture Vec<Note>");
+        assert!(!notes.is_empty(), "expected at least one fixture note");
+        assert!(
+            notes.iter().all(|note| matches!(note, Note::V0(_))),
+            "expected fixture notes to all be v0"
+        );
+        notes.sort_by_key(|note| note.assets());
+
+        let (_, target_public_key) = keys();
+        let target_spend_condition =
+            SpendCondition::new_pkh(Pkh::single(target_public_key.hash()));
+        let refund_lock = LockRoot::Hash(Lock::from(target_spend_condition).hash());
+        let mut builder = TxBuilder::new(TxEngineSettings::v1_bythos_default());
+
+        for note in notes {
+            let mut spend =
+                SpendBuilder::new(note, None, Some(refund_lock.clone())).expect("spend builder");
+            spend.compute_refund(false);
+            builder.spend(spend);
+        }
+        builder
+            .recalc_and_set_fee(false)
+            .expect("recalc_and_set_fee");
+
+        let tx = builder.build();
+
+        let mut n = 0usize;
+        for (name, spend) in tx.spends.0.iter() {
+            n += 1;
+            assert!(
+                spend.seeds().0.iter().next().is_some(),
+                "expected at least one seed on spend {}",
+                name
+            );
+        }
+        assert!(n > 0, "expected at least one spend in built transaction");
     }
 
     #[test]

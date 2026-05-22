@@ -951,8 +951,7 @@ mod tests {
         notes.sort_by_key(|note| note.assets());
 
         let (_, target_public_key) = keys();
-        let target_spend_condition =
-            SpendCondition::new_pkh(Pkh::single(target_public_key.hash()));
+        let target_spend_condition = SpendCondition::new_pkh(Pkh::single(target_public_key.hash()));
         let refund_lock = LockRoot::Hash(Lock::from(target_spend_condition).hash());
         let mut builder = TxBuilder::new(TxEngineSettings::v1_bythos_default());
 

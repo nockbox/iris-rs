@@ -199,6 +199,10 @@ impl SpendBuilder {
                 let seed = self.build_seed(lock_root, refund, include_lock_data);
                 // NOTE: by convention, the refund seed is always first
                 self.spend.seeds_mut().0.insert(seed);
+            } else if self.spend.seeds().0.is_empty() {
+                let seed = self.build_seed(lock_root, Nicks(0), include_lock_data);
+                // Keep the seed set non-empty even when the full note is consumed by fees.
+                self.spend.seeds_mut().0.insert(seed);
             }
         }
         self
@@ -717,14 +721,7 @@ impl TxBuilder {
             for s in spends {
                 if let Some(rs) = s.cur_refund() {
                     let words = rs.note_data_words();
-                    let refund_gift = rs.gift;
-                    let only_refund_seed = s.spend.seeds().0.len() == 1;
-                    let max_sub_refund = if only_refund_seed {
-                        refund_gift.saturating_sub(Nicks(1))
-                    } else {
-                        refund_gift
-                    };
-                    let sub_refund = max_sub_refund.min(fee_left);
+                    let sub_refund = rs.gift.min(fee_left);
                     if sub_refund > 0 {
                         let cur_fee = s.spend.fee();
                         s.fee(cur_fee + sub_refund);
@@ -762,13 +759,7 @@ impl TxBuilder {
                         + self.settings.cost_per_word * ww / self.settings.witness_word_div;
                     fee_left += r.missing_unlocks_fee(&self.settings);
                 }
-                let only_refund_seed = r.spend.seeds().0.len() == 1;
-                let max_sub_refund = if only_refund_seed {
-                    refund_gift.saturating_sub(Nicks(1))
-                } else {
-                    refund_gift
-                };
-                let sub_refund = max_sub_refund.min(fee_left);
+                let sub_refund = refund_gift.min(fee_left);
                 if sub_refund > 0 {
                     let cur_fee = r.spend.fee();
                     r.fee(cur_fee + sub_refund);
@@ -939,7 +930,7 @@ mod tests {
     }
 
     #[test]
-    fn test_v0_migration_fixture_spends_have_seeds() {
+    fn test_v0_migration_fee_balancing_preserves_seed_invariant() {
         const FIXTURE_JAM: &[u8] = include_bytes!("../../test_vectors/test_notes.jam");
         let noun = cue(FIXTURE_JAM).expect("fixture jam");
         let mut notes = Vec::<Note>::from_noun(&noun).expect("fixture Vec<Note>");
@@ -961,22 +952,63 @@ mod tests {
             spend.compute_refund(false);
             builder.spend(spend);
         }
+
+        let fee_before_balancing = builder.cur_fee();
         builder
             .recalc_and_set_fee(false)
             .expect("recalc_and_set_fee");
+        assert!(
+            builder.cur_fee() > fee_before_balancing,
+            "fixture should exercise fee balancing over migration spends"
+        );
 
         let tx = builder.build();
 
-        let mut n = 0usize;
         for (name, spend) in tx.spends.0.iter() {
-            n += 1;
             assert!(
                 spend.seeds().0.iter().next().is_some(),
-                "expected at least one seed on spend {}",
+                "fee balancing must not leave spend {} seedless",
                 name
             );
         }
-        assert!(n > 0, "expected at least one spend in built transaction");
+    }
+
+    #[test]
+    fn test_fee_only_spend_keeps_zero_gift_seed() {
+        let (private_key, _) = keys();
+        let note = Note::V1(v1::NoteV1 {
+            version: Version::V1,
+            origin_page: 13,
+            name: Name::new(
+                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                    .try_into()
+                    .unwrap(),
+                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+                    .try_into()
+                    .unwrap(),
+            ),
+            note_data: NoteData::empty(),
+            assets: Nicks(10),
+        });
+        let spend_condition: (Lock, usize) = (
+            SpendCondition::new_pkh(Pkh::single(private_key.public_key().hash())).into(),
+            0,
+        );
+        let refund_lock = LockRoot::Hash(
+            Lock::from(SpendCondition::new_pkh(Pkh::single(
+                private_key.public_key().hash(),
+            )))
+            .hash(),
+        );
+        let mut spend =
+            SpendBuilder::new(note, Some(spend_condition), Some(refund_lock)).expect("spend");
+
+        spend.fee(Nicks(10)).compute_refund(false);
+
+        assert!(spend.is_balanced());
+        let seeds = &spend.spend.seeds().0;
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds.iter().next().expect("zero seed").gift, Nicks(0));
     }
 
     #[test]

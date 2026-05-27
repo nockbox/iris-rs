@@ -50,8 +50,10 @@ pub fn belts_to_bytes(belts: &[Belt]) -> Vec<u8> {
 pub fn belts_to_ubig(belts: &[Belt]) -> UBig {
     let p = UBig::from(PRIME);
     let mut num = UBig::from(0u64);
+    let mut power = UBig::from(1u64);
     for belt in belts {
-        num = num * &p + UBig::from(belt.0);
+        num += UBig::from(belt.0) * &power;
+        power *= &p;
     }
     num
 }
@@ -855,5 +857,14 @@ mod tests {
             vec.hash().to_string(),
             "5F6UZhcWYBDSJ3CvevfiABhdSjc9qNh29KcH5rs8FJB4NNPHRn3oqQJ"
         );
+    }
+
+    #[test]
+    fn belts_and_ubig_round_trip_multi_belt_atom() {
+        let atom = UBig::from(PRIME) * UBig::from(9u64) + UBig::from(7u64);
+        let belts = belts_from_ubig(atom.clone());
+
+        assert_eq!(belts, vec![Belt(7), Belt(9)]);
+        assert_eq!(belts_to_ubig(&belts), atom);
     }
 }

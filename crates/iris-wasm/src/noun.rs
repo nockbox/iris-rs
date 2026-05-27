@@ -1,4 +1,4 @@
-use iris_ztd::{cue as cue_internal, jam as jam_internal, Belt, Noun, NounDecode, NounEncode};
+use iris_ztd::{cue as cue_internal, jam as jam_internal, BeltSeq, Noun, NounDecode, NounEncode};
 use wasm_bindgen::prelude::*;
 
 /// Cue a jammed Uint8Array into a Noun (see `jam`).
@@ -47,7 +47,7 @@ pub fn tas_belts(s: &str) -> Noun {
 #[wasm_bindgen(js_name = "atomToBelts")]
 pub fn atom_to_belts(atom: Noun) -> Result<Noun, JsValue> {
     match atom {
-        Noun::Atom(atom) => Ok((&iris_ztd::belts_from_ubig(atom)[..]).to_noun()),
+        Noun::Atom(atom) => Ok(BeltSeq(iris_ztd::belts_from_ubig(atom)).to_noun()),
         _ => Err(JsValue::from_str("not an atom")),
     }
 }
@@ -55,10 +55,49 @@ pub fn atom_to_belts(atom: Noun) -> Result<Noun, JsValue> {
 /// Convert a sequence of belts back into one atom.
 #[wasm_bindgen(js_name = "beltsToAtom")]
 pub fn belts_to_atom(noun: Noun) -> Result<Noun, JsValue> {
-    // Append tail so that this is parsed as list
-    // TODO: don't do this
-    let noun = Noun::Cell(noun.into(), 0u64.to_noun().into());
-    let belts: Vec<Belt> =
+    let BeltSeq(belts) =
         NounDecode::from_noun(&noun).ok_or_else(|| JsValue::from_str("unable to parse belts"))?;
     Ok(Noun::Atom(iris_ztd::belts_to_ubig(&belts)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iris_ztd::Belt;
+
+    #[test]
+    fn atom_belts_round_trip_single_belt_atom() {
+        let atom = tas("bridge");
+        let belts = atom_to_belts(atom.clone()).unwrap();
+        let round_trip = belts_to_atom(belts).unwrap();
+
+        assert_eq!(round_trip, atom);
+    }
+
+    #[test]
+    fn bridge_metadata_round_trips_through_belts() {
+        let metadata = "base:84532:0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
+        let belts = atom_to_belts(tas(metadata)).unwrap();
+        let round_trip = belts_to_atom(belts).unwrap();
+
+        assert_eq!(untas(round_trip).unwrap(), metadata);
+    }
+
+    #[test]
+    fn base_address_round_trips_through_belts() {
+        let address = "0x742d35Cc6634C0532925a3b844Bc454e4438f44e";
+        let belts = atom_to_belts(tas(address)).unwrap();
+        let round_trip = belts_to_atom(belts).unwrap();
+
+        assert_eq!(untas(round_trip).unwrap(), address);
+    }
+
+    #[test]
+    fn belts_to_atom_accepts_improper_belt_sequence() {
+        let noun = Noun::Cell(Belt(7).to_noun().into(), Belt(9).to_noun().into());
+        let atom = belts_to_atom(noun).unwrap();
+        let expected = iris_ztd::belts_to_ubig(&[Belt(7), Belt(9)]);
+
+        assert_eq!(atom, Noun::Atom(expected));
+    }
 }

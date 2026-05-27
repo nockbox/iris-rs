@@ -574,6 +574,44 @@ impl<T: NounEncode> NounEncode for Vec<T> {
     }
 }
 
+/// A belt sequence encoded as an improper noun list, without a trailing `~`.
+#[repr(transparent)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BeltSeq(pub Vec<Belt>);
+
+impl NounEncode for BeltSeq {
+    fn to_noun(&self) -> Noun {
+        match self.0.split_last() {
+            None => atom(0),
+            Some((last, rest)) => {
+                let mut acc = last.to_noun();
+                for item in rest.iter().rev() {
+                    acc = cons(item.to_noun(), acc);
+                }
+                acc
+            }
+        }
+    }
+}
+
+impl NounDecode for BeltSeq {
+    fn from_noun(mut noun: &Noun) -> Option<Self> {
+        let mut ret = vec![];
+        loop {
+            match noun {
+                Noun::Cell(a, b) => {
+                    ret.push(Belt::from_noun(a)?);
+                    noun = b;
+                }
+                noun => {
+                    ret.push(Belt::from_noun(noun)?);
+                    return Some(Self(ret));
+                }
+            }
+        }
+    }
+}
+
 impl<T: NounDecode> NounDecode for Vec<T> {
     fn from_noun(mut noun: &Noun) -> Option<Self> {
         let mut ret = vec![];
@@ -613,6 +651,31 @@ impl NounDecode for String {
             return None;
         };
         String::from_utf8(a.to_le_bytes()).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn belt_seq_encodes_without_list_terminator() {
+        let noun = BeltSeq(vec![Belt(7), Belt(9)]).to_noun();
+
+        let Noun::Cell(head, tail) = &noun else {
+            panic!("expected cell");
+        };
+        assert_eq!(Belt::from_noun(head).unwrap(), Belt(7));
+        assert_eq!(Belt::from_noun(tail).unwrap(), Belt(9));
+    }
+
+    #[test]
+    fn belt_seq_decodes_without_list_terminator() {
+        let noun = cons(Belt(7).to_noun(), Belt(9).to_noun());
+        let BeltSeq(belts) = BeltSeq::from_noun(&noun).unwrap();
+
+        assert_eq!(belts, vec![Belt(7), Belt(9)]);
     }
 }
 

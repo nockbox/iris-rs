@@ -156,9 +156,7 @@ pub fn sign_digest_bytes(
     let private_key = PrivateKey(U256::from_be_slice(private_key_bytes));
     let digest = Digest::from_bytes(digest_bytes);
     let sig = private_key.sign(&digest);
-    let mut out = [0u8; 64];
-    out[..32].copy_from_slice(&sig.c.to_le_bytes());
-    out[32..].copy_from_slice(&sig.s.to_le_bytes());
+    let out = sig.to_bytes_le();
     Ok(js_sys::Uint8Array::from(out.as_slice()))
 }
 

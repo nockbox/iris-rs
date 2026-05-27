@@ -102,6 +102,7 @@ import init, {
   GrpcClient,
   PrivateKey,
   deriveMasterKeyFromMnemonic,
+  hashPublicKey,
   txEngineSettingsV1Default,
   TxBuilder,
   Note,
@@ -137,12 +138,14 @@ console.log('Balance by name:', balanceByName);
 // Derive keys from mnemonic
 const mnemonic = "dice domain inspire horse time...";
 const masterKey = deriveMasterKeyFromMnemonic(mnemonic, "");
+const privateKey = PrivateKey.fromBytes(masterKey.private_key);
+const publicKey = await privateKey.publicKey();
 
 // Use one available note from the balance query
 const note = Note.fromProtobuf(balance.notes[0].note);
 
 // Create spend condition
-const pubkeyHash = new Digest("your_pubkey_hash_here");
+const pubkeyHash = hashPublicKey(publicKey);
 const spendCondition = new SpendCondition([
   LockPrimitive.newPkh(Pkh.single(pubkeyHash)),
   LockPrimitive.newTim(LockTim.coinbase())
@@ -164,7 +167,6 @@ await builder.simpleSpend(
 );
 
 // Sign and submit
-const privateKey = PrivateKey.fromBytes(masterKey.private_key);
 await builder.sign(privateKey);
 const signedTx = builder.build();
 const txProtobuf = signedTx.toProtobuf();
@@ -173,6 +175,26 @@ await client.sendTransaction(txProtobuf);
 // Check if a transaction was accepted
 const accepted = await client.transactionAccepted(signedTx.id.value);
 console.log('Transaction accepted:', accepted);
+```
+
+### Callback Signing
+
+Use callback-backed keys for Ledger, browser transport, or remote KMS integrations. The callbacks may return values directly or Promises.
+
+```javascript
+const signingKey = PrivateKey.fromCallbacks({
+  async getPublicKey() {
+    return ledgerPublicKeyBytes; // Uint8Array(97)
+  },
+
+  async signDigest(digest) {
+    // digest is Uint8Array(40). Return c || s, each 32-byte little-endian.
+    return ledgerSignatureBytes; // Uint8Array(64)
+  }
+});
+
+const publicKey = await signingKey.publicKey();
+await builder.sign(signingKey);
 ```
 
 ## API Reference

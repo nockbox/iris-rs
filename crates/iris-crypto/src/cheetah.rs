@@ -1,11 +1,10 @@
+#[cfg(feature = "wasm")]
+use alloc::{boxed::Box, format, string::ToString};
 #[cfg(feature = "alloc")]
-use alloc::{
-    boxed::Box,
-    format,
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{string::String, vec::Vec};
 use arrayvec::ArrayVec;
+use core::convert::Infallible;
+use core::future::{ready, Future};
 use iris_ztd::{
     crypto::cheetah::{
         ch_add, ch_neg, ch_scal_big, trunc_g_order, CheetahPoint, F6lt, A_GEN, G_ORDER,
@@ -220,6 +219,28 @@ pub struct Signature {
     pub s: U256,
 }
 
+impl Signature {
+    pub const BYTE_LEN: usize = 64;
+
+    pub fn to_bytes_le(&self) -> [u8; Self::BYTE_LEN] {
+        let mut out = [0u8; Self::BYTE_LEN];
+        out[..32].copy_from_slice(&self.c.to_le_bytes());
+        out[32..].copy_from_slice(&self.s.to_le_bytes());
+        out
+    }
+
+    pub fn from_bytes_le(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != Self::BYTE_LEN {
+            return None;
+        }
+
+        Some(Self {
+            c: U256::from_le_slice(&bytes[..32]),
+            s: U256::from_le_slice(&bytes[32..]),
+        })
+    }
+}
+
 // Aggregate signature of the same challenge
 impl core::iter::Sum<Signature> for Option<Signature> {
     fn sum<I: Iterator<Item = Signature>>(mut iter: I) -> Self {
@@ -280,20 +301,31 @@ impl Hashable for Signature {
 /// ECDSA signing for transaction witnesses. Implemented by [`PrivateKey`] and
 /// wasm-side key handles that delegate to local or external signers.
 pub trait SigningKey {
-    fn signing_public_key(&self) -> PublicKey;
-    fn sign_digest(&self, digest: &Digest) -> Signature;
+    type Error;
+
+    fn public_key(&self) -> impl Future<Output = Result<PublicKey, Self::Error>> + '_;
+
+    fn sign_digest(
+        &self,
+        digest: Digest,
+    ) -> impl Future<Output = Result<Signature, Self::Error>> + '_;
 }
 
 #[derive(Debug, Clone)]
 pub struct PrivateKey(pub U256);
 
 impl SigningKey for PrivateKey {
-    fn signing_public_key(&self) -> PublicKey {
-        PrivateKey::public_key(self)
+    type Error = Infallible;
+
+    fn public_key(&self) -> impl Future<Output = Result<PublicKey, Self::Error>> + '_ {
+        ready(Ok(PrivateKey::public_key(self)))
     }
 
-    fn sign_digest(&self, digest: &Digest) -> Signature {
-        PrivateKey::sign(self, digest)
+    fn sign_digest(
+        &self,
+        digest: Digest,
+    ) -> impl Future<Output = Result<Signature, Self::Error>> + '_ {
+        ready(Ok(PrivateKey::sign(self, &digest)))
     }
 }
 

@@ -10,7 +10,7 @@ use iris_nockchain_types::{
     note::Note,
     tx::RawTx,
     v1::{Lock, LockRoot, NockchainTx, RawTxV1, SeedV1 as Seed, SpendCondition},
-    Nicks, SpendBuilder, TxEngineSettings,
+    Nicks, SigningError, SpendBuilder, TxEngineSettings,
 };
 use iris_ztd::{cue, Digest, U256};
 use js_sys::{Function, Reflect, Uint8Array};
@@ -135,53 +135,34 @@ enum PrivateKeyBackend {
 
 struct BytesPrivateKeyBackend {
     signing_key: CryptoPrivateKey,
-    public_key_bytes: [u8; 97],
 }
 
 struct CallbackPrivateKeyBackend {
+    // Keep the original callbacks object so method-style callbacks receive it as `this`.
+    callbacks: js_sys::Object,
     get_public_key: Function,
     sign_digest: Function,
 }
 
-/// Bridges in-memory keys to [`SigningKey`] for synchronous `TxBuilder::sign`.
-struct BytesSigningAdapter<'a>(&'a CryptoPrivateKey);
-
-impl SigningKey for BytesSigningAdapter<'_> {
-    fn signing_public_key(&self) -> PublicKey {
-        self.0.public_key()
+fn get_callback_fn(obj: &js_sys::Object, key: &str) -> Result<Function, JsValue> {
+    let v = Reflect::get(obj, &JsValue::from_str(key)).map_err(|_| {
+        JsValue::from_str("fromCallbacks: failed to read property from callbacks object")
+    })?;
+    if let Ok(f) = v.dyn_into::<Function>() {
+        return Ok(f);
     }
 
-    fn sign_digest(&self, digest: &Digest) -> Signature {
-        self.0.sign(digest)
-    }
-}
-
-fn get_callback_fn(obj: &js_sys::Object, keys: &[&str]) -> Result<Function, JsValue> {
-    for key in keys {
-        let v = Reflect::get(obj, &JsValue::from_str(key)).map_err(|_| {
-            JsValue::from_str("fromCallbacks: failed to read property from callbacks object")
-        })?;
-        if v.is_undefined() || v.is_null() {
-            continue;
-        }
-        if let Ok(f) = v.dyn_into::<Function>() {
-            return Ok(f);
-        }
-    }
     Err(JsValue::from_str(&format!(
-        "fromCallbacks: expected a function at one of: {:?}",
-        keys
+        "fromCallbacks: expected a function at `{key}`"
     )))
 }
 
 async fn await_resolved_promise(v: JsValue) -> Result<JsValue, JsValue> {
-    JsFuture::from(js_sys::Promise::resolve(&v))
-        .await
-        .map_err(|e| e)
+    JsFuture::from(js_sys::Promise::resolve(&v)).await
 }
 
 async fn callback_fetch_public_key(cb: &CallbackPrivateKeyBackend) -> Result<PublicKey, JsValue> {
-    let v = await_resolved_promise(cb.get_public_key.call0(&JsValue::NULL)?).await?;
+    let v = await_resolved_promise(cb.get_public_key.call0(&cb.callbacks)?).await?;
     let arr = v
         .dyn_into::<Uint8Array>()
         .map_err(|_| JsValue::from_str("getPublicKey must return Uint8Array of length 97"))?;
@@ -199,47 +180,27 @@ async fn callback_sign_digest(
 ) -> Result<Signature, JsValue> {
     let digest_bytes = digest.to_bytes();
     let arg = Uint8Array::from(digest_bytes.as_slice());
-    let v = await_resolved_promise(cb.sign_digest.call1(&JsValue::NULL, &arg)?).await?;
+    let v = await_resolved_promise(cb.sign_digest.call1(&cb.callbacks, &arg)?).await?;
     let arr = v
         .dyn_into::<Uint8Array>()
-        .map_err(|_| JsValue::from_str("sign must return Uint8Array of length 64 (c||s LE)"))?;
-    if arr.length() as usize != 64 {
-        return Err(JsValue::from_str("sign: expected 64 bytes (32 c + 32 s LE)"));
+        .map_err(|_| JsValue::from_str("signDigest must return Uint8Array of length 64"))?;
+    if arr.length() as usize != Signature::BYTE_LEN {
+        return Err(JsValue::from_str(
+            "signDigest: expected 64 bytes (32 c + 32 s LE)",
+        ));
     }
-    let mut buf = [0u8; 64];
+    let mut buf = [0u8; Signature::BYTE_LEN];
     arr.copy_to(&mut buf);
-    Ok(Signature {
-        c: U256::from_le_slice(&buf[..32]),
-        s: U256::from_le_slice(&buf[32..]),
-    })
+    Signature::from_bytes_le(&buf)
+        .ok_or_else(|| JsValue::from_str("signDigest: expected 64 bytes (32 c + 32 s LE)"))
 }
 
-async fn sign_tx_builder_with_callback(
-    builder: &mut TxBuilder,
-    cb: &CallbackPrivateKeyBackend,
-) -> Result<(), JsValue> {
-    let pk = callback_fetch_public_key(cb).await?;
-    for (_, spend) in builder.spends_mut() {
-        if spend.accepts_signing_pubkey(&pk) {
-            let digest = spend.sig_hash();
-            let sig = callback_sign_digest(cb, &digest).await?;
-            spend.try_apply_signature(pk, sig);
-        }
+fn signing_error_to_js(error: SigningError<JsValue>) -> JsValue {
+    match error {
+        SigningError::Signer(error) => error,
+        SigningError::InvalidSignature => JsValue::from_str("signer returned an invalid signature"),
+        SigningError::SignatureRejected => JsValue::from_str("signature was rejected by spend"),
     }
-    Ok(())
-}
-
-async fn sign_spend_builder_with_callback(
-    spend: &mut SpendBuilder,
-    cb: &CallbackPrivateKeyBackend,
-) -> Result<bool, JsValue> {
-    let pk = callback_fetch_public_key(cb).await?;
-    if !spend.accepts_signing_pubkey(&pk) {
-        return Ok(false);
-    }
-    let digest = spend.sig_hash();
-    let sig = callback_sign_digest(cb, &digest).await?;
-    Ok(spend.try_apply_signature(pk, sig))
 }
 
 /// Holds raw key bytes in WASM; [`Drop`] zeroizes the scalar so the secret does not linger
@@ -247,6 +208,41 @@ async fn sign_spend_builder_with_callback(
 #[wasm_bindgen(js_name = PrivateKey)]
 pub struct WasmPrivateKey {
     backend: PrivateKeyBackend,
+}
+
+impl SigningKey for WasmPrivateKey {
+    type Error = JsValue;
+
+    fn public_key(
+        &self,
+    ) -> impl core::future::Future<Output = Result<PublicKey, Self::Error>> + '_ {
+        async move {
+            match &self.backend {
+                PrivateKeyBackend::Bytes(bytes_backend) => {
+                    Ok(bytes_backend.signing_key.public_key())
+                }
+                PrivateKeyBackend::Callback(callback_backend) => {
+                    callback_fetch_public_key(callback_backend).await
+                }
+            }
+        }
+    }
+
+    fn sign_digest(
+        &self,
+        digest: Digest,
+    ) -> impl core::future::Future<Output = Result<Signature, Self::Error>> + '_ {
+        async move {
+            match &self.backend {
+                PrivateKeyBackend::Bytes(bytes_backend) => {
+                    Ok(bytes_backend.signing_key.sign(&digest))
+                }
+                PrivateKeyBackend::Callback(callback_backend) => {
+                    callback_sign_digest(callback_backend, &digest).await
+                }
+            }
+        }
+    }
 }
 
 impl Drop for WasmPrivateKey {
@@ -299,19 +295,14 @@ impl WasmPrivateKey {
         }
 
         let signing_key = CryptoPrivateKey(U256::from_be_slice(signing_key_bytes));
-        let public_key_bytes = signing_key.public_key().to_be_bytes();
-
         Ok(Self {
-            backend: PrivateKeyBackend::Bytes(BytesPrivateKeyBackend {
-                signing_key,
-                public_key_bytes,
-            }),
+            backend: PrivateKeyBackend::Bytes(BytesPrivateKeyBackend { signing_key }),
         })
     }
 
     /// External signer: JavaScript object with async (or sync) functions:
-    /// - `getPublicKey` / `get_public_key` → `Uint8Array(97)` uncompressed pubkey
-    /// - `sign` / `signDigest` / `sign_digest` → `(digest: Uint8Array(40))` → `Uint8Array(64)` (`c`||`s` LE)
+    /// - `getPublicKey` -> `Uint8Array(97)` uncompressed pubkey
+    /// - `signDigest` -> `(digest: Uint8Array(40))` -> `Uint8Array(64)` (`c`||`s` LE)
     ///
     /// Return values may be Promises; they are always awaited.
     #[wasm_bindgen(js_name = fromCallbacks)]
@@ -319,36 +310,22 @@ impl WasmPrivateKey {
         let obj = callbacks
             .dyn_ref::<js_sys::Object>()
             .ok_or_else(|| JsValue::from_str("fromCallbacks: expected a plain object"))?;
-        let get_public_key = get_callback_fn(obj, &["getPublicKey", "get_public_key"])?;
-        let sign_digest = get_callback_fn(obj, &["sign", "signDigest", "sign_digest"])?;
+        let get_public_key = get_callback_fn(obj, "getPublicKey")?;
+        let sign_digest = get_callback_fn(obj, "signDigest")?;
         Ok(Self {
             backend: PrivateKeyBackend::Callback(CallbackPrivateKeyBackend {
+                callbacks: obj.clone(),
                 get_public_key,
                 sign_digest,
             }),
         })
     }
 
-    /// Return this key's public key as 97-byte uncompressed bytes (bytes backend only).
-    /// Callback keys return an empty array; use [`Self::public_key_async`].
-    #[wasm_bindgen(getter, js_name = publicKey)]
-    pub fn public_key_bytes(&self) -> Vec<u8> {
-        match &self.backend {
-            PrivateKeyBackend::Bytes(bytes_backend) => bytes_backend.public_key_bytes.to_vec(),
-            PrivateKeyBackend::Callback(_) => Vec::new(),
-        }
-    }
-
-    /// Public key bytes for both backends; awaits JS for callback keys.
-    #[wasm_bindgen(js_name = publicKeyAsync)]
-    pub async fn public_key_async(&self) -> Result<Vec<u8>, JsValue> {
-        match &self.backend {
-            PrivateKeyBackend::Bytes(b) => Ok(b.public_key_bytes.to_vec()),
-            PrivateKeyBackend::Callback(cb) => {
-                let pk = callback_fetch_public_key(cb).await?;
-                Ok(pk.to_be_bytes().to_vec())
-            }
-        }
+    /// Return this key's public key as 97-byte uncompressed bytes.
+    #[wasm_bindgen(js_name = publicKey)]
+    pub async fn public_key(&self) -> Result<Vec<u8>, JsValue> {
+        let public_key = <Self as SigningKey>::public_key(self).await?;
+        Ok(public_key.to_be_bytes().to_vec())
     }
 
     /// Return the derivation path for this key backend, if available.
@@ -480,14 +457,10 @@ impl WasmTxBuilder {
 
     #[wasm_bindgen]
     pub async fn sign(&mut self, signing_key: &WasmPrivateKey) -> Result<(), JsValue> {
-        match &signing_key.backend {
-            PrivateKeyBackend::Bytes(b) => {
-                self.builder.sign(&BytesSigningAdapter(&b.signing_key));
-            }
-            PrivateKeyBackend::Callback(cb) => {
-                sign_tx_builder_with_callback(&mut self.builder, cb).await?;
-            }
-        }
+        self.builder
+            .sign(signing_key)
+            .await
+            .map_err(signing_error_to_js)?;
         Ok(())
     }
 
@@ -592,12 +565,10 @@ impl WasmSpendBuilder {
     }
 
     pub async fn sign(&mut self, signing_key: &WasmPrivateKey) -> Result<bool, JsValue> {
-        match &signing_key.backend {
-            PrivateKeyBackend::Bytes(b) => Ok(self.builder.sign(&BytesSigningAdapter(&b.signing_key))),
-            PrivateKeyBackend::Callback(cb) => {
-                sign_spend_builder_with_callback(&mut self.builder, cb).await
-            }
-        }
+        self.builder
+            .sign(signing_key)
+            .await
+            .map_err(signing_error_to_js)
     }
 
     fn from_internal(internal: &SpendBuilder) -> Self {

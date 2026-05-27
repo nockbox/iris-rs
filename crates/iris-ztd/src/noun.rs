@@ -654,31 +654,6 @@ impl NounDecode for String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::vec;
-
-    #[test]
-    fn belt_seq_encodes_without_list_terminator() {
-        let noun = BeltSeq(vec![Belt(7), Belt(9)]).to_noun();
-
-        let Noun::Cell(head, tail) = &noun else {
-            panic!("expected cell");
-        };
-        assert_eq!(Belt::from_noun(head).unwrap(), Belt(7));
-        assert_eq!(Belt::from_noun(tail).unwrap(), Belt(9));
-    }
-
-    #[test]
-    fn belt_seq_decodes_without_list_terminator() {
-        let noun = cons(Belt(7).to_noun(), Belt(9).to_noun());
-        let BeltSeq(belts) = BeltSeq::from_noun(&noun).unwrap();
-
-        assert_eq!(belts, vec![Belt(7), Belt(9)]);
-    }
-}
-
 /// Jam a noun into bytes vec
 pub fn jam(noun: Noun) -> Vec<u8> {
     fn met0_u64_to_usize(value: u64) -> usize {
@@ -1084,5 +1059,30 @@ impl BitWriter {
             self.flush_acc();
         }
         self.buf
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn belt_seq_encodes_without_list_terminator() {
+        let noun = BeltSeq(vec![Belt(7), Belt(9)]).to_noun();
+
+        let Noun::Cell(head, tail) = &noun else {
+            panic!("expected cell");
+        };
+        assert_eq!(Belt::from_noun(head).unwrap(), Belt(7));
+        assert_eq!(Belt::from_noun(tail).unwrap(), Belt(9));
+    }
+
+    #[test]
+    fn belt_seq_decodes_without_list_terminator() {
+        let noun = cons(Belt(7).to_noun(), Belt(9).to_noun());
+        let BeltSeq(belts) = BeltSeq::from_noun(&noun).unwrap();
+
+        assert_eq!(belts, vec![Belt(7), Belt(9)]);
     }
 }

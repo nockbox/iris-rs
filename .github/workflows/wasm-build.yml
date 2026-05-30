@@ -18,7 +18,7 @@ jobs:
     - uses: actions/checkout@v4
 
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@1.85.0
+      uses: dtolnay/rust-toolchain@1.91.0
       with:
         targets: wasm32-unknown-unknown
 
@@ -37,7 +37,15 @@ jobs:
 
     - name: Build WASM
       working-directory: crates/iris-wasm
-      run: wasm-pack build --target web --scope nockbox
+      run: bash scripts/build-wasm.sh
+
+    - name: Test Guard
+      working-directory: crates/iris-wasm
+      run: npx tsx scripts/test-guard.ts
+
+    - name: Test typescript
+      working-directory: crates/iris-wasm
+      run: npx --no-install --yes -p typescript@^5.2.0 tsc --noEmit -p .
 
     - name: Validate npm package
       working-directory: crates/iris-wasm/pkg

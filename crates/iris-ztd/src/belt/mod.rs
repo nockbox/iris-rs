@@ -1,7 +1,9 @@
-use alloc::vec::Vec;
 use core::ops::{Add, Div, Mul, Neg, Sub};
 use num_traits::Pow;
 use serde::{Deserialize, Serialize};
+
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
 
 pub mod bpoly;
 pub mod poly;
@@ -15,11 +17,18 @@ pub const PRIME_128: u128 = 18446744069414584321;
 const RP: u128 = 340282366841710300967557013911933812736;
 pub const R2: u128 = 18446744065119617025;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Default, Serialize, Deserialize, Hash)]
 #[repr(transparent)]
 pub struct Belt(pub u64);
 
+impl core::fmt::Debug for Belt {
+    fn fmt(&self, fmt: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(fmt, "Belt({:x})", self.0)
+    }
+}
+
 impl Belt {
+    #[cfg(feature = "alloc")]
     pub fn from_bytes(bytes: &[u8]) -> Vec<Belt> {
         let mut belts = Vec::new();
         for chunk in bytes.chunks(4) {
@@ -30,6 +39,7 @@ impl Belt {
         belts
     }
 
+    #[cfg(feature = "alloc")]
     pub fn to_bytes(belts: &[Belt]) -> Vec<u8> {
         let mut bytes = Vec::new();
         for b in belts {

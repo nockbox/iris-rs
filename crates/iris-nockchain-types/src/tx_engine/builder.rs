@@ -2,18 +2,26 @@ use alloc::collections::btree_map::BTreeMap;
 use alloc::collections::btree_set::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
-use iris_crypto::PrivateKey;
-use iris_ztd::{noun_deserialize, noun_serialize, Digest, Hashable as HashableTrait, Noun, ZSet};
+use iris_crypto::{PrivateKey, PublicKey};
+use iris_ztd::{noun_deserialize, noun_serialize, Digest, Hashable as HashableTrait, Noun, ZMap, ZSet};
 use serde::{Deserialize, Serialize};
 
-use super::note::Note;
-use super::tx::{
-    LockRoot, NockchainTx, Seed, Seeds, Spend, SpendCondition, Spends, TransactionDisplay, Witness,
-};
-use super::{Name, NoteData, Version};
-use crate::{Nicks, Pkh, RawTx};
+#[cfg(feature = "wasm")]
+use alloc::{boxed::Box, format, string::ToString};
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+use super::note::Note;
+use super::v0::Sig;
+use super::v1::{
+    words_for_unordered_spends, DisplayInput, InputDisplay, Lock, LockRoot, NockchainTx, NoteData,
+    Pkh, SeedV1 as Seed, SeedsV1 as Seeds, SpendCondition, SpendV1 as Spend, SpendsV1 as Spends,
+    TransactionDisplay, Witness,
+};
+use super::{Name, TxEngineSettings, Version};
+use crate::{Nicks, RawTx};
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
 pub enum MissingUnlocks {
     Pkh {
         num_sigs: u64,
@@ -23,11 +31,75 @@ pub enum MissingUnlocks {
         preimages_for: BTreeSet<Digest>,
     },
     Brn,
+    Sig {
+        num_sigs: u64,
+        sig_of: BTreeSet<PublicKey>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct NoteInfo {
+    pub name: Name,
+    pub version: Version,
+    pub assets: Nicks,
+    pub hash: Digest,
+    pub sig: Option<Sig>,
+}
+
+impl NoteInfo {
+    pub fn from_spend(name: Name, spend: &Spend) -> Option<Self> {
+        let total_gifts = spend.total_gifts();
+        let total_fees = spend.fee();
+        match spend {
+            Spend::S0(_) => None,
+            Spend::S1(spend) => {
+                let hash = spend.seeds.0.iter().next()?.parent_hash;
+                let note_info = NoteInfo {
+                    name,
+                    version: Version::V1,
+                    assets: total_gifts + total_fees,
+                    hash,
+                    sig: None,
+                };
+                Some(note_info)
+            }
+        }
+    }
+
+    pub fn from_spend_and_input(name: Name, spend: &Spend, input: DisplayInput) -> Option<Self> {
+        let total_gifts = spend.total_gifts();
+        let total_fees = spend.fee();
+        match (spend, input) {
+            (Spend::S0(spend), DisplayInput::V0(sig)) => {
+                let hash = spend.seeds.0.iter().next()?.parent_hash;
+                let note_info = NoteInfo {
+                    name,
+                    version: Version::V0,
+                    assets: total_gifts + total_fees,
+                    hash,
+                    sig: Some(sig),
+                };
+                Some(note_info)
+            }
+            (Spend::S1(spend), DisplayInput::V1(_)) => {
+                let hash = spend.seeds.0.iter().next()?.parent_hash;
+                let note_info = NoteInfo {
+                    name,
+                    version: Version::V1,
+                    assets: total_gifts + total_fees,
+                    hash,
+                    sig: None,
+                };
+                Some(note_info)
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SpendBuilder {
-    note: Note,
+    note_info: NoteInfo,
     #[serde(
         serialize_with = "noun_serialize",
         deserialize_with = "noun_deserialize"
@@ -37,60 +109,84 @@ pub struct SpendBuilder {
         serialize_with = "noun_serialize",
         deserialize_with = "noun_deserialize"
     )]
-    spend_condition: SpendCondition,
-    #[serde(
-        serialize_with = "noun_serialize",
-        deserialize_with = "noun_deserialize"
-    )]
-    refund_lock: Option<SpendCondition>,
+    refund_lock: Option<LockRoot>,
 }
 
 impl SpendBuilder {
     pub fn new(
         note: Note,
-        spend_condition: SpendCondition,
-        refund_lock: Option<SpendCondition>,
-    ) -> Self {
-        Self {
-            note,
-            spend: Spend::new(
-                Witness::new(spend_condition.clone()),
-                Seeds(Default::default()),
-                0,
-            ),
-            spend_condition,
+        spend_condition: Option<(Lock, usize)>,
+        refund_lock: Option<LockRoot>,
+    ) -> Result<Self, BuildError> {
+        let (note_info, spend) = match note {
+            Note::V0(note) => {
+                let note_info = NoteInfo {
+                    name: note.name,
+                    version: note.inner.version,
+                    assets: note.assets,
+                    hash: note.hash(),
+                    sig: Some(note.sig),
+                };
+                let spend = Spend::new_legacy(Seeds(Default::default()), 0.into());
+                (note_info, spend)
+            }
+            Note::V1(note) => {
+                let note_info = NoteInfo {
+                    name: note.name,
+                    version: note.version,
+                    assets: note.assets,
+                    hash: note.hash(),
+                    sig: None,
+                };
+                let (lock, sp_index) = spend_condition.ok_or(BuildError::MissingSpendCondition)?;
+                let spend = Spend::new_witness(
+                    Witness::new(lock, sp_index),
+                    Seeds(Default::default()),
+                    Nicks(0),
+                );
+                (note_info, spend)
+            }
+        };
+        Ok(Self {
+            note_info,
+            spend,
             refund_lock,
-        }
+        })
     }
 
-    pub fn from_spend(
-        spend: Spend,
-        note: Note,
-        spend_condition: SpendCondition,
-        refund_lock: Option<SpendCondition>,
-    ) -> Option<Self> {
-        if spend.witness.lock_merkle_proof.proof.root != spend_condition.hash() {
-            return None;
-        }
-
+    pub fn from_spend(name: Name, spend: Spend, refund_lock: Option<LockRoot>) -> Option<Self> {
+        let note_info = NoteInfo::from_spend(name, &spend)?;
         Some(Self {
-            note,
+            note_info,
             spend,
-            spend_condition,
+            refund_lock,
+        })
+    }
+
+    pub fn from_spend_and_input(
+        name: Name,
+        spend: Spend,
+        input: DisplayInput,
+        refund_lock: Option<LockRoot>,
+    ) -> Option<Self> {
+        let note_info = NoteInfo::from_spend_and_input(name, &spend, input)?;
+        Some(Self {
+            note_info,
+            spend,
             refund_lock,
         })
     }
 
     pub fn fee(&mut self, fee_portion: Nicks) -> &mut Self {
-        if self.spend.fee != fee_portion {
+        if self.spend.fee() != fee_portion {
             self.invalidate_sigs();
         }
-        self.spend.fee = fee_portion;
+        *self.spend.fee_mut() = fee_portion;
         self
     }
 
     pub fn compute_refund(&mut self, include_lock_data: bool) -> &mut Self {
-        if self.refund_lock.is_some() {
+        if let Some(lock_root) = self.refund_lock.clone() {
             self.invalidate_sigs();
             let rl = self.refund_lock.clone().unwrap();
             let lock_root = LockRoot::Lock(rl.clone());
@@ -111,47 +207,50 @@ impl SpendBuilder {
                 });
 
             // Remove the previous refund.
+=======
+            // Remove the previous refund
+>>>>>>> upstream/main
             self.spend
-                .seeds
-                .0
+                .seeds_mut()
                 .retain(|v| v.lock_root.hash() != lock_root.hash());
-            let refund = self.note.assets
-                - self.spend.fee
-                - self.spend.seeds.0.iter().map(|v| v.gift).sum::<u64>();
+            let refund = self.note_info.assets
+                - self.spend.fee()
+                - self.spend.seeds().0.iter().map(|v| v.gift).sum::<Nicks>();
             if refund > 0 {
                 let mut seed = self.build_seed(rl, refund, include_lock_data);
                 if let Some(memo) = preserved_memo {
                     seed.note_data.push_memo(memo);
                 }
                 // NOTE: by convention, the refund seed is always first
-                self.spend.seeds.0.insert(0, seed);
+                self.spend.seeds_mut().0.insert(seed);
             }
         }
         self
     }
 
     pub fn cur_refund(&self) -> Option<&Seed> {
-        let rl = self.refund_lock.as_ref()?;
-        let lock_root = LockRoot::Lock(rl.clone());
+        let lock_root = self.refund_lock.clone()?;
         self.spend
-            .seeds
+            .seeds()
             .0
             .iter()
             .find(|v| v.lock_root.hash() == lock_root.hash())
     }
 
     pub fn is_balanced(&self) -> bool {
-        let spend_sum: Nicks = self.spend.seeds.0.iter().map(|v| v.gift).sum();
-        self.note.assets == spend_sum + self.spend.fee
+        let spend_sum: Nicks = self.spend.seeds().0.iter().map(|v| v.gift).sum();
+        self.note_info.assets == spend_sum + self.spend.fee()
     }
 
-    pub fn build_seed(&self, lock: SpendCondition, gift: Nicks, include_lock_data: bool) -> Seed {
-        let lock_root = LockRoot::Lock(lock.clone());
+    pub fn build_seed(&self, lock_root: LockRoot, gift: Nicks, include_lock_data: bool) -> Seed {
         let mut note_data = NoteData::empty();
         if include_lock_data {
+            let LockRoot::Lock(lock) = lock_root.clone() else {
+                panic!("include_lock_data set, but lock_root is a hash");
+            };
             note_data.push_lock(lock);
         }
-        let parent_hash = self.note.hash();
+        let parent_hash = self.note_info.hash;
         Seed {
             output_source: None,
             lock_root,
@@ -163,75 +262,104 @@ impl SpendBuilder {
 
     pub fn seed(&mut self, seed: Seed) -> &mut Self {
         self.invalidate_sigs();
-        self.spend.seeds.0.push(seed);
+        self.spend.seeds_mut().0.insert(seed);
         self
     }
 
     pub fn invalidate_sigs(&mut self) -> &mut Self {
-        self.spend.witness.pkh_signature.0.clear();
+        self.spend.clear_signatures();
         self
     }
 
     pub fn missing_unlocks(&self) -> Vec<MissingUnlocks> {
         let mut missing_unlocks = vec![];
 
-        for p in self.spend_condition.pkh() {
-            let mut checked_pkh = BTreeSet::new();
-            let valid_pkh = p.hashes.iter().cloned().collect::<BTreeSet<_>>();
+        match &self.spend {
+            Spend::S0(spend) => {
+                let Some(sig) = &self.note_info.sig else {
+                    panic!("Note is not V0");
+                };
+                let present_pks: BTreeSet<PublicKey> =
+                    spend.signature.0.iter().map(|(pk, _)| *pk).collect();
+                let valid_pk = sig.pubkeys.iter().cloned().collect::<BTreeSet<_>>();
 
-            if p.m > 0 {
-                for (pkh, _, _) in &self.spend.witness.pkh_signature.0 {
-                    if !checked_pkh.contains(pkh) && valid_pkh.contains(pkh) {
-                        checked_pkh.insert(*pkh);
-                        if checked_pkh.len() as u64 >= p.m {
-                            break;
-                        }
-                    }
+                let checked_pk: BTreeSet<PublicKey> =
+                    present_pks.intersection(&valid_pk).cloned().collect();
+
+                if (checked_pk.len() as u64) < sig.m {
+                    let sig_of = &valid_pk ^ &checked_pk;
+                    missing_unlocks.push(MissingUnlocks::Sig {
+                        num_sigs: sig.m - checked_pk.len() as u64,
+                        sig_of,
+                    })
                 }
             }
+            Spend::S1(spend) => {
+                let present_sigs: BTreeSet<Digest> = spend
+                    .witness
+                    .pkh_signature
+                    .0
+                    .iter()
+                    .map(|(pkh, (_, _))| *pkh)
+                    .collect();
 
-            if (checked_pkh.len() as u64) < p.m {
-                let sig_of = &valid_pkh ^ &checked_pkh;
-                missing_unlocks.push(MissingUnlocks::Pkh {
-                    num_sigs: p.m - checked_pkh.len() as u64,
-                    sig_of,
-                })
+                let sc = spend.witness.lock_merkle_proof.spend_condition();
+
+                for p in sc.pkh() {
+                    let valid_pkh = p.hashes.iter().cloned().collect::<BTreeSet<_>>();
+                    let checked_pkh: BTreeSet<Digest> =
+                        present_sigs.intersection(&valid_pkh).cloned().collect();
+
+                    if (checked_pkh.len() as u64) < p.m {
+                        let sig_of = &valid_pkh ^ &checked_pkh;
+                        missing_unlocks.push(MissingUnlocks::Pkh {
+                            num_sigs: p.m - checked_pkh.len() as u64,
+                            sig_of,
+                        })
+                    }
+                }
+
+                for h in sc.hax() {
+                    let valid_hax = h.preimages.iter().cloned().collect::<BTreeSet<_>>();
+
+                    let current_hax = match &self.spend {
+                        Spend::S1(spend) => spend
+                            .witness
+                            .hax_map
+                            .clone()
+                            .into_iter()
+                            .map(|(k, _)| k)
+                            .collect::<BTreeSet<_>>(),
+                        Spend::S0(_) => BTreeSet::new(),
+                    };
+
+                    let checked_hax = &current_hax & &valid_hax;
+
+                    let preimages_for = &valid_hax ^ &checked_hax;
+                    if !preimages_for.is_empty() {
+                        missing_unlocks.push(MissingUnlocks::Hax { preimages_for });
+                    }
+                }
+
+                if sc.brn() {
+                    missing_unlocks.push(MissingUnlocks::Brn);
+                }
             }
-        }
-
-        for h in self.spend_condition.hax() {
-            let valid_hax = h.0.iter().cloned().collect::<BTreeSet<_>>();
-
-            let current_hax = self
-                .spend
-                .witness
-                .hax_map
-                .clone()
-                .into_iter()
-                .map(|v| v.0)
-                .collect::<BTreeSet<_>>();
-
-            let checked_hax = &current_hax & &valid_hax;
-
-            let preimages_for = &valid_hax ^ &checked_hax;
-            if !preimages_for.is_empty() {
-                missing_unlocks.push(MissingUnlocks::Hax { preimages_for });
-            }
-        }
-
-        if self.spend_condition.brn() {
-            missing_unlocks.push(MissingUnlocks::Brn);
         }
 
         missing_unlocks
     }
 
     pub fn add_preimage(&mut self, preimage: Noun) -> Option<Digest> {
+        let Spend::S1(spend) = &mut self.spend else {
+            return None;
+        };
+
         let digest = preimage.hash();
 
-        for h in self.spend_condition.hax() {
-            if h.0.contains(&digest) {
-                self.spend.witness.hax_map.insert(digest, preimage);
+        for h in spend.witness.lock_merkle_proof.spend_condition().hax() {
+            if h.preimages.contains(&digest) {
+                spend.witness.hax_map.insert(digest, preimage);
                 return Some(digest);
             }
         }
@@ -240,30 +368,49 @@ impl SpendBuilder {
     }
 
     pub fn sign(&mut self, signing_key: &PrivateKey) -> bool {
-        let pkpkh = signing_key.public_key().hash();
+        match &mut self.spend {
+            Spend::S1(spend) => {
+                let pkpkh = signing_key.public_key().hash();
 
-        for p in self.spend_condition.pkh() {
-            if p.hashes.contains(&pkpkh) {
-                self.spend.add_signature(
-                    signing_key.public_key(),
-                    signing_key.sign(&self.spend.sig_hash()),
-                );
-                return true;
+                for p in spend.witness.lock_merkle_proof.spend_condition().pkh() {
+                    if p.hashes.contains(&pkpkh) {
+                        spend.witness.pkh_signature.0.insert(
+                            signing_key.public_key().hash(),
+                            (
+                                signing_key.public_key(),
+                                signing_key.sign(&spend.sig_hash()),
+                            ),
+                        );
+                        return true;
+                    }
+                }
+            }
+            Spend::S0(spend) => {
+                let Some(sig) = &self.note_info.sig else {
+                    panic!("Note is not V0");
+                };
+                if sig.pubkeys.contains(&signing_key.public_key()) {
+                    spend.signature.0.insert(
+                        signing_key.public_key(),
+                        signing_key.sign(&spend.sig_hash()),
+                    );
+                    return true;
+                }
             }
         }
 
         false
     }
 
-    fn unclamped_fee(&self, fee_per_word: Nicks) -> Nicks {
-        let mut fee = self.spend.unclamped_fee(fee_per_word);
+    fn missing_unlocks_fee(&self, settings: &TxEngineSettings) -> Nicks {
+        let mut fee = Nicks(0);
 
         for mu in self.missing_unlocks() {
             #[allow(clippy::single_match)]
             match mu {
                 MissingUnlocks::Pkh { num_sigs, .. } => {
                     // Heuristic for missing signatures. It is perhaps 30, but perhaps not.
-                    fee += 35 * num_sigs * fee_per_word;
+                    fee += settings.cost_per_word * 35 * num_sigs / settings.witness_word_div;
                 }
                 // TODO: handle hax
                 _ => (),
@@ -278,26 +425,23 @@ impl SpendBuilder {
 pub struct TxBuilder {
     spends: BTreeMap<Name, SpendBuilder>,
     fee_pool: Vec<SpendBuilder>,
-    fee_per_word: Nicks,
+    settings: TxEngineSettings,
 }
 
 impl TxBuilder {
     /// Create an empty TxBuilder
-    pub fn new(fee_per_word: Nicks) -> Self {
+    pub fn new(settings: TxEngineSettings) -> Self {
         Self {
             spends: BTreeMap::new(),
             fee_pool: vec![],
-            fee_per_word,
+            settings,
         }
     }
 
-    pub fn from_tx(
-        tx: RawTx,
-        mut notes: BTreeMap<Name, (Note, SpendCondition)>,
-    ) -> Result<Self, BuildError> {
-        if tx.version != Version::V1 {
+    pub fn from_raw_tx(tx: RawTx, settings: TxEngineSettings) -> Result<Self, BuildError> {
+        let RawTx::V1(tx) = tx else {
             return Err(BuildError::InvalidVersion);
-        }
+        };
 
         Ok(Self {
             spends: tx
@@ -305,30 +449,55 @@ impl TxBuilder {
                 .0
                 .into_iter()
                 .map(|(n, s)| {
-                    let (note, sc) = notes
-                        .remove(&n)
-                        .ok_or_else(|| BuildError::NoteNotFound(n.clone()))?;
                     Ok((
                         n,
-                        SpendBuilder::from_spend(s, note, sc, None)
+                        SpendBuilder::from_spend(n, s, None)
                             .ok_or(BuildError::InvalidSpendCondition)?,
                     ))
                 })
                 .collect::<Result<BTreeMap<_, _>, _>>()?,
             fee_pool: vec![],
-            fee_per_word: 1 << 15,
+            settings,
+        })
+    }
+
+    pub fn from_nockchain_tx(
+        tx: NockchainTx,
+        settings: TxEngineSettings,
+    ) -> Result<Self, BuildError> {
+        let raw = tx.to_raw_tx();
+        Ok(Self {
+            spends: raw
+                .spends
+                .0
+                .into_iter()
+                .map(|(n, s)| {
+                    let inp = tx
+                        .display
+                        .inputs
+                        .get(&n)
+                        .ok_or(BuildError::InvalidSpendCondition)?;
+                    Ok((
+                        n,
+                        SpendBuilder::from_spend_and_input(n, s, inp, None)
+                            .ok_or(BuildError::InvalidSpendCondition)?,
+                    ))
+                })
+                .collect::<Result<BTreeMap<_, _>, _>>()?,
+            fee_pool: vec![],
+            settings,
         })
     }
 
     /// Append a `SpendBuilder` to this transaction
     pub fn spend(&mut self, spend: SpendBuilder) -> Option<SpendBuilder> {
-        let name = spend.note.name.clone();
+        let name = spend.note_info.name;
         self.spends.insert(name, spend)
     }
 
     pub fn simple_spend_base(
         &mut self,
-        notes: Vec<(Note, SpendCondition)>,
+        notes: Vec<(Note, Option<(Lock, usize)>)>,
         recipient: Digest,
         gift: Nicks,
         refund_pkh: Digest,
@@ -339,19 +508,21 @@ impl TxBuilder {
             return Err(BuildError::ZeroGift);
         }
 
-        let refund_lock = SpendCondition::new_pkh(Pkh::single(refund_pkh));
+        let refund_lock = Lock::from(SpendCondition::new_pkh(Pkh::single(refund_pkh)));
+        let refund_lock_root = LockRoot::Lock(refund_lock);
 
         let mut remaining_gift = gift;
 
         for (note, spend_condition) in notes {
-            let gift_portion = remaining_gift.min(note.assets);
+            let gift_portion = remaining_gift.min(note.assets());
 
             remaining_gift -= gift_portion;
 
-            let mut spend = SpendBuilder::new(note, spend_condition, Some(refund_lock.clone()));
+            let mut spend =
+                SpendBuilder::new(note, spend_condition, Some(refund_lock_root.clone()))?;
             if gift_portion > 0 {
                 let seed = spend.build_seed(
-                    SpendCondition::new_pkh(Pkh::single(recipient)),
+                    LockRoot::Lock(SpendCondition::new_pkh(Pkh::single(recipient)).into()),
                     gift_portion,
                     include_lock_data,
                 );
@@ -458,7 +629,7 @@ impl TxBuilder {
 
     pub fn simple_spend(
         &mut self,
-        notes: Vec<(Note, SpendCondition)>,
+        notes: Vec<(Note, Option<(Lock, usize)>)>,
         recipient: Digest,
         gift: Nicks,
         refund_pkh: Digest,
@@ -514,18 +685,37 @@ impl TxBuilder {
 
     pub fn build(&self) -> NockchainTx {
         let mut display = TransactionDisplay::default();
-        let mut spends = Spends(Vec::new());
+        let mut spends = Spends(ZMap::new());
+
+        let mut inputs = ZMap::new();
 
         for (name, spend) in &self.spends {
-            display
-                .inputs
-                .insert(name.clone(), spend.spend_condition.clone());
-            for seed in spend.spend.seeds.0.iter() {
+            match (&spend.spend, &spend.note_info.sig) {
+                (Spend::S0(_), Some(sig)) => {
+                    inputs.insert(*name, DisplayInput::V0(sig.clone()));
+                }
+                (Spend::S1(ws), _) => {
+                    inputs.insert(
+                        *name,
+                        DisplayInput::V1(ws.witness.lock_merkle_proof.spend_condition().clone()),
+                    );
+                }
+                _ => (),
+            }
+            for seed in spend.spend.seeds().0.iter() {
                 if let LockRoot::Lock(lock) = &seed.lock_root {
                     display.outputs.insert(lock.hash(), lock.clone().into());
                 }
             }
-            spends.0.push((name.clone(), spend.spend.clone()));
+            spends.0.insert(*name, spend.spend.clone());
+        }
+
+        // Best-effort standardization to single input type
+        // If the transaction is complex, this will fail and we will stick to mixed inputs.
+        // nockchain CLI wallet will not display inputs, but Iris will.
+        match (InputDisplay::Mixed { inputs }).standardize() {
+            Ok(i) => display.inputs = i,
+            Err(i) => display.inputs = i,
         }
 
         let version = Version::V1;
@@ -541,29 +731,29 @@ impl TxBuilder {
         }
     }
 
-    pub fn all_notes(&self) -> BTreeMap<Name, (Note, SpendCondition)> {
-        self.spends
-            .iter()
-            .map(|(a, b)| (a.clone(), (b.note.clone(), b.spend_condition.clone())))
-            .collect()
-    }
-
     pub fn all_spends(&self) -> &BTreeMap<Name, SpendBuilder> {
         &self.spends
     }
 
     pub fn cur_fee(&self) -> Nicks {
-        self.spends.values().map(|v| v.spend.fee).sum::<Nicks>()
+        self.spends.values().map(|v| v.spend.fee()).sum::<Nicks>()
     }
 
     pub fn calc_fee(&self) -> Nicks {
-        let mut fee = 0;
+        let mut fee = Nicks(0);
+
+        let (sw, ww) = words_for_unordered_spends(
+            self.spends.values().map(|v| (v.note_info.name, &v.spend)),
+            &self.settings,
+        );
+        fee += self.settings.cost_per_word * sw
+            + self.settings.cost_per_word * ww / self.settings.witness_word_div;
 
         for s in self.spends.values() {
-            fee += s.unclamped_fee(self.fee_per_word);
+            fee += s.missing_unlocks_fee(&self.settings);
         }
 
-        fee.max(Spend::MIN_FEE)
+        fee.max(self.settings.min_fee)
     }
 
     pub fn recalc_and_set_fee(&mut self, include_lock_data: bool) -> Result<&mut Self, BuildError> {
@@ -577,6 +767,29 @@ impl TxBuilder {
         adjust_fee: bool,
         include_lock_data: bool,
     ) -> Result<&mut Self, BuildError> {
+        let bythos_active =
+            self.settings.tx_engine_version == Version::V1 && self.settings.tx_engine_patch == 1;
+
+        // On bythos, we need to track number of refunds, so that we can do correct fee adjustment in connection to refund lock-root
+        let mut refund_counts = BTreeMap::<Digest, usize>::new();
+
+        for s in self.spends.values() {
+            if let Some(rl) = &s.refund_lock {
+                let rlh = rl.hash();
+                let refunds = s
+                    .spend
+                    .seeds()
+                    .0
+                    .iter()
+                    .filter(|v| v.lock_root.hash() == rlh)
+                    .count();
+                refund_counts
+                    .entry(rlh)
+                    .and_modify(|v| *v += refunds)
+                    .or_insert(refunds);
+            }
+        }
+
         let cur_fee = self.cur_fee();
 
         let mut spends = self.spends.values_mut().collect::<Vec<_>>();
@@ -588,17 +801,17 @@ impl TxBuilder {
 
             // Sort by non-refund assets, so that we prioritize refunds from used-up notes
             spends.sort_by(|a, b| {
-                let anra = a.note.assets - a.cur_refund().map(|v| v.gift).unwrap_or(0);
-                let bnra = b.note.assets - b.cur_refund().map(|v| v.gift).unwrap_or(0);
+                let anra = a.note_info.assets - a.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
+                let bnra = b.note_info.assets - b.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
                 if anra != bnra {
                     // By default, put the greatest non-refund transfers first
                     bnra.cmp(&anra)
-                } else if b.spend.fee != a.spend.fee {
+                } else if b.spend.fee() != a.spend.fee() {
                     // If equal, prioritize highest fee
-                    b.spend.fee.cmp(&a.spend.fee)
+                    b.spend.fee().cmp(&a.spend.fee())
                 } else {
                     // Otherwise, sort by name
-                    b.note.name.cmp(&a.note.name)
+                    b.note_info.name.cmp(&a.note_info.name)
                 }
             });
 
@@ -607,14 +820,15 @@ impl TxBuilder {
                     let words = rs.note_data_words();
                     let sub_refund = rs.gift.min(fee_left);
                     if sub_refund > 0 {
-                        let cur_fee = s.spend.fee;
+                        let cur_fee = s.spend.fee();
                         s.fee(cur_fee + sub_refund);
                         fee_left -= sub_refund;
                         s.compute_refund(include_lock_data);
 
                         // Eliminate refund seed words, if the refund is now gone.
+                        // Important to note, that node_data_words are not part of witness.
                         if adjust_fee && s.cur_refund().is_none() {
-                            fee_left -= fee_left.min(words * self.fee_per_word);
+                            fee_left -= fee_left.min(self.settings.cost_per_word * words);
                         }
                     }
                 }
@@ -622,7 +836,7 @@ impl TxBuilder {
 
             // Pop entries from the fee pool, so that we can cover any excess fees. These shall be
             // sorted by assets.
-            self.fee_pool.sort_by_key(|v| v.note.assets);
+            self.fee_pool.sort_by_key(|v| v.note_info.assets);
             while fee_left > 0 {
                 let Some(mut r) = self.fee_pool.pop() else {
                     break;
@@ -630,11 +844,20 @@ impl TxBuilder {
                 r.compute_refund(include_lock_data);
                 let rs = r.cur_refund().expect("Fee pool entry must have refund");
                 if adjust_fee {
-                    fee_left += r.unclamped_fee(self.fee_per_word);
+                    let (mut sw, ww) = r.spend.calc_words();
+                    // If we are on Bythos, then seed words are merged by lock root, i.e. we don't need to pay for this one refund pool entry.
+                    let refunds = refund_counts.entry(rs.lock_root.hash()).or_default();
+                    if bythos_active && *refunds > 0 {
+                        sw = 0;
+                    }
+                    *refunds += 1;
+                    fee_left += self.settings.cost_per_word * sw
+                        + self.settings.cost_per_word * ww / self.settings.witness_word_div;
+                    fee_left += r.missing_unlocks_fee(&self.settings);
                 }
                 let sub_refund = rs.gift.min(fee_left);
                 if sub_refund > 0 {
-                    let cur_fee = r.spend.fee;
+                    let cur_fee = r.spend.fee();
                     r.fee(cur_fee + sub_refund);
                     fee_left -= sub_refund;
                     r.compute_refund(include_lock_data);
@@ -653,47 +876,59 @@ impl TxBuilder {
             // Sort by smallest fee, so that we can return as many low-fee notes to fee pool as
             // possible.
             spends.sort_by(|a, b| {
-                let anra = a.note.assets - a.cur_refund().map(|v| v.gift).unwrap_or(0);
-                let bnra = b.note.assets - b.cur_refund().map(|v| v.gift).unwrap_or(0);
-                let aor = a.spend.seeds.0.len() == 1 && a.cur_refund().is_some();
-                let bor = b.spend.seeds.0.len() == 1 && b.cur_refund().is_some();
+                let anra = a.note_info.assets - a.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
+                let bnra = b.note_info.assets - b.cur_refund().map(|v| v.gift).unwrap_or(Nicks(0));
+                let aor = a.spend.seeds().0.len() == 1 && a.cur_refund().is_some();
+                let bor = b.spend.seeds().0.len() == 1 && b.cur_refund().is_some();
                 if aor != bor {
                     // By default, pick a note that only has refund, as adjusting fee here does not
                     // change the fee.
                     bor.cmp(&aor)
-                } else if a.spend.fee != b.spend.fee {
+                } else if a.spend.fee() != b.spend.fee() {
                     // If both are like that, or neither, put the lowest fee first
-                    a.spend.fee.cmp(&b.spend.fee)
+                    a.spend.fee().cmp(&b.spend.fee())
                 } else if anra != bnra {
                     // If equal, prioritize lowest assets
                     anra.cmp(&bnra)
                 } else {
                     // Otherwise, sort by name
-                    b.note.name.cmp(&a.note.name)
+                    b.note_info.name.cmp(&a.note_info.name)
                 }
             });
 
             let mut return_to_pool = vec![];
 
             for s in spends {
-                if s.refund_lock.is_some() {
-                    let add_refund = s.spend.fee.min(refund_left);
+                if let Some(rl) = &s.refund_lock {
+                    let rlh = rl.hash();
+                    let add_refund = s.spend.fee().min(refund_left);
 
                     if add_refund > 0 {
-                        let cur_fee = s.spend.fee;
+                        let cur_fee = s.spend.fee();
                         s.fee(cur_fee - add_refund);
                         refund_left -= add_refund;
                         s.compute_refund(include_lock_data);
                     }
 
-                    if s.spend.fee == add_refund {
-                        return_to_pool.push(s.note.name.clone());
+                    if s.spend.fee() == add_refund {
+                        return_to_pool.push(s.note_info.name);
                         // We are returning this note to pool (making it unused), all its required
                         // fee shall disappear. The only case we don't handle here is whenever we
                         // reach the MIN_FEE (256 nicks). Hence, TODO: handle MIN_FEE case. This is
                         // irrelevant for the current consensus version with high fees.
-                        refund_left =
-                            refund_left.saturating_sub(s.unclamped_fee(self.fee_per_word));
+                        let (mut sw, ww) = s.spend.calc_words();
+                        // If we are on Bythos, then seed words are merged by lock root, i.e. we don't need to pay for this one refund pool entry.
+                        let refunds = refund_counts.entry(rlh).or_default();
+                        if bythos_active && *refunds > 1 {
+                            sw = 0;
+                        }
+                        *refunds = refunds
+                            .checked_sub(1)
+                            .expect("Refunds should be at least 1");
+                        let mut to_refund = self.settings.cost_per_word * sw
+                            + self.settings.cost_per_word * ww / self.settings.witness_word_div;
+                        to_refund += s.missing_unlocks_fee(&self.settings);
+                        refund_left = refund_left.saturating_sub(to_refund);
                     }
                 }
             }
@@ -723,6 +958,7 @@ pub enum BuildError {
     InvalidVersion,
     InvalidSpendCondition,
     UnbalancedSpends,
+    MissingSpendCondition,
     MissingUnlocks(Vec<MissingUnlocks>),
 }
 
@@ -751,6 +987,9 @@ impl core::fmt::Display for BuildError {
                 f,
                 "Some spends are not balanced (forgot to compute refunds?)"
             ),
+            BuildError::MissingSpendCondition => {
+                write!(f, "Spend condition is missing for this input note")
+            }
             BuildError::MissingUnlocks(unlocks) => {
                 write!(
                     f,
@@ -768,7 +1007,7 @@ impl core::fmt::Display for BuildError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LockPrimitive, LockTim, Name, NoteData, Pkh, Version};
+    use crate::v1::{self, LockPrimitive, LockTim};
     use alloc::{string::ToString, vec};
     use bip39::Mnemonic;
     use iris_crypto::{derive_master_key, PublicKey};
@@ -784,7 +1023,7 @@ mod tests {
     fn test_builder() {
         let (private_key, _) = keys();
 
-        let note = Note {
+        let note = Note::V1(v1::NoteV1 {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
@@ -796,17 +1035,17 @@ mod tests {
                     .unwrap(),
             ),
             note_data: NoteData::empty(),
-            assets: 4294967296,
-        };
+            assets: Nicks(4294967296),
+        });
 
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
-        let gift = 1234567;
-        let fee = 2850816;
+        let gift = Nicks(1234567);
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
+<<<<<<< HEAD
         let spend_condition = SpendCondition(vec![
             LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
             LockPrimitive::Tim(LockTim::coinbase()),
@@ -819,24 +1058,58 @@ mod tests {
                 refund_pkh,
                 true,
                 None,
+                    LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+                    LockPrimitive::Tim(LockTim::coinbase()),
+                ]
+                .into(),
+>>>>>>> upstream/main
             )
-            .unwrap()
-            .set_fee_and_balance_refund(fee, false, true)
-            .unwrap()
-            .sign(&private_key)
-            .validate()
-            .unwrap()
-            .build();
-
-        assert_eq!(
-            tx.id.to_string(),
-            "3pmkA1knKhJzmd28t5TULP9DADK7GhWsHaNSTpPcGcN4nxzrWsDK2xe",
+            .into(),
+            0,
         );
+        for (settings, fee, expected_id) in [
+            (
+                TxEngineSettings::v1_default(),
+                Nicks(2850816),
+                "3pmkA1knKhJzmd28t5TULP9DADK7GhWsHaNSTpPcGcN4nxzrWsDK2xe",
+            ),
+            (
+                TxEngineSettings::v1_bythos_default(),
+                Nicks(675840),
+                "BzEPGBGvTfqo4saYmXLem7NgzmGzZdKNk2EUwWBfhgd1yzkdTeA8yQN",
+            ),
+        ] {
+            let tx = TxBuilder::new(settings)
+                .simple_spend_base(
+                    vec![(note.clone(), Some(spend_condition.clone()))],
+                    recipient,
+                    gift,
+                    refund_pkh,
+                    true,
+                )
+                .unwrap()
+                .set_fee_and_balance_refund(fee, false, true)
+                .unwrap()
+                .sign(&private_key)
+                .validate()
+                .unwrap()
+                .build();
 
-        let mut tx = TxBuilder::new(1 << 17);
+            let InputDisplay::V1 { .. } = tx.display.inputs else {
+                panic!("Expected V1 inputs");
+            };
+
+            assert_eq!(tx.id.to_string(), expected_id);
+
+            serde_json::to_string(&tx.display).unwrap();
+            serde_json::to_string(&tx.witness_data).unwrap();
+        }
+
+        let fee = Nicks(2850816);
+        let mut tx = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(1 << 17)));
 
         tx.simple_spend_base(
-            vec![(note.clone(), spend_condition.clone())],
+            vec![(note.clone(), Some(spend_condition.clone()))],
             recipient,
             gift,
             refund_pkh,
@@ -850,12 +1123,12 @@ mod tests {
 
         assert!(tx.validate().is_err());
 
-        let fee_per_word = 40000;
-        let mut builder = TxBuilder::new(fee_per_word);
+        let settings = TxEngineSettings::v1_with_word_cost(Nicks(40000));
+        let mut builder = TxBuilder::new(settings);
 
         builder
             .simple_spend(
-                vec![(note, spend_condition)],
+                vec![(note, Some(spend_condition))],
                 recipient,
                 gift,
                 refund_pkh,
@@ -868,8 +1141,8 @@ mod tests {
 
         let tx = builder.sign(&private_key).build();
 
-        assert_eq!(tx.to_raw_tx().spends.fee(fee_per_word), 2520000);
-        assert_eq!(fee1, 2520000);
+        assert_eq!(tx.to_raw_tx().spends.fee(&settings), Nicks(2520000));
+        assert_eq!(fee1, Nicks(2520000));
     }
 
     #[test]
@@ -877,7 +1150,7 @@ mod tests {
         let (private_key, _) = keys();
 
         let notes = [
-            Note {
+            v1::NoteV1 {
                 version: Version::V1,
                 origin_page: 13,
                 name: Name::new(
@@ -889,9 +1162,9 @@ mod tests {
                         .unwrap(),
                 ),
                 note_data: NoteData::empty(),
-                assets: 3000,
+                assets: Nicks(3000),
             },
-            Note {
+            v1::NoteV1 {
                 version: Version::V1,
                 origin_page: 14,
                 name: Name::new(
@@ -903,9 +1176,9 @@ mod tests {
                         .unwrap(),
                 ),
                 note_data: NoteData::empty(),
-                assets: 3000,
+                assets: Nicks(3000),
             },
-            Note {
+            v1::NoteV1 {
                 version: Version::V1,
                 origin_page: 15,
                 name: Name::new(
@@ -917,60 +1190,68 @@ mod tests {
                         .unwrap(),
                 ),
                 note_data: NoteData::empty(),
-                assets: 3000,
+                assets: Nicks(3000),
             },
-        ];
+        ]
+        .map(Note::V1);
 
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
-        let gift = 2700;
+        let gift = Nicks(2700);
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
-        let spend_condition = SpendCondition(vec![
-            LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
-            LockPrimitive::Tim(LockTim::coinbase()),
-        ]);
+        let spend_condition: (Lock, usize) = (
+            SpendCondition(
+                [
+                    LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+                    LockPrimitive::Tim(LockTim::coinbase()),
+                ]
+                .into(),
+            )
+            .into(),
+            0,
+        );
         let notes = notes
             .into_iter()
-            .map(|v| (v, spend_condition.clone()))
+            .map(|v| (v, Some(spend_condition.clone())))
             .collect::<Vec<_>>();
-        let mut builder = TxBuilder::new(8);
+        let mut builder = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(8)));
 
         builder
             .simple_spend_base(notes, recipient, gift, refund_pkh, false, None)
             .unwrap();
 
         // By default, fee is just 504, because we are using one note, and one note only.
-        assert_eq!(builder.calc_fee(), 504);
+        assert_eq!(builder.calc_fee(), Nicks(504));
 
         // Since fee pool exists, we will automatically pick a note from it to set the fee appropriately.
         builder.recalc_and_set_fee(false).unwrap();
         assert_eq!(
             builder.calc_fee(),
-            992,
+            Nicks(992),
             "{} {:?}",
             builder.fee_pool.len(),
             builder.spends
         );
-        assert_eq!(builder.cur_fee(), 992);
+        assert_eq!(builder.cur_fee(), Nicks(992));
 
         // Calling this twice should not make the fee jump back and forth.
         builder.recalc_and_set_fee(false).unwrap();
         assert_eq!(
             builder.calc_fee(),
-            992,
+            Nicks(992),
             "{} {:?}",
             builder.fee_pool.len(),
             builder.spends
         );
-        assert_eq!(builder.cur_fee(), 992);
+        assert_eq!(builder.cur_fee(), Nicks(992));
 
         // After signing, the fee shouldn't change.
         builder.sign(&private_key);
-        assert_eq!(builder.calc_fee(), 992);
-        assert_eq!(builder.cur_fee(), 992);
+        assert_eq!(builder.calc_fee(), Nicks(992));
+        assert_eq!(builder.cur_fee(), Nicks(992));
 
         // And the transaction should validate.
         builder.validate().unwrap();
@@ -1280,10 +1561,13 @@ mod tests {
     fn test_first_name() {
         let (_, public_key) = keys();
 
-        let sc = SpendCondition(vec![
-            LockPrimitive::Pkh(Pkh::single(public_key.hash())),
-            LockPrimitive::Tim(LockTim::coinbase()),
-        ]);
+        let sc = SpendCondition(
+            [
+                LockPrimitive::Pkh(Pkh::single(public_key.hash())),
+                LockPrimitive::Tim(LockTim::coinbase()),
+            ]
+            .into(),
+        );
         assert_eq!(
             sc.first_name().to_string(),
             "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH",
@@ -1294,7 +1578,7 @@ mod tests {
     fn test_multiseed_outputs() {
         let (private_key, public_key) = keys();
         let notes = [
-            Note {
+            v1::NoteV1 {
                 version: Version::V1,
                 origin_page: 13,
                 name: Name::new(
@@ -1306,9 +1590,9 @@ mod tests {
                         .unwrap(),
                 ),
                 note_data: NoteData::empty(),
-                assets: 4294967296,
+                assets: Nicks(4294967296),
             },
-            Note {
+            v1::NoteV1 {
                 version: Version::V1,
                 origin_page: 14,
                 name: Name::new(
@@ -1320,9 +1604,9 @@ mod tests {
                         .unwrap(),
                 ),
                 note_data: NoteData::empty(),
-                assets: 4294967296,
+                assets: Nicks(4294967296),
             },
-            Note {
+            v1::NoteV1 {
                 version: Version::V1,
                 origin_page: 15,
                 name: Name::new(
@@ -1334,27 +1618,35 @@ mod tests {
                         .unwrap(),
                 ),
                 note_data: NoteData::empty(),
-                assets: 4294967296,
+                assets: Nicks(4294967296),
             },
-        ];
+        ]
+        .map(Note::V1);
 
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
-        let gift = 4294967296 * 3 - 65536 * 100;
+        let gift = Nicks(4294967296 * 3 - 65536 * 100);
         let refund_pkh = public_key.hash();
 
-        let tx = TxBuilder::new(1 << 15)
+        let tx = TxBuilder::new(TxEngineSettings::v1_default())
             .simple_spend_base(
                 notes
                     .into_iter()
                     .map(|note| {
                         (
                             note,
-                            SpendCondition(vec![
-                                LockPrimitive::Pkh(Pkh::single(public_key.hash())),
-                                LockPrimitive::Tim(LockTim::coinbase()),
-                            ]),
+                            Some((
+                                SpendCondition(
+                                    [
+                                        LockPrimitive::Pkh(Pkh::single(public_key.hash())),
+                                        LockPrimitive::Tim(LockTim::coinbase()),
+                                    ]
+                                    .into(),
+                                )
+                                .into(),
+                                0,
+                            )),
                         )
                     })
                     .collect(),
@@ -1384,13 +1676,13 @@ mod tests {
             "3Rjw3yC2WJumTugHhn9TS8SB8n3h6gc2bCKvhgHArZCwW2zWhzXtFX9x7owmx5XJGX8pRZSAsrM8Cj9JKMANcJ6KJHhYA1BP557jThfKwDmEKe6JduSmRa5fmsE1MYNBjuFNPL7uFTH3iqpk1ACWpPHRaffKhct9Z9Dq1A1mqgu5WQ2MtVUNVqkbHnyKnd1AmWMDtcnhmfvWBRq6t6BhYDLFSdDFKgoQwqVi4bvjaY56XxWDPneU2w5WCWKf9JBJKhucSAEvPjk2BmDgkcmSuwskCkaoLW82eZfdQTWy4Gc22EHZrSjGaXJYnQYEkgWWzaSSQbRJuXGMPyFPN1CRHecKm2ktgj3qirkHZHN6qJasdVeX9itovLhmCHn13DSvHmRGoqAh2haX4SrJMusHL2Eg7pGGNHWQsrPCVZ82qRJ3svai4RSKKVA7Z3PvuMfpKkgeA8SVsYUryViaBULu9mgqa38QcbbtToPiZsvBq8zDAURVPMeXtVscarvQ6WrhA2ksqarjyWwqbzKhVzADd2Z3GA14xdFaVtDUxpg8trgkdqnG5rgjL5QDxtW7EuCT1VtuJS2yqbmYd52B9p9JUa4XwYrEuxPVoYy1pMUPuJ6zx5Y4VnqtasFYez727DKWbfwiareiQRGAG7MidnEucW3gB3bnEQRPDMZyUdTmH1UocnYBSWH5cBgtdifc3VgwbfFR2QYpUmjoRuB7uHgQkXQvw1hyH8jd8DJbr2gpz5FV4fD5dxntaHwajzqKHFGViHnzWQ23sB5UuMHenrZbLb2R6Z2XdXYFd8cmkFPuEYtQKCg1u2rvUnc1V3Quty2jtDyGkhpAuT485Atc2FonS2TRTzCwcRf9DDZHTMMwaW9368C6q1UoVkfY757RjcueKMMyT85LY2nKFeAk15ZxG5LgZHAnHMCjHsGpWT4n1gzjDAJqacW3Q1GszsmyU7XTx5BXXtWrHjHW5wQd7J9nr6QjFtAQf2dLDJHdqK8g66bExJ1iiRBVdTVHW12dVrvp4vsoyLhTLeyr5ADh2SEsX126xHTNKxuPWvLJ5oDSK4mhfKgLwKLxWzQqZnpSg5CUni4fvA7HRv9p7KXxBndwCEAZCuKjVWDGYYChoSzJcfmJ6h7SoEZtyye9xynGSLoTF4CkY2vRyED62LdiLU12YtxJBSXmLb5TuiBydpQC2yy4DFVeV97WaEwcB42FbrEYmYo36zSGjas5soTUg7hW2E8ES8gHxHH7QLkiiiarjBE9gwzhVCp6rnZt1kJUzFAaRbYdLyyKDbSDDfJjHX3jxrJMjQ84PZrR3yz5csndZroMW2NLYRQ5XX3pBTGn7BopMyDZY2WM3hhbism9rm4o3SEaUc7X9c96gr7KZpojPPTrgLxLSqnsKzefQeACbNXSXQqVQEtXFaFzrSeVatYiFXfJnmBXXr5W6ufVD57hcuXqC62sdBv2UntRXp9zDEYak8jhrnvgK4o5cGgRr2fS6Wk1g3Z8R3BKgZEzeowvVmn1RN6xbVh8XHBq83NELH2mm35oqiTCuoeJ6vcdVvF2Cy9dkdqcXfJBnPyhnLG",
         );
 
-        let outputs = tx.outputs();
+        let outputs = tx.outputs(0, TxEngineSettings::v1_default());
         let names = outputs
             .iter()
             .map(|output| (output.name.first.to_string(), output.name.last.to_string()))
             .collect::<Vec<_>>();
-        assert_eq!(outputs[0].assets, 425984);
-        assert_eq!(outputs[1].assets, 12878348288);
+        assert_eq!(outputs[0].assets, Nicks(425984));
+        assert_eq!(outputs[1].assets, Nicks(12878348288));
         assert_eq!(
             names[0],
             (
@@ -1411,7 +1703,7 @@ mod tests {
     #[test]
     fn test_missing_unlock() {
         let (private_key, _) = keys();
-        let note = Note {
+        let note = Note::V1(v1::NoteV1 {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
@@ -1423,25 +1715,32 @@ mod tests {
                     .unwrap(),
             ),
             note_data: NoteData::empty(),
-            assets: 4294967296,
-        };
+            assets: Nicks(4294967296),
+        });
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
-        let gift = 1234567;
-        let fee = 2850816;
+        let gift = Nicks(1234567);
+        let fee = Nicks(2850816);
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
-        let spend_condition = SpendCondition(vec![
-            LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
-            LockPrimitive::Tim(LockTim::coinbase()),
-        ]);
-        let mut builder = TxBuilder::new(1);
+        let spend_condition: (Lock, usize) = (
+            SpendCondition(
+                [
+                    LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+                    LockPrimitive::Tim(LockTim::coinbase()),
+                ]
+                .into(),
+            )
+            .into(),
+            0,
+        );
+        let mut builder = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(1)));
 
         builder
             .simple_spend_base(
-                vec![(note.clone(), spend_condition.clone())],
+                vec![(note.clone(), Some(spend_condition.clone()))],
                 recipient,
                 gift,
                 refund_pkh,
@@ -1469,9 +1768,9 @@ mod tests {
 
     #[test]
     fn test_missing_unlock_hax() {
-        use crate::Hax;
+        use crate::v1::Hax;
         use iris_ztd::Belt;
-        let note = Note {
+        let note = Note::V1(v1::NoteV1 {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
@@ -1483,35 +1782,48 @@ mod tests {
                     .unwrap(),
             ),
             note_data: NoteData::empty(),
-            assets: 4294967296,
-        };
+            assets: Nicks(4294967296),
+        });
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
-        let gift = 1234567;
-        let fee = 2850816;
+        let gift = Nicks(1234567);
+        let fee = Nicks(2850816);
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
-        let spend_condition = SpendCondition(vec![
-            LockPrimitive::Pkh(Pkh::single(
-                "9zpwNfGdcPT1QUKw2Fnw2zvftzpAYEjzZfTqGW8KLnf3NmEJ7yR5t2Y"
-                    .try_into()
-                    .unwrap(),
-            )),
-            LockPrimitive::Hax(Hax(vec![Digest([
-                Belt(1730770831742798981),
-                Belt(2676322185709933211),
-                Belt(8329210750824781744),
-                Belt(16756092452590401876),
-                Belt(3547445316740171466),
-            ])])),
-        ]);
-        let mut builder = TxBuilder::new(1);
+        let spend_condition: (Lock, usize) = (
+            SpendCondition(
+                [
+                    LockPrimitive::Pkh(Pkh::single(
+                        "9zpwNfGdcPT1QUKw2Fnw2zvftzpAYEjzZfTqGW8KLnf3NmEJ7yR5t2Y"
+                            .try_into()
+                            .unwrap(),
+                    )),
+                    LockPrimitive::Hax(
+                        Hax {
+                            preimages: [Digest([
+                                Belt(1730770831742798981),
+                                Belt(2676322185709933211),
+                                Belt(8329210750824781744),
+                                Belt(16756092452590401876),
+                                Belt(3547445316740171466),
+                            ])]
+                            .into(),
+                        }
+                        .into(),
+                    ),
+                ]
+                .into(),
+            )
+            .into(),
+            0,
+        );
+        let mut builder = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(1)));
 
         builder
             .simple_spend_base(
-                vec![(note.clone(), spend_condition.clone())],
+                vec![(note.clone(), Some(spend_condition.clone()))],
                 recipient,
                 gift,
                 refund_pkh,
@@ -1544,7 +1856,7 @@ mod tests {
     #[test]
     fn test_jam_vector() {
         let (private_key, _) = keys();
-        let note = Note {
+        let note = Note::V1(v1::NoteV1 {
             version: Version::V1,
             origin_page: 13,
             name: Name::new(
@@ -1556,23 +1868,30 @@ mod tests {
                     .unwrap(),
             ),
             note_data: NoteData::empty(),
-            assets: 4294967296,
-        };
+            assets: Nicks(4294967296),
+        });
         let recipient = "2nEFkqYm51yfqsYgfRx72w8FF9bmWqnkJu8XqY8T7psXufjYNRxf5ME"
             .try_into()
             .unwrap();
-        let gift = 1234567;
-        let fee = 2850816;
+        let gift = Nicks(1234567);
+        let fee = Nicks(2850816);
         let refund_pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
             .try_into()
             .unwrap();
-        let spend_condition = SpendCondition(vec![
-            LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
-            LockPrimitive::Tim(LockTim::coinbase()),
-        ]);
-        let tx = TxBuilder::new(1)
+        let spend_condition: (Lock, usize) = (
+            SpendCondition(
+                [
+                    LockPrimitive::Pkh(Pkh::single(private_key.public_key().hash())),
+                    LockPrimitive::Tim(LockTim::coinbase()),
+                ]
+                .into(),
+            )
+            .into(),
+            0,
+        );
+        let tx = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(1)))
             .simple_spend_base(
-                vec![(note.clone(), spend_condition.clone())],
+                vec![(note.clone(), Some(spend_condition.clone()))],
                 recipient,
                 gift,
                 refund_pkh,

@@ -1,13 +1,7 @@
-use alloc::collections::BTreeMap;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
-use iris_crypto::{PublicKey, Signature};
-use iris_ztd::{Digest, Hashable as HashableTrait, Noun, NounDecode, NounEncode, ZMap, ZSet};
-use iris_ztd_derive::{Hashable, NounDecode, NounEncode};
-
-use super::note::{Name, Note, NoteData, Source, TimelockRange, Version};
+use super::note::{BlockHeight, Name, Note, NoteData, Source, TimelockRange, Version};
 use crate::{Nicks, Pkh};
+use alloc::vec::Vec;
+use iris_ztd::{Bignum, Digest, Noun, ZSet};
 
 fn noun_words(n: &Noun) -> u64 {
     match n {
@@ -486,277 +480,280 @@ impl NounDecode for Hax {
     }
 }
 
+#[cfg(feature = "wasm")]
+use alloc::{boxed::Box, format, string::ToString};
+
 pub type TxId = Digest;
 
-#[derive(Debug, Clone, Default)]
-pub struct Spends(pub Vec<(Name, Spend)>);
+use serde::{Deserialize, Serialize};
 
-impl Spends {
-    pub fn fee(&self, per_word: Nicks) -> Nicks {
-        Spend::fee_for_many(self.0.iter().map(|v| &v.1), per_word)
-    }
+#[iris_ztd::noun_derive(
+    Debug,
+    Clone,
+    NounEncode,
+    NounDecode,
+    Serialize,
+    Deserialize,
+    tsify_wasm
+)]
+#[iris_ztd::wasm_noun_codec(no_derive, no_hash, noun_tag = "version")]
+pub enum Tx {
+    #[noun(tag = 0)]
+    V0(crate::v0::TxV0),
+    #[noun(tag = 1)]
+    V1(crate::v1::TxV1),
+}
 
-    pub fn split_witness(&self) -> (Spends, WitnessData) {
-        let mut spends = Spends(Vec::new());
-        let mut witness_data = WitnessData::default();
-        for (name, spend) in &self.0 {
-            let mut spend = spend.clone();
-            let witness = spend.witness.take_data();
-            spends.0.push((name.clone(), spend));
-            witness_data.data.insert(name.clone(), witness);
+impl Tx {
+    pub fn id(&self) -> TxId {
+        match self {
+            Tx::V0(tx) => tx.raw.id,
+            Tx::V1(tx) => tx.raw.id,
         }
-        (spends, witness_data)
     }
 
-    pub fn apply_witness(&self, witness_data: &WitnessData) -> Spends {
-        let mut spends = Spends::default();
-        for (name, spend) in &self.0 {
-            let mut spend = spend.clone();
-            // NOTE: this behavior does not match the wallet hoon, but if the worst that can happen is transaction remain invalid, it's ok.
-            if let Some(witness) = witness_data.data.get(name) {
-                spend.witness = witness.clone();
-            }
-            spends.0.push((name.clone(), spend));
+    pub fn version(&self) -> Version {
+        match self {
+            Tx::V0(_) => Version::V0,
+            Tx::V1(_) => Version::V1,
         }
-        spends
+    }
+
+    pub fn total_size(&self) -> u64 {
+        match self {
+            Tx::V0(tx) => tx.total_size,
+            Tx::V1(tx) => tx.total_size,
+        }
+    }
+
+    pub fn outputs(&self) -> Outputs {
+        match self {
+            Tx::V0(tx) => Outputs::V0(tx.outputs.clone()),
+            Tx::V1(tx) => Outputs::V1(tx.outputs.clone()),
+        }
+    }
+
+    pub fn raw(&self) -> RawTx {
+        match self {
+            Tx::V0(tx) => RawTx::V0(tx.raw.clone()),
+            Tx::V1(tx) => RawTx::V1(tx.raw.clone()),
+        }
+    }
+
+    pub fn input_names(&self) -> Vec<Name> {
+        match self {
+            Tx::V0(tx) => tx.raw.input_names(),
+            Tx::V1(tx) => tx.raw.input_names(),
+        }
+    }
+
+    pub fn total_fees(&self) -> Nicks {
+        match self {
+            Tx::V0(tx) => tx.raw.total_fees,
+            Tx::V1(tx) => tx.raw.spends.total_fees(),
+        }
     }
 }
 
-impl NounEncode for Spends {
-    fn to_noun(&self) -> Noun {
-        ZMap::from_iter(self.0.iter().cloned()).to_noun()
+#[iris_ztd::noun_derive(Debug, Clone, Serialize, Deserialize, tsify_wasm)]
+pub enum Outputs {
+    #[noun(tag = 0)]
+    V0(crate::v0::OutputsV0),
+    #[noun(tag = 1)]
+    V1(crate::v1::OutputsV1),
+}
+
+impl Outputs {
+    pub fn notes(&self) -> Vec<Note> {
+        match self {
+            Self::V0(o) => o.0.iter().map(|e| Note::V0(e.1.note.clone())).collect(),
+            Self::V1(o) => o.0.iter().map(|e| Note::V1(e.note.clone())).collect(),
+        }
     }
 }
 
-impl NounDecode for Spends {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let v: ZMap<Name, Spend> = NounDecode::from_noun(noun)?;
-        Some(Self(v.into_iter().collect::<Vec<_>>()))
-    }
+#[iris_ztd::noun_derive(
+    Debug,
+    Clone,
+    NounEncode,
+    NounDecode,
+    Serialize,
+    Deserialize,
+    tsify_wasm
+)]
+#[iris_ztd::wasm_noun_codec(no_derive, no_hash, noun_tag = "version")]
+pub enum RawTx {
+    #[noun(cell)]
+    V0(crate::v0::RawTxV0),
+    #[noun(embedded_tag)]
+    V1(crate::v1::RawTxV1),
 }
 
-impl HashableTrait for Spends {
-    fn hash(&self) -> Digest {
-        ZMap::from_iter(self.0.iter().cloned()).hash()
-    }
-}
-
-#[derive(Debug, Clone, NounEncode, NounDecode)]
-pub struct RawTx {
-    pub version: Version,
-    pub id: TxId,
-    pub spends: Spends,
-}
-
+#[iris_ztd_derive::wasm_member_methods]
 impl RawTx {
-    pub fn new(spends: Spends) -> Self {
-        let version = Version::V1;
-        let id = (&version, &spends).hash();
+    pub fn id(&self) -> TxId {
+        match self {
+            RawTx::V0(tx) => tx.id,
+            RawTx::V1(tx) => tx.id,
+        }
+    }
+
+    pub fn version(&self) -> Version {
+        match self {
+            RawTx::V0(_) => Version::V0,
+            RawTx::V1(_) => Version::V1,
+        }
+    }
+
+    pub fn outputs(
+        &self,
+        block_height: BlockHeight,
+        tx_engine_settings: TxEngineSettings,
+    ) -> Vec<Note> {
+        match self {
+            RawTx::V0(tx) => tx.outputs(block_height).into_iter().map(Note::V0).collect(),
+            RawTx::V1(tx) => tx
+                .outputs(block_height, tx_engine_settings)
+                .into_iter()
+                .map(Note::V1)
+                .collect(),
+        }
+    }
+
+    pub fn input_names(&self) -> Vec<Name> {
+        match self {
+            RawTx::V0(tx) => tx.input_names(),
+            RawTx::V1(tx) => tx.input_names(),
+        }
+    }
+
+    /// Returns the spend conditions for each input.
+    /// For V0 transactions, this is always None.
+    #[deprecated(
+        note = "This returns empty vec for V0 transactions, and will be removed in future release. Only kept for Iris wallet V0 support."
+    )]
+    pub fn input_spend_conditions(&self) -> Vec<crate::v1::SpendCondition> {
+        match self {
+            RawTx::V0(_) => Default::default(),
+            RawTx::V1(tx) => tx.input_spend_conditions(),
+        }
+    }
+
+    pub fn total_fees(&self) -> Nicks {
+        match self {
+            RawTx::V0(tx) => tx.total_fees,
+            RawTx::V1(tx) => tx.spends.total_fees(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+pub struct TxEngineSettings {
+    pub tx_engine_version: Version,
+    pub tx_engine_patch: u64,
+    pub min_fee: Nicks,
+    pub cost_per_word: Nicks,
+    pub witness_word_div: u64,
+}
+
+impl TxEngineSettings {
+    pub fn v1_with_word_cost(cost_per_word: Nicks) -> Self {
         Self {
-            version,
-            id,
-            spends,
+            tx_engine_version: Version::V1,
+            tx_engine_patch: 0,
+            min_fee: 256u64.into(),
+            cost_per_word,
+            witness_word_div: 1,
         }
     }
 
-    /// Calculate output notes from the transaction spends.
-    ///
-    /// This function combines seeds across multiple spends into one output note per-lock-root.
-    pub fn outputs(&self) -> Vec<Note> {
-        // We must convert to ZMap to preserve the order of the spends.
-        let spends = ZMap::from_iter(self.spends.0.iter().cloned());
-
-        let mut seeds_by_lock: BTreeMap<Digest, ZSet<Seed>> = BTreeMap::new();
-        for (_, spend) in spends {
-            for seed in spend.seeds.0.iter() {
-                seeds_by_lock
-                    .entry(seed.lock_root.hash())
-                    .or_default()
-                    .insert(seed.clone());
-            }
-        }
-
-        let mut outputs: Vec<Note> = Vec::new();
-
-        for (lock_root_hash, seeds) in seeds_by_lock {
-            let seeds: Vec<Seed> = seeds.into_iter().collect();
-
-            if seeds.is_empty() {
-                continue;
-            }
-
-            let total_assets: Nicks = seeds.iter().map(|s| s.gift).sum();
-
-            // Hoon code ends up taking the last note-data for the output note, by the tap order of z-set.
-            let note_data = seeds[seeds.len() - 1].note_data.clone();
-
-            let mut normalized_seeds_set: ZSet<Seed> = ZSet::new();
-            for seed in seeds {
-                let mut normalized_seed = seed.clone();
-                normalized_seed.output_source = None;
-                normalized_seeds_set.insert(normalized_seed);
-            }
-
-            let src_hash = normalized_seeds_set.hash();
-
-            let src = Source {
-                hash: src_hash,
-                is_coinbase: false,
-            };
-
-            let name = Name::new_v1(lock_root_hash, src);
-
-            let note = Note::new(
-                Version::V1,
-                // As opposed to `None`.
-                0,
-                name,
-                note_data,
-                total_assets,
-            );
-
-            outputs.push(note);
-        }
-
-        outputs
+    pub fn v1_default() -> Self {
+        Self::v1_with_word_cost((1 << 15).into())
     }
 
-    pub fn to_nockchain_tx(&self) -> NockchainTx {
-        let (spends, witness_data) = self.spends.split_witness();
-        NockchainTx {
-            version: Version::V1,
-            id: self.id,
-            spends,
-            display: TransactionDisplay::default(),
-            witness_data,
-        }
-    }
-
-    pub fn calc_id(&self) -> TxId {
-        (&1, &self.spends).hash()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct NockchainTx {
-    pub version: Version,
-    pub id: TxId,
-    pub spends: Spends,
-    pub display: TransactionDisplay,
-    pub witness_data: WitnessData,
-}
-
-impl NockchainTx {
-    pub fn to_raw_tx(&self) -> RawTx {
-        let spends = self.spends.apply_witness(&self.witness_data);
-
-        RawTx {
-            version: Version::V1,
-            id: self.id,
-            spends,
-        }
-    }
-
-    pub fn outputs(&self) -> Vec<Note> {
-        self.to_raw_tx().outputs()
-    }
-}
-
-impl NounEncode for NockchainTx {
-    fn to_noun(&self) -> Noun {
-        (
-            &self.version,
-            &self.id.to_string(),
-            &self.spends,
-            &self.display,
-            &self.witness_data,
-        )
-            .to_noun()
-    }
-}
-
-impl NounDecode for NockchainTx {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let (Version::V1, id, spends, display, witness_data) = NounDecode::from_noun(noun)? else {
-            return None;
-        };
-
-        Some(Self {
-            version: Version::V1,
-            id,
-            spends,
-            display,
-            witness_data,
-        })
-    }
-}
-
-#[derive(Debug, Default, Clone)]
-pub struct WitnessData {
-    pub data: ZMap<Name, Witness>,
-}
-
-impl NounEncode for WitnessData {
-    fn to_noun(&self) -> Noun {
-        (1, &self.data).to_noun()
-    }
-}
-
-impl NounDecode for WitnessData {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let (Version::V1, data) = NounDecode::from_noun(noun)? else {
-            return None;
-        };
-        Some(Self { data })
-    }
-}
-
-#[derive(Debug, Clone, NounEncode, NounDecode, Hashable)]
-pub struct LockMetadata {
-    pub lock: SpendCondition,
-    pub include_data: bool,
-}
-
-impl From<SpendCondition> for LockMetadata {
-    fn from(value: SpendCondition) -> Self {
+    pub fn v1_bythos_with_word_cost(cost_per_word: Nicks) -> Self {
         Self {
-            lock: value,
-            include_data: false,
+            tx_engine_version: Version::V1,
+            tx_engine_patch: 1,
+            min_fee: 256u64.into(),
+            cost_per_word,
+            witness_word_div: 4,
+        }
+    }
+
+    pub fn v1_bythos_default() -> Self {
+        Self::v1_bythos_with_word_cost((1 << 14).into())
+    }
+
+    pub fn v0_default() -> Self {
+        Self {
+            tx_engine_version: Version::V0,
+            tx_engine_patch: 0,
+            min_fee: 0u64.into(),
+            cost_per_word: 0u64.into(),
+            witness_word_div: 0,
         }
     }
 }
 
-#[derive(Default, Debug, Clone)]
-pub struct TransactionDisplay {
-    pub inputs: ZMap<Name, SpendCondition>,
-    pub outputs: ZMap<Digest, LockMetadata>,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+pub struct BlockchainConstants {
+    pub first_month_coinbase_min: u32,
+    pub coinbase_timelock_min: u32,
 }
 
-impl NounEncode for TransactionDisplay {
-    fn to_noun(&self) -> Noun {
-        ((1, &self.inputs), &self.outputs).to_noun()
+impl Default for BlockchainConstants {
+    fn default() -> Self {
+        Self::mainnet()
     }
 }
 
-impl NounDecode for TransactionDisplay {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let ((_, inputs), outputs): ((u32, _), _) = NounDecode::from_noun(noun)?;
-        Some(Self { inputs, outputs })
+#[iris_ztd_derive::wasm_member_methods]
+impl BlockchainConstants {
+    pub const fn mainnet() -> Self {
+        Self {
+            first_month_coinbase_min: 4383,
+            coinbase_timelock_min: 100,
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::vec;
-    use bip39::Mnemonic;
-    use iris_crypto::derive_master_key;
-    use iris_ztd::Hashable;
+/// A Nockchain Block
+///
+/// This includes necessary information about a block, but does not include transactions (only their IDs are provided).
+#[iris_ztd::noun_derive(
+    Debug,
+    Clone,
+    NounEncode,
+    NounDecode,
+    Hashable,
+    Serialize,
+    Deserialize,
+    tsify_wasm
+)]
+#[iris_ztd::wasm_noun_codec(with_prove, no_derive, noun_tag = "version")]
+pub enum Page {
+    #[noun(cell)]
+    V0(crate::v0::PageV0),
+    #[noun(tag = 1)]
+    V1(crate::v1::PageV1),
+}
 
-    fn check_hash(name: &str, h: &impl Hashable, exp: &str) {
-        assert_eq!(h.hash().to_string(), exp, "hash mismatch for {}", name);
+#[cfg_attr(feature = "wasm", iris_ztd::wasm_member_methods)]
+impl Page {
+    /// Compute coinbase notes of this block
+    pub fn coinbase(&self, consts: BlockchainConstants) -> Vec<Note> {
+        match self {
+            Self::V0(p) => p.coinbase(consts),
+            Self::V1(p) => p.coinbase(consts),
+        }
     }
 
+<<<<<<< HEAD
     #[test]
     fn check_tx_id() {
         let tx_bytes = hex::decode("7101047c379f8ffbd300a503081807fe895b2c89ca071070f500fb178f756a0f2020d6f8dc7daec0a90810b0c9e9665210f92bac0208cc4ede056771030906f8b1287cb3c0c9c3bb0104e24490e2e1c0b5880308a0748189a8b6669c037e93e53b87dd89cb6601f6d296b46758cb841f200ff63aba955efdeb0002d2eb569bde85c692017ec49e7977f2e1563e4080f1d0ecca4acbdcdbb82ae0c1ada1e30208302f6b7482f1300f061050861696e5aa69a20f20c01f65b4e7a52bac1b40802654a715537af51220f0cd44601ca826519b1a1760f7f0feb4a08cd6e701fe83df4a788b5dfe6280fe1575b988d421e10c20b0812cad8144baf40ff8932478f409ad48cd56c3c5b302082c143e2881c4867b06e89d0ff9cf9bb7f0f00002e3db85de4bcc71c3017ac4694ccfe96c253b800086a0bb8b404bed28e0671d5b29445746b317a0a7bd518a3ba839b603e4b38b0120593fd11ce0574d6a59738959d50610704c8929038c39540fb0374561f9170c5968800046a2cc5ca7cd4a3717205864ed680fe831abb77280409696393d40e02c6fcb18f05706c6b001821e18a6d400014cc33d35d03ff3c6d800818e30096a8040dd3f4e3d40e0d869de1ef0bd12d7a80191325833e0f23e8f316017380d75e0b3cd96ea8723f47084ae2c8080c28edfa6cd00287700012b7115916b50e7ce00b92117c2d849713e0610c06ff5f8b0b6c5b807fcf4e104e7329368c40c6800007380bf5feb45a2a01ab619a0675ed1c4b170e64403fce481d6412190c5c700bff236677af1d8771220c044d5424598bea49a65c3513a03a6f317c2612de17084061e002030ab0002e578b5eaa5f12db901febec80c05397433700081bec1757695bd8de000ff20075a70c1e87d13205040bf385d63fb1c5f008137df35146a01dded00bb003544c8641f3b0d20101aa5d5010051951e40a0cbb7e981d738b91bf0bbc7f2086a67adfc8dab862b66010f2d0c5f80bd9061b4d8dc9d0007e837a5793fb26948ca003feca5910f43d3e53c8000554e10b75366223aa057365e63c375d8898723b4714396bbd570f16cc81b2c40005bf9e71dd0e13e7bc4808ed12155060876b3f5f303047a46fda7013dcc9a590c1010a0caeb027fdf905e182048d7f3390f10f8d0dbaa07f4dd35de334040cd14e718d02bd0f1f4008114433a6e405f2574e181bfa30a0e1c8ed0c311bab221cb3d031a00801c4040010fb51fb88b0e3f8080bff571977ed87e6080ff362236762e30511b40c068f3d707b6c4751ef073cd9cdbe81d7090b36c384a0fdbb28723b4c3111a").unwrap();
@@ -920,5 +917,83 @@ mod tests {
             &tx.id,
             "3j4vkn72mcpVtQrTgNnYyoF3rDuYax3aebT5axu3Qe16jm9x2wLtepW",
         );
+=======
+    pub fn block_commitment(&self) -> Digest {
+        match self {
+            Self::V0(p) => p.block_commitment(),
+            Self::V1(p) => p.block_commitment(),
+        }
+    }
+}
+
+impl Page {
+    pub fn pow_mut(&mut self) -> &mut Option<Noun> {
+        match self {
+            Self::V0(p) => &mut p.pow,
+            Self::V1(p) => &mut p.pow,
+        }
+    }
+
+    pub fn version(&self) -> Version {
+        match self {
+            Self::V0(_) => Version::V0,
+            Self::V1(_) => Version::V1,
+        }
+    }
+
+    pub fn parent(&self) -> Digest {
+        match self {
+            Page::V0(p) => p.parent,
+            Page::V1(p) => p.parent,
+        }
+    }
+
+    pub fn tx_ids(&self) -> &ZSet<Digest> {
+        match self {
+            Page::V0(p) => &p.tx_ids,
+            Page::V1(p) => &p.tx_ids,
+        }
+    }
+
+    pub fn timestamp(&self) -> crate::v0::ChainTimestamp {
+        match self {
+            Page::V0(p) => p.timestamp,
+            Page::V1(p) => p.timestamp,
+        }
+    }
+
+    pub fn epoch_counter(&self) -> u32 {
+        match self {
+            Page::V0(p) => p.epoch_counter,
+            Page::V1(p) => p.epoch_counter,
+        }
+    }
+
+    pub fn target(&self) -> &Bignum {
+        match self {
+            Page::V0(p) => &p.target,
+            Page::V1(p) => &p.target,
+        }
+    }
+
+    pub fn accumulated_work(&self) -> &Bignum {
+        match self {
+            Page::V0(p) => &p.accumulated_work,
+            Page::V1(p) => &p.accumulated_work,
+        }
+    }
+
+    pub fn height(&self) -> &crate::BlockHeight {
+        match self {
+            Page::V0(p) => &p.height,
+            Page::V1(p) => &p.height,
+        }
+    }
+
+    pub fn msg(&self) -> &crate::v0::PageMsg {
+        match self {
+            Page::V0(p) => &p.msg,
+            Page::V1(p) => &p.msg,
+        }
     }
 }

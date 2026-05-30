@@ -1,12 +1,25 @@
 use alloc::boxed::Box;
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use alloc::{string::String, vec};
-use iris_ztd::{Digest, Hashable, Noun, NounDecode, NounEncode, ZSet};
+use alloc::{format, string::String, vec};
+use core::convert::TryFrom;
+use iris_ztd::{Digest, Either, Hashable, Noun, NounDecode, NounEncode, ZMap, ZSet};
 use iris_ztd_derive::{Hashable, NounDecode, NounEncode};
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
-use super::SpendCondition;
+/// 64-bit unsigned integer representing the number of assets.
+#[derive(Debug, Clone, Copy, Eq, Ord, NounEncode, NounDecode, Hashable)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(
+    feature = "wasm",
+    tsify(
+        into_wasm_abi,
+        from_wasm_abi,
+        type = "string & { __tag_nicks: undefined }"
+    )
+)]
+#[allow(clippy::derive_ord_xor_partial_ord)]
+pub struct Nicks(pub u64);
 
 /// Memo encoded as `(list @ux)` (a null-terminated list of byte atoms), matching nockchain CLI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,51 +94,166 @@ impl Pkh {
             m: 1,
             hashes: vec![hash],
         }
+=======
+impl Serialize for Nicks {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0.to_string())
+>>>>>>> upstream/main
     }
 }
 
-impl Hashable for Pkh {
-    fn hash(&self) -> Digest {
-        (self.m, ZSet::from_iter(&self.hashes)).hash()
+struct NicksVisitor;
+
+impl<'de> de::Visitor<'de> for NicksVisitor {
+    type Value = Nicks;
+
+    fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.write_str("a u64 encoded as a string")
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Nicks, E>
+    where
+        E: de::Error,
+    {
+        let n = v.parse::<u64>().map_err(E::custom)?;
+        Ok(Nicks(n))
+    }
+
+    fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Nicks, E>
+    where
+        E: de::Error,
+    {
+        self.visit_str(v)
     }
 }
 
-impl NounEncode for Pkh {
-    fn to_noun(&self) -> Noun {
-        (self.m, ZSet::from_iter(&self.hashes)).to_noun()
+impl<'de> Deserialize<'de> for Nicks {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_str(NicksVisitor)
     }
 }
 
-impl NounDecode for Pkh {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let (m, hashes): (u64, ZSet<Digest>) = NounDecode::from_noun(noun)?;
+impl Nicks {
+    pub fn saturating_sub(self, other: Self) -> Self {
+        Self(self.0.saturating_sub(other.0))
+    }
 
-        Some(Pkh {
-            m,
-            hashes: hashes.into_iter().collect(),
-        })
+    pub fn nocks(self) -> u64 {
+        self.0 / 65536
+    }
+
+    pub fn parts(self) -> (u64, Nicks) {
+        (self.0 / 65536, Nicks(self.0 % 65536))
     }
 }
 
-#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
-pub struct NoteDataEntry {
-    pub key: String,
-    pub val: Noun,
+impl core::fmt::Display for Nicks {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let (nocks, nicks) = self.parts();
+        write!(f, "{}.{}", nocks, nicks.0)
+    }
 }
 
-impl Hashable for NoteDataEntry {
-    fn hash(&self) -> Digest {
-        fn hash_noun(noun: &Noun) -> Digest {
-            match noun {
-                Noun::Atom(a) => {
-                    let u: u64 = a.try_into().unwrap();
-                    u.hash()
+macro_rules! impl_math_ops {
+    ($($t:ty),*) => {
+        $(
+            impl PartialEq<$t> for Nicks {
+                fn eq(&self, other: &$t) -> bool {
+                    self.0 == u64::from(*other)
                 }
-                Noun::Cell(left, right) => (hash_noun(left), hash_noun(right)).hash(),
             }
-        }
-        (self.key.as_str(), hash_noun(&self.val)).hash()
-    }
+            impl PartialOrd<$t> for Nicks {
+                fn partial_cmp(&self, other: &$t) -> Option<core::cmp::Ordering> {
+                    Some(self.cmp(&Nicks(u64::from(*other))))
+                }
+            }
+            impl core::ops::Add<$t> for Nicks {
+                type Output = Self;
+
+                fn add(self, other: $t) -> Self::Output {
+                    Self(self.0.strict_add(u64::from(other)))
+                }
+            }
+
+            impl core::ops::AddAssign<$t> for Nicks {
+                fn add_assign(&mut self, other: $t) {
+                    *self = *self + other;
+                }
+            }
+
+            impl core::ops::Sub<$t> for Nicks {
+                type Output = Self;
+
+                fn sub(self, other: $t) -> Self::Output {
+                    Self(self.0.strict_sub(u64::from(other)))
+                }
+            }
+
+            impl core::ops::SubAssign<$t> for Nicks {
+                fn sub_assign(&mut self, other: $t) {
+                    *self = *self - other;
+                }
+            }
+
+            impl core::ops::Mul<$t> for Nicks {
+                type Output = Self;
+
+                fn mul(self, other: $t) -> Self::Output {
+                    Self(self.0.strict_mul(u64::from(other)))
+                }
+            }
+
+            impl core::ops::MulAssign<$t> for Nicks {
+                fn mul_assign(&mut self, other: $t) {
+                    *self = *self * other;
+                }
+            }
+
+            impl core::ops::Div<$t> for Nicks {
+                type Output = Self;
+
+                fn div(self, other: $t) -> Self::Output {
+                    Self(self.0.strict_div(u64::from(other)))
+                }
+            }
+
+            impl core::ops::DivAssign<$t> for Nicks {
+                fn div_assign(&mut self, other: $t) {
+                    *self = *self / other;
+                }
+            }
+
+            impl core::ops::Rem<$t> for Nicks {
+                type Output = Self;
+
+                fn rem(self, other: $t) -> Self::Output {
+                    Self(self.0.strict_rem(u64::from(other)))
+                }
+            }
+
+            impl core::ops::RemAssign<$t> for Nicks {
+                fn rem_assign(&mut self, other: $t) {
+                    *self = *self % other;
+                }
+            }
+
+            impl core::iter::Sum<$t> for Nicks {
+                fn sum<I: Iterator<Item = $t>>(iter: I) -> Self {
+                    let mut sum = Self(0);
+                    for x in iter {
+                        sum += x;
+                    }
+                    sum
+                }
+            }
+        )*
+    };
 }
 
 pub const MEMO_KEY: &str = "memo";
@@ -205,50 +333,216 @@ pub struct Note {
     pub name: Name,
     pub note_data: NoteData,
     pub assets: Nicks,
+=======
+macro_rules! impl_from_ops {
+    ($($t:ty),*) => {
+        $(
+            impl From<$t> for Nicks {
+                fn from(value: $t) -> Self {
+                    Self(u64::from(value))
+                }
+            }
+            impl From<Nicks> for $t {
+                fn from(nicks: Nicks) -> Self {
+                    assert!(nicks.0 <= <$t>::MAX as u64);
+                    nicks.0 as $t
+                }
+            }
+        )*
+    };
+}
+
+impl_from_ops!(u64);
+impl_math_ops!(u64, Nicks);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[iris_ztd::wasm_noun_codec]
+#[serde(untagged)]
+pub enum Note {
+    V0(super::v0::NoteV0),
+    V1(super::v1::NoteV1),
 }
 
 impl Note {
-    pub fn new(
-        version: Version,
-        origin_page: BlockHeight,
-        name: Name,
-        note_data: NoteData,
-        assets: Nicks,
-    ) -> Self {
-        Self {
-            version,
-            origin_page,
-            name,
-            note_data,
-            assets,
+    pub fn version(&self) -> Version {
+        match self {
+            Note::V0(_) => Version::V0,
+            Note::V1(_) => Version::V1,
+        }
+    }
+
+    pub fn name(&self) -> Name {
+        match self {
+            Note::V0(n) => n.name,
+            Note::V1(n) => n.name,
+        }
+    }
+
+    pub fn assets(&self) -> Nicks {
+        match self {
+            Note::V0(n) => n.assets,
+            Note::V1(n) => n.assets,
+        }
+    }
+
+    pub fn origin_page(&self) -> BlockHeight {
+        match self {
+            Note::V0(n) => n.inner.origin_page,
+            Note::V1(n) => n.origin_page,
         }
     }
 }
 
-pub type Nicks = u64;
+impl Hashable for Note {
+    fn hash(&self) -> Digest {
+        match self {
+            Note::V0(n) => n.hash(),
+            Note::V1(n) => n.hash(),
+        }
+    }
 
-#[derive(Debug, Clone)]
-pub struct Balance(pub Vec<(Name, Note)>);
+    fn leaf_count(&self) -> usize {
+        match self {
+            Note::V0(n) => n.leaf_count(),
+            Note::V1(n) => n.leaf_count(),
+        }
+    }
 
-pub type BlockHeight = u64;
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        match self {
+            Note::V0(n) => n
+                .hashable_pair()
+                .map(|(a, b)| (Either::Left(a), Either::Left(b))),
+            Note::V1(n) => n
+                .hashable_pair()
+                .map(|(a, b)| (Either::Right(a), Either::Right(b))),
+        }
+    }
+}
 
-#[derive(Debug, Clone)]
+impl NounDecode for Note {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let Noun::Cell(left, _) = noun else {
+            return None;
+        };
+
+        match &**left {
+            Noun::Cell(_, _) => super::v0::NoteV0::from_noun(noun).map(Note::V0),
+            _ => super::v1::NoteV1::from_noun(noun).map(Note::V1),
+        }
+    }
+}
+
+impl NounEncode for Note {
+    fn to_noun(&self) -> Noun {
+        match self {
+            Note::V0(n) => n.to_noun(),
+            Note::V1(n) => n.to_noun(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode)]
+#[iris_ztd::wasm_noun_codec(no_hash)]
+pub struct Balance(pub ZMap<Name, Note>);
+
+// We are choosing 32-bit integer, so that it is a number in JS
+pub type BlockHeight = u32;
+
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode)]
+#[iris_ztd::wasm_noun_codec(no_hash)]
 pub struct BalanceUpdate {
     pub height: BlockHeight,
     pub block_id: Digest,
     pub notes: Balance,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExpectedVersion<const V: u32>;
+
+impl<const V: u32> Serialize for ExpectedVersion<V> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u32(V)
+    }
+}
+
+impl<'de, const V: u32> Deserialize<'de> for ExpectedVersion<V> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v = u32::deserialize(deserializer)?;
+        if v != V {
+            return Err(serde::de::Error::custom("Invalid version"));
+        }
+        Ok(ExpectedVersion)
+    }
+}
+
+impl<const V: u32> NounEncode for ExpectedVersion<V> {
+    fn to_noun(&self) -> Noun {
+        V.to_noun()
+    }
+}
+
+impl<const V: u32> NounDecode for ExpectedVersion<V> {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let v: u32 = NounDecode::from_noun(noun)?;
+
+        if v != V {
+            return None;
+        }
+
+        Some(ExpectedVersion)
+    }
+}
+
+impl<const V: u32> TryFrom<Version> for ExpectedVersion<V> {
+    type Error = ();
+
+    fn try_from(value: Version) -> Result<Self, Self::Error> {
+        if value as u32 != V {
+            return Err(());
+        }
+        Ok(ExpectedVersion)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd)]
+#[iris_ztd::wasm_noun_codec]
+#[cfg_attr(feature = "wasm", tsify(type = "0 | 1 | 2"))]
+#[repr(u32)]
 pub enum Version {
-    V0,
-    V1,
-    V2,
+    V0 = 0,
+    V1 = 1,
+    V2 = 2,
+}
+
+impl Serialize for Version {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u32(*self as u32)
+    }
+}
+
+impl<'de> Deserialize<'de> for Version {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let v = u32::deserialize(deserializer)?;
+        TryFrom::try_from(v).map_err(|_| serde::de::Error::custom("Invalid version"))
+    }
 }
 
 impl NounEncode for Version {
     fn to_noun(&self) -> Noun {
-        u32::from(self.clone()).to_noun()
+        u32::from(*self).to_noun()
     }
 }
 
@@ -267,39 +561,40 @@ impl NounDecode for Version {
 
 impl Hashable for Version {
     fn hash(&self) -> Digest {
-        match self {
-            Version::V0 => 0,
-            Version::V1 => 1,
-            Version::V2 => 2,
-        }
-        .hash()
+        (*self as u32 as u64).hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
     }
 }
 
 impl From<Version> for u32 {
     fn from(version: Version) -> Self {
-        match version {
-            Version::V0 => 0,
-            Version::V1 => 1,
-            Version::V2 => 2,
-        }
+        version as u32
     }
 }
 
-impl From<u32> for Version {
-    fn from(version: u32) -> Self {
-        match version {
-            0 => Version::V0,
-            1 => Version::V1,
-            2 => Version::V2,
-            _ => panic!("Invalid version"),
+impl TryFrom<u32> for Version {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Version::V0),
+            1 => Ok(Version::V1),
+            2 => Ok(Version::V2),
+            _ => Err(()),
         }
     }
 }
 
 #[derive(
     Clone,
-    Debug,
+    Copy,
     Hashable,
     NounEncode,
     NounDecode,
@@ -310,10 +605,23 @@ impl From<u32> for Version {
     Serialize,
     Deserialize,
 )]
+#[iris_ztd::wasm_noun_codec]
 pub struct Name {
     pub first: Digest,
     pub last: Digest,
     _sig: u64, // end-of-list marker
+}
+
+impl core::fmt::Display for Name {
+    fn fmt(&self, fmt: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(fmt, "[{} {}]", self.first, self.last)
+    }
+}
+
+impl core::fmt::Debug for Name {
+    fn fmt(&self, fmt: &mut core::fmt::Formatter) -> core::fmt::Result {
+        write!(fmt, "Name {{[{} {}]}}", self.first, self.last)
+    }
 }
 
 impl Name {
@@ -330,16 +638,32 @@ impl Name {
         let last = (true, source.hash(), 0).hash();
         Self::new(first, last)
     }
+
+    pub fn new_v0(
+        owners: super::v0::Sig,
+        source: Source,
+        timelock: super::v0::TimelockIntent,
+    ) -> Self {
+        let first = (true, timelock.tim.is_some(), &owners, 0).hash();
+        let last = (true, &source, &timelock.hash(), 0).hash();
+        Self::new(first, last)
+    }
 }
 
-#[derive(Debug, Clone, Hashable, NounEncode, NounDecode)]
+#[derive(
+    Debug, Clone, Copy, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq,
+)]
+#[iris_ztd::wasm_noun_codec]
 pub struct Source {
     pub hash: Digest,
     pub is_coinbase: bool,
 }
 
 /// Timelock range (for both absolute and relative constraints)
-#[derive(Debug, Clone, Hashable, NounEncode, NounDecode)]
+#[derive(
+    Debug, Clone, Copy, Hashable, NounEncode, NounDecode, Serialize, Deserialize, PartialEq, Eq,
+)]
+#[iris_ztd::wasm_noun_codec]
 pub struct TimelockRange {
     pub min: Option<BlockHeight>,
     pub max: Option<BlockHeight>,

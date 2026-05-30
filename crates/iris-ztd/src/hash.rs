@@ -1,19 +1,247 @@
-use alloc::{fmt, string::String, vec, vec::Vec};
-use ibig::ops::DivRem;
-use ibig::UBig;
+#[cfg(feature = "wasm")]
+use alloc::{boxed::Box, format, string::ToString};
+use core::fmt;
+use crypto_bigint::{nlimbs, NonZero, Uint};
+use either::Either;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     belt::{Belt, PRIME},
+    crypto::cheetah::CheetahPoint,
     tip5::hash::{hash_fixed, hash_varlen},
-    Noun, Zeroable,
 };
+
+#[cfg(feature = "alloc")]
+use crate::Noun;
+#[cfg(feature = "alloc")]
+use crate::Zeroable;
+#[cfg(feature = "alloc")]
+use alloc::{string::String, vec, vec::Vec};
+#[cfg(feature = "alloc")]
+use ibig::{ops::DivRem, UBig};
+
+#[cfg(feature = "alloc")]
+pub fn belts_from_bytes(bytes: &[u8]) -> Vec<Belt> {
+    belts_from_ubig(UBig::from_be_bytes(bytes))
+}
+
+#[cfg(feature = "alloc")]
+pub fn belts_from_ubig(num: UBig) -> Vec<Belt> {
+    let p = UBig::from(PRIME);
+    let mut belts = Vec::new();
+    let mut remainder = num;
+    let zero = UBig::from(0u64);
+
+    while remainder != zero {
+        let (quotient, rem) = remainder.div_rem(&p);
+        belts.push(Belt(rem.try_into().unwrap()));
+        remainder = quotient;
+    }
+
+    belts
+}
+
+#[cfg(feature = "alloc")]
+pub fn belts_to_bytes(belts: &[Belt]) -> Vec<u8> {
+    belts_to_ubig(belts).to_be_bytes()
+}
+
+#[cfg(feature = "alloc")]
+pub fn belts_to_ubig(belts: &[Belt]) -> UBig {
+    let p = UBig::from(PRIME);
+    let mut num = UBig::from(0u64);
+    let mut power = UBig::from(1u64);
+    for belt in belts {
+        num += UBig::from(belt.0) * &power;
+        power *= &p;
+    }
+    num
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Base58Belts<const N: usize>(pub [Belt; N]);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+impl<const N: usize> Serialize for Base58Belts<N>
+where
+    Self: Limbable,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let bytes = self.to_bytes_arr();
+        let mut buf = <Self as Limbable>::bs58_buf();
+        let bytes = bytes.as_ref();
+        let start = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
+        let bytes = &bytes[start..];
+        let len = bs58::encode(bytes)
+            .onto(buf.as_mut())
+            .map_err(serde::ser::Error::custom)?;
+        let s = core::str::from_utf8(&buf.as_ref()[..len]).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(s)
+    }
+}
+
+impl<'de, const N: usize> Deserialize<'de> for Base58Belts<N>
+where
+    Self: Limbable,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Base58Visitor<const M: usize>;
+
+        impl<'de, const M: usize> serde::de::Visitor<'de> for Base58Visitor<M>
+        where
+            Base58Belts<M>: Limbable,
+        {
+            type Value = Base58Belts<M>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a base58-encoded string")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Base58Belts::<M>::try_from(v).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(Base58Visitor::<N>)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
+#[iris_ztd_derive::wasm_noun_codec]
+#[cfg_attr(feature = "wasm", tsify(type = "string & { __tag_digest: undefined }"))]
+#[serde(from = "Base58Belts<5>")]
+#[serde(into = "Base58Belts<5>")]
 pub struct Digest(pub [Belt; 5]);
+
+#[cfg(feature = "alloc")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct HashableList<T>(pub T);
+
+/// Convert big-endian bytes of any length to u64, asserting no overflow.
+fn be_bytes_to_u64(bytes: &[u8]) -> u64 {
+    if bytes.len() > 8 {
+        assert!(
+            bytes[..bytes.len() - 8].iter().all(|&x| x == 0),
+            "value overflows u64"
+        );
+    }
+    let mut buf = [0u8; 8];
+    let start = 8usize.saturating_sub(bytes.len());
+    buf[start..].copy_from_slice(&bytes[bytes.len().saturating_sub(8)..]);
+    u64::from_be_bytes(buf)
+}
+
+pub trait Limbable {
+    const LIMBS: usize;
+    const BYTES: usize;
+    /// Buffer size for base58 encode/decode. Must be >= ceil(BYTES * 1.366).
+    const BS58_BUF_SIZE: usize;
+    type UintType: From<u64>
+        + core::ops::MulAssign
+        + core::ops::Mul<Output = Self::UintType>
+        + core::ops::AddAssign
+        + Copy
+        + core::fmt::Debug;
+    type BytesArray: AsRef<[u8]>
+        + AsMut<[u8]>
+        + core::ops::Index<usize, Output = u8>
+        + core::ops::IndexMut<usize, Output = u8>;
+    type Bs58Buf: AsRef<[u8]> + AsMut<[u8]>;
+    fn bs58_buf() -> Self::Bs58Buf;
+    fn to_be_bytes(uint: Self::UintType) -> Self::BytesArray;
+    fn from_be_bytes(bytes: &[u8]) -> Self::UintType;
+    fn div_rem(a: Self::UintType, b: Self::UintType) -> (Self::UintType, Self::UintType);
+    fn is_zero(val: &Self::UintType) -> bool;
+}
+
+impl Limbable for Base58Belts<5> {
+    const LIMBS: usize = nlimbs!(64 * 5);
+    const BYTES: usize = 8 * 5;
+    const BS58_BUF_SIZE: usize = Self::BYTES * 2;
+    type UintType = Uint<{ Self::LIMBS }>;
+    type BytesArray = [u8; Self::BYTES];
+    type Bs58Buf = [u8; Self::BS58_BUF_SIZE];
+    fn bs58_buf() -> Self::Bs58Buf {
+        [0u8; Self::BS58_BUF_SIZE]
+    }
+    fn to_be_bytes(uint: Self::UintType) -> [u8; Self::BYTES] {
+        uint.to_be_bytes()
+    }
+    fn from_be_bytes(bytes: &[u8]) -> Self::UintType {
+        let mut buf = [0u8; Self::BYTES];
+        buf[Self::BYTES - bytes.len()..].copy_from_slice(bytes);
+        Self::UintType::from_be_slice(&buf)
+    }
+    fn div_rem(a: Self::UintType, b: Self::UintType) -> (Self::UintType, Self::UintType) {
+        let nz = NonZero::new(b).expect("division by zero");
+        a.div_rem(&nz)
+    }
+    fn is_zero(val: &Self::UintType) -> bool {
+        *val == Self::UintType::from(0u64)
+    }
+}
+
+impl Limbable for Base58Belts<6> {
+    const LIMBS: usize = nlimbs!(64 * 6);
+    const BYTES: usize = 8 * 6;
+    const BS58_BUF_SIZE: usize = Self::BYTES * 2;
+    type UintType = Uint<{ Self::LIMBS }>;
+    type BytesArray = [u8; Self::BYTES];
+    type Bs58Buf = [u8; Self::BS58_BUF_SIZE];
+    fn bs58_buf() -> Self::Bs58Buf {
+        [0u8; Self::BS58_BUF_SIZE]
+    }
+    fn to_be_bytes(uint: Self::UintType) -> [u8; Self::BYTES] {
+        uint.to_be_bytes()
+    }
+    fn from_be_bytes(bytes: &[u8]) -> Self::UintType {
+        let mut buf = [0u8; Self::BYTES];
+        buf[Self::BYTES - bytes.len()..].copy_from_slice(bytes);
+        Self::UintType::from_be_slice(&buf)
+    }
+    fn div_rem(a: Self::UintType, b: Self::UintType) -> (Self::UintType, Self::UintType) {
+        let nz = NonZero::new(b).expect("division by zero");
+        a.div_rem(&nz)
+    }
+    fn is_zero(val: &Self::UintType) -> bool {
+        *val == Self::UintType::from(0u64)
+    }
+}
+
+impl Limbable for Base58Belts<7> {
+    const LIMBS: usize = nlimbs!(64 * 7);
+    const BYTES: usize = 8 * 7;
+    const BS58_BUF_SIZE: usize = Self::BYTES * 2;
+    type UintType = Uint<{ Self::LIMBS }>;
+    type BytesArray = [u8; Self::BYTES];
+    type Bs58Buf = [u8; Self::BS58_BUF_SIZE];
+    fn bs58_buf() -> Self::Bs58Buf {
+        [0u8; Self::BS58_BUF_SIZE]
+    }
+    fn to_be_bytes(uint: Self::UintType) -> [u8; Self::BYTES] {
+        uint.to_be_bytes()
+    }
+    fn from_be_bytes(bytes: &[u8]) -> Self::UintType {
+        let mut buf = [0u8; Self::BYTES];
+        buf[Self::BYTES - bytes.len()..].copy_from_slice(bytes);
+        Self::UintType::from_be_slice(&buf)
+    }
+    fn div_rem(a: Self::UintType, b: Self::UintType) -> (Self::UintType, Self::UintType) {
+        let nz = NonZero::new(b).expect("division by zero");
+        a.div_rem(&nz)
+    }
+    fn is_zero(val: &Self::UintType) -> bool {
+        *val == Self::UintType::from(0u64)
+    }
+}
 
 impl From<[u64; 5]> for Digest {
     fn from(belts: [u64; 5]) -> Self {
@@ -39,8 +267,52 @@ impl<const N: usize> From<[u64; N]> for Base58Belts<N> {
     }
 }
 
+impl<const N: usize> Base58Belts<N>
+where
+    Self: Limbable,
+{
+    pub fn to_uint(&self) -> <Self as Limbable>::UintType {
+        let p = <Self as Limbable>::UintType::from(PRIME);
+        let mut result = <Self as Limbable>::UintType::from(0u64);
+        let mut power = <Self as Limbable>::UintType::from(1u64);
+
+        for belt in &self.0 {
+            result += <Self as Limbable>::UintType::from(belt.0) * power;
+            power *= p;
+        }
+
+        result
+    }
+
+    pub fn to_bytes_arr(&self) -> <Self as Limbable>::BytesArray {
+        Self::to_be_bytes(self.to_uint())
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let p = <Self as Limbable>::UintType::from(PRIME);
+        let num = <Self as Limbable>::from_be_bytes(bytes);
+
+        let mut belts = [Belt(0); N];
+        let mut remainder = num;
+
+        for b in &mut belts[..] {
+            let (quotient, rem) = <Self as Limbable>::div_rem(remainder, p);
+            *b = Belt(be_bytes_to_u64(Self::to_be_bytes(rem).as_ref()));
+            remainder = quotient;
+        }
+
+        assert!(
+            <Self as Limbable>::is_zero(&remainder),
+            "Invalid belt count"
+        );
+
+        Base58Belts(belts)
+    }
+}
+
+#[cfg(feature = "alloc")]
 impl<const N: usize> Base58Belts<N> {
-    pub fn to_atom(&self) -> UBig {
+    pub fn to_ubig(&self) -> UBig {
         let p = UBig::from(PRIME);
         let mut result = UBig::from(0u64);
         let mut power = UBig::from(1u64);
@@ -54,7 +326,7 @@ impl<const N: usize> Base58Belts<N> {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let res = self.to_atom();
+        let res = self.to_ubig();
         let res_bytes = res.to_be_bytes();
         let expected_len = N * 8; // Each belt is 8 bytes
 
@@ -63,32 +335,13 @@ impl<const N: usize> Base58Belts<N> {
         bytes[start_offset..].copy_from_slice(&res_bytes);
         bytes
     }
-
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        let p = UBig::from(PRIME);
-        let num = UBig::from_be_bytes(bytes);
-
-        let mut belts = Vec::with_capacity(N);
-        let mut remainder = num;
-
-        for _ in 0..N {
-            let (quotient, rem) = remainder.div_rem(&p);
-            belts.push(Belt(rem.try_into().unwrap()));
-            remainder = quotient;
-        }
-
-        // Convert Vec to array
-        let array: [Belt; N] = belts
-            .try_into()
-            .unwrap_or_else(|_| panic!("Invalid belt count"));
-        Base58Belts(array)
-    }
 }
 
 // Digest-specific implementations that delegate to Base58Belts<5>
+#[cfg(feature = "alloc")]
 impl Digest {
-    pub fn to_atom(&self) -> UBig {
-        Base58Belts::<5>::from(*self).to_atom()
+    pub fn to_ubig(&self) -> UBig {
+        Base58Belts::<5>::from(*self).to_ubig()
     }
 
     pub fn to_bytes(&self) -> [u8; 40] {
@@ -103,23 +356,52 @@ impl Digest {
     }
 }
 
-// Display and TryFrom implementations for Base58Belts<N>
-impl<const N: usize> fmt::Display for Base58Belts<N> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let bytes = self.to_bytes();
-        write!(f, "{}", bs58::encode(bytes).into_string())
+#[cfg(feature = "alloc")]
+#[iris_ztd_derive::wasm_member_methods]
+impl Digest {
+    pub fn to_atom(&self) -> Noun {
+        Noun::Atom(self.to_ubig())
+    }
+
+    pub fn from_atom(atom: Noun) -> Self {
+        let Noun::Atom(atom) = atom else {
+            panic!("not an atom");
+        };
+        Self::from_bytes(&atom.to_be_bytes())
     }
 }
 
-impl<const N: usize> TryFrom<&str> for Base58Belts<N> {
+// Display and TryFrom implementations for Base58Belts<N> (no-alloc)
+impl<const N: usize> fmt::Display for Base58Belts<N>
+where
+    Self: Limbable,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = self.to_bytes_arr();
+        let bytes = bytes.as_ref();
+        let start = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len());
+        let bytes = &bytes[start..];
+        let mut buf = <Self as Limbable>::bs58_buf();
+        let len = bs58::encode(bytes)
+            .onto(buf.as_mut())
+            .map_err(|_| fmt::Error)?;
+        let s = core::str::from_utf8(&buf.as_ref()[..len]).map_err(|_| fmt::Error)?;
+        f.write_str(s)
+    }
+}
+
+impl<const N: usize> TryFrom<&str> for Base58Belts<N>
+where
+    Self: Limbable,
+{
     type Error = &'static str;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Ok(Base58Belts::from_bytes(
-            &bs58::decode(s)
-                .into_vec()
-                .map_err(|_| "unable to decode base58 belts")?,
-        ))
+        let mut buf = <Self as Limbable>::bs58_buf();
+        let len = bs58::decode(s)
+            .onto(buf.as_mut())
+            .map_err(|_| "unable to decode base58 belts")?;
+        Ok(Base58Belts::from_bytes(&buf.as_ref()[..len]))
     }
 }
 
@@ -127,6 +409,12 @@ impl<const N: usize> TryFrom<&str> for Base58Belts<N> {
 impl fmt::Display for Digest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Base58Belts::<5>::from(*self).fmt(f)
+    }
+}
+
+impl fmt::Debug for Digest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Digest({})", self)
     }
 }
 
@@ -138,21 +426,33 @@ impl TryFrom<&str> for Digest {
     }
 }
 
+#[cfg(feature = "alloc")]
 pub fn hash_noun(leaves: &[Belt], dyck: &[Belt]) -> Digest {
     let mut combined = Vec::with_capacity(1 + leaves.len() + dyck.len());
     combined.push(Belt(leaves.len() as u64));
     combined.extend_from_slice(leaves);
     combined.extend_from_slice(dyck);
-    Digest(hash_varlen(&mut combined).map(Belt))
+    Digest(hash_varlen(&combined).map(Belt))
 }
 
 pub trait Hashable {
     fn hash(&self) -> Digest;
+    fn leaf_count(&self) -> usize;
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)>;
 }
 
 impl Hashable for Belt {
     fn hash(&self) -> Digest {
-        hash_noun(&[*self], &[])
+        let v = [Belt(1), *self];
+        Digest(hash_varlen(&v).map(Belt))
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
     }
 }
 
@@ -160,11 +460,41 @@ impl Hashable for u64 {
     fn hash(&self) -> Digest {
         Belt(*self).hash()
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
+}
+
+impl Hashable for u32 {
+    fn hash(&self) -> Digest {
+        Belt(*self as u64).hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
 impl Hashable for usize {
     fn hash(&self) -> Digest {
         (*self as u64).hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
     }
 }
 
@@ -172,11 +502,27 @@ impl Hashable for i32 {
     fn hash(&self) -> Digest {
         (*self as u64).hash()
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
 impl Hashable for bool {
     fn hash(&self) -> Digest {
         (if *self { 0 } else { 1 }).hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
     }
 }
 
@@ -184,11 +530,54 @@ impl Hashable for Digest {
     fn hash(&self) -> Digest {
         *self
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
-impl<T: Hashable> Hashable for &T {
+impl<T: Hashable + ?Sized> Hashable for &T {
     fn hash(&self) -> Digest {
         (**self).hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        (**self).leaf_count()
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        (**self).hashable_pair()
+    }
+}
+
+impl<T: Hashable, P: Hashable> Hashable for Either<T, P> {
+    fn hash(&self) -> Digest {
+        match self {
+            Either::Left(v) => v.hash(),
+            Either::Right(v) => v.hash(),
+        }
+    }
+
+    fn leaf_count(&self) -> usize {
+        match self {
+            Either::Left(v) => v.leaf_count(),
+            Either::Right(v) => v.leaf_count(),
+        }
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        match self {
+            Either::Left(v) => v
+                .hashable_pair()
+                .map(|(a, b)| (Either::Left(a), Either::Left(b))),
+            Either::Right(v) => v
+                .hashable_pair()
+                .map(|(a, b)| (Either::Right(a), Either::Right(b))),
+        }
     }
 }
 
@@ -199,13 +588,39 @@ impl<T: Hashable> Hashable for Option<T> {
             Some(v) => (&0, v).hash(),
         }
     }
+
+    fn leaf_count(&self) -> usize {
+        match self {
+            None => 1,
+            Some(v) => (&0, v).leaf_count(),
+        }
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        self.as_ref().map(|v| (0, v))
+    }
 }
 
+#[cfg(feature = "alloc")]
 impl<T: Hashable> Hashable for Zeroable<T> {
     fn hash(&self) -> Digest {
         match &self.0 {
             None => 0.hash(),
             Some(v) => v.hash(),
+        }
+    }
+
+    fn leaf_count(&self) -> usize {
+        match &self.0 {
+            None => 1,
+            Some(v) => v.leaf_count(),
+        }
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        match &self.0 {
+            None => None,
+            Some(v) => v.hashable_pair(),
         }
     }
 }
@@ -214,6 +629,14 @@ impl Hashable for () {
     fn hash(&self) -> Digest {
         0.hash()
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
 macro_rules! impl_hashable_for_tuple {
@@ -221,10 +644,18 @@ macro_rules! impl_hashable_for_tuple {
     ($T0:ident, $T1:ident) => {
         impl<$T0: Hashable, $T1: Hashable> Hashable for ($T0, $T1) {
             fn hash(&self) -> Digest {
-                let mut belts = Vec::<Belt>::with_capacity(10);
-                belts.extend_from_slice(&self.0.hash().0);
-                belts.extend_from_slice(&self.1.hash().0);
+                let mut belts = [Belt(0); 10];
+                belts[..5].copy_from_slice(&self.0.hash().0);
+                belts[5..].copy_from_slice(&self.1.hash().0);
                 Digest(hash_fixed(&mut belts).map(|u| Belt(u)))
+            }
+
+            fn leaf_count(&self) -> usize {
+                self.0.leaf_count() + self.1.leaf_count()
+            }
+
+            fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+                Some((&self.0, &self.1))
             }
         }
     };
@@ -235,13 +666,25 @@ macro_rules! impl_hashable_for_tuple {
                 let ($T, $($U),*) = self;
                 ($T, ($($U,)*)).hash()
             }
+
+            fn leaf_count(&self) -> usize {
+                #[allow(non_snake_case)]
+                let ($T, $($U),*) = self;
+                $T.leaf_count() + ($($U.leaf_count()),*).leaf_count()
+            }
+
+            fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+                #[allow(non_snake_case)]
+                let ($T, $($U),*) = self;
+                Some(($T, ($($U,)*)))
+            }
         }
 
         impl_hashable_for_tuple!($($U),*);
     };
 }
 
-impl_hashable_for_tuple!(A, B, C, D, E, F, G, H, I, J, K);
+impl_hashable_for_tuple!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T);
 
 impl<T: Hashable> Hashable for &[T] {
     fn hash(&self) -> Digest {
@@ -252,8 +695,17 @@ impl<T: Hashable> Hashable for &[T] {
             (first.hash(), rest.hash()).hash()
         }
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
+#[cfg(feature = "alloc")]
 impl<T: Hashable> Hashable for Vec<T> {
     fn hash(&self) -> Digest {
         fn hash_slice<T: Hashable>(arr: &[T]) -> Digest {
@@ -264,6 +716,40 @@ impl<T: Hashable> Hashable for Vec<T> {
         }
         hash_slice(self.as_slice())
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<T: core::ops::Deref<Target = [O]>, O: Hashable> Hashable for HashableList<T> {
+    fn hash(&self) -> Digest {
+        let hashes = &self.0.iter().map(|v| v.hash()).collect::<Vec<_>>();
+
+        let mut belts = vec![];
+        belts.push(Belt(hashes.len() as u64 * 5 + 1));
+        belts.extend(hashes.iter().flat_map(|b| b.0));
+        belts.push(Belt(0));
+
+        for _ in 0..hashes.len() {
+            belts.extend([0, 0, 1, 0, 1, 0, 1, 0, 1, 1].map(Belt));
+        }
+
+        Digest(hash_varlen(&belts).map(Belt))
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
 impl Hashable for &str {
@@ -273,8 +759,17 @@ impl Hashable for &str {
             .fold(0u64, |acc, (i, byte)| acc | ((byte as u64) << (i * 8)))
             .hash()
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
+#[cfg(feature = "alloc")]
 impl Hashable for String {
     fn hash(&self) -> Digest {
         self.bytes()
@@ -282,8 +777,17 @@ impl Hashable for String {
             .fold(0u64, |acc, (i, byte)| acc | ((byte as u64) << (i * 8)))
             .hash()
     }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
+#[cfg(feature = "alloc")]
 impl Hashable for Noun {
     fn hash(&self) -> Digest {
         fn visit(noun: &Noun, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {
@@ -302,5 +806,65 @@ impl Hashable for Noun {
         let mut dyck = Vec::new();
         visit(self, &mut leaves, &mut dyck);
         hash_noun(&leaves, &dyck)
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
+}
+
+impl Hashable for CheetahPoint {
+    fn hash(&self) -> Digest {
+        // This is equivalent to converting CheetahPoint to noun, and then hashing that.
+        let dyck = [
+            0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1,
+        ]
+        .map(Belt);
+        let mut leaves = [Belt(0); 6 + 6 + 1];
+        leaves[..6].copy_from_slice(&self.x.0);
+        leaves[6..12].copy_from_slice(&self.y.0);
+        leaves[12] = Belt(!self.inf as u64);
+        let mut hash = [Belt(0); 1 + 24 + 6 + 6 + 1];
+        hash[0] = Belt(leaves.len() as u64);
+        hash[1..14].copy_from_slice(&leaves);
+        hash[14..38].copy_from_slice(&dyck);
+        Digest(hash_varlen(&hash).map(Belt))
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    #[test]
+    fn test_vec_hash() {
+        let vec = vec![0u64, 1u64];
+        let vec = HashableList(vec);
+        assert_eq!(
+            vec.hash().to_string(),
+            "5F6UZhcWYBDSJ3CvevfiABhdSjc9qNh29KcH5rs8FJB4NNPHRn3oqQJ"
+        );
+    }
+
+    #[test]
+    fn belts_and_ubig_round_trip_multi_belt_atom() {
+        let atom = UBig::from(PRIME) * UBig::from(9u64) + UBig::from(7u64);
+        let belts = belts_from_ubig(atom.clone());
+
+        assert_eq!(belts, vec![Belt(7), Belt(9)]);
+        assert_eq!(belts_to_ubig(&belts), atom);
     }
 }

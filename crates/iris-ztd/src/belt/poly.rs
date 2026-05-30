@@ -1,7 +1,7 @@
-extern crate alloc;
 use crate::Belt;
+#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
-use core::slice::Iter;
+use arrayvec::ArrayVec;
 
 pub trait Element: Clone {
     fn is_zero(&self) -> bool;
@@ -41,11 +41,6 @@ pub trait Poly {
     fn len(&self) -> usize {
         self.data().len()
     }
-
-    #[inline(always)]
-    fn iter(&self) -> Iter<'_, Self::Element> {
-        self.data().iter()
-    }
 }
 
 impl<T> Poly for &[T]
@@ -59,7 +54,19 @@ where
     }
 }
 
+#[cfg(feature = "alloc")]
 impl<T> Poly for Vec<T>
+where
+    T: Element,
+{
+    type Element = T;
+    #[inline(always)]
+    fn data(&self) -> &[T] {
+        self.as_slice()
+    }
+}
+
+impl<T, const MAX_POLY_SIZE: usize> Poly for ArrayVec<T, MAX_POLY_SIZE>
 where
     T: Element,
 {

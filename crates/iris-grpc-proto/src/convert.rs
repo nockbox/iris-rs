@@ -1,22 +1,40 @@
+use iris_nockchain_types::tx_engine::{v0, v1};
+use iris_nockchain_types::v0::LegacySignature;
+use iris_nockchain_types::v1::{
+    Hax, LockMerkleProof, LockMerkleProofFull, LockMerkleProofStub, LockPrimitive, LockRoot,
+    LockTim, Pkh, PkhSignature, SeedV1 as Seed, SeedsV1 as Seeds, Spend0V1 as Spend0,
+    Spend1V1 as Spend1, SpendCondition, SpendV1 as Spend, Witness,
+};
 use iris_nockchain_types::*;
-use iris_ztd::{jam, Belt, Digest, Noun};
+use iris_ztd::{jam, tas, Belt, Digest, MerkleProof, Noun, ZMap, ZSet, U256};
 
 use crate::common::{ConversionError, Required};
 use crate::pb::common::v1::{
     BlockHeight as PbBlockHeight, Hash as PbHash, Name as PbName, Nicks as PbNicks,
-    NoteVersion as PbNoteVersion, Source as PbSource,
+    NoteVersion as PbNoteVersion, SchnorrSignature as PbSchnorrSignature,
+    Signature as PbLegacySignature, SignatureEntry as PbSignatureEntry, Source as PbSource,
     TimeLockRangeAbsolute as PbTimeLockRangeAbsolute,
     TimeLockRangeRelative as PbTimeLockRangeRelative,
+};
+use crate::pb::common::v1::{
+    Lock as PbLegacyLock, Note as PbNoteV0, SchnorrPubkey as PbSchnorrPubkey,
+    TimeLockIntent as PbTimeLockIntent,
 };
 use crate::pb::common::v2::{
     lock_primitive, spend, Balance as PbBalance, BalanceEntry as PbBalanceEntry,
     BurnLock as PbBurnLock, HaxLock as PbHaxLock, HaxPreimage as PbHaxPreimage,
-    LockMerkleProof as PbLockMerkleProof, LockPrimitive as PbLockPrimitive, LockTim as PbLockTim,
-    MerkleProof as PbMerkleProof, Note as PbNote, NoteData as PbNoteData,
-    NoteDataEntry as PbNoteDataEntry, NoteV1 as PbNoteV1, PkhLock as PbPkhLock,
-    PkhSignature as PbPkhSignature, RawTransaction as PbRawTransaction, Seed as PbSeed,
-    Spend as PbSpend, SpendCondition as PbSpendCondition, SpendEntry as PbSpendEntry,
-    Witness as PbWitness, WitnessSpend as PbWitnessSpend,
+    LegacySpend as PbLegacySpend, LockMerkleProof as PbLockMerkleProof,
+    LockPrimitive as PbLockPrimitive, LockTim as PbLockTim, MerkleProof as PbMerkleProof,
+    Note as PbNote, NoteData as PbNoteData, NoteDataEntry as PbNoteDataEntry, NoteV1 as PbNoteV1,
+    PkhLock as PbPkhLock, PkhSignature as PbPkhSignature, RawTransaction as PbRawTransaction,
+    Seed as PbSeed, Spend as PbSpend, SpendCondition as PbSpendCondition,
+    SpendEntry as PbSpendEntry, Witness as PbWitness, WitnessSpend as PbWitnessSpend,
+};
+
+// V0 protobuf types from v1/blockchain.proto
+use crate::pb::common::v1::{
+    Input as PbInputV0, NamedInput as PbNamedInputV0, RawTransaction as PbRawTransactionV0,
+    Seed as PbSeedV0, Spend as PbSpendV0,
 };
 
 // =========================
@@ -97,13 +115,13 @@ impl TryFrom<PbName> for Name {
 
 impl From<Nicks> for PbNicks {
     fn from(n: Nicks) -> Self {
-        PbNicks { value: n }
+        PbNicks { value: n.0 }
     }
 }
 
 impl From<PbNicks> for Nicks {
     fn from(n: PbNicks) -> Self {
-        n.value
+        Nicks(n.value)
     }
 }
 
@@ -113,21 +131,22 @@ impl From<Version> for PbNoteVersion {
     }
 }
 
-impl From<PbNoteVersion> for Version {
-    fn from(v: PbNoteVersion) -> Self {
-        Version::from(v.value)
+impl TryFrom<PbNoteVersion> for Version {
+    type Error = ConversionError;
+    fn try_from(v: PbNoteVersion) -> Result<Self, Self::Error> {
+        Version::try_from(v.value).map_err(|_| ConversionError::Invalid("Invalid NoteVersion"))
     }
 }
 
 impl From<BlockHeight> for PbBlockHeight {
     fn from(h: BlockHeight) -> Self {
-        PbBlockHeight { value: h }
+        PbBlockHeight { value: h as u64 }
     }
 }
 
 impl From<PbBlockHeight> for BlockHeight {
     fn from(h: PbBlockHeight) -> Self {
-        h.value
+        h.value as u32
     }
 }
 
@@ -171,17 +190,20 @@ impl From<TimelockRange> for PbTimeLockRangeRelative {
         PbTimeLockRangeRelative {
             min: range
                 .min
-                .map(|v| crate::pb::common::v1::BlockHeightDelta { value: v }),
+                .map(|v| crate::pb::common::v1::BlockHeightDelta { value: v as u64 }),
             max: range
                 .max
-                .map(|v| crate::pb::common::v1::BlockHeightDelta { value: v }),
+                .map(|v| crate::pb::common::v1::BlockHeightDelta { value: v as u64 }),
         }
     }
 }
 
 impl From<PbTimeLockRangeRelative> for TimelockRange {
     fn from(range: PbTimeLockRangeRelative) -> Self {
-        TimelockRange::new(range.min.map(|v| v.value), range.max.map(|v| v.value))
+        TimelockRange::new(
+            range.min.map(|v| v.value as u32),
+            range.max.map(|v| v.value as u32),
+        )
     }
 }
 
@@ -204,15 +226,6 @@ impl From<Seed> for PbSeed {
 // Helper function instead of From impl to avoid orphan rules
 pub fn seeds_to_pb(seeds: Seeds) -> Vec<PbSeed> {
     seeds.0.into_iter().map(PbSeed::from).collect()
-}
-
-impl From<NoteDataEntry> for PbNoteDataEntry {
-    fn from(data: NoteDataEntry) -> Self {
-        Self {
-            key: data.key,
-            blob: jam(data.val),
-        }
-    }
 }
 
 impl From<NoteData> for PbNoteData {
@@ -260,7 +273,11 @@ impl From<LockPrimitive> for PbLockPrimitive {
             LockPrimitive::Pkh(pkh) => lock_primitive::Primitive::Pkh(pkh.into()),
             LockPrimitive::Tim(tim) => lock_primitive::Primitive::Tim(tim.into()),
             LockPrimitive::Hax(hax) => {
-                let mut hashes = hax.0.into_iter().map(PbHash::from).collect::<Vec<_>>();
+                let mut hashes = hax
+                    .preimages
+                    .into_iter()
+                    .map(PbHash::from)
+                    .collect::<Vec<_>>();
                 hashes.dedup();
                 lock_primitive::Primitive::Hax(PbHaxLock { hashes })
             }
@@ -292,9 +309,10 @@ impl From<MerkleProof> for PbMerkleProof {
 impl From<LockMerkleProof> for PbLockMerkleProof {
     fn from(proof: LockMerkleProof) -> Self {
         PbLockMerkleProof {
-            spend_condition: Some(PbSpendCondition::from(proof.spend_condition)),
-            axis: proof.axis,
-            proof: Some(PbMerkleProof::from(proof.proof)),
+            spend_condition: Some(PbSpendCondition::from(proof.spend_condition().clone())),
+            axis: proof.axis(),
+            proof: Some(PbMerkleProof::from(proof.proof().clone())),
+            lmp_version: proof.version(),
         }
     }
 }
@@ -307,7 +325,7 @@ impl From<PkhSignature> for PbPkhSignature {
             entries: signature
                 .0
                 .into_iter()
-                .map(|(pkh, pubkey, sig)| {
+                .map(|(pkh, (pubkey, sig))| {
                     // Convert UBig to Belt arrays for c and s
                     let c_bytes = sig.c.to_le_bytes();
                     let s_bytes = sig.s.to_le_bytes();
@@ -404,12 +422,11 @@ impl TryFrom<PbPkhSignature> for PkhSignature {
     type Error = ConversionError;
 
     fn try_from(pb: PbPkhSignature) -> Result<Self, Self::Error> {
-        use ibig::UBig;
         use iris_crypto::{PublicKey, Signature};
         use iris_ztd::crypto::cheetah::{CheetahPoint, F6lt};
-        use iris_ztd::Belt as ZBelt;
+        use iris_ztd::{Belt as ZBelt, U256};
 
-        let entries = pb
+        let entries: Vec<(Digest, (iris_crypto::PublicKey, iris_crypto::Signature))> = pb
             .entries
             .into_iter()
             .map(|entry| {
@@ -473,20 +490,216 @@ impl TryFrom<PbPkhSignature> for PkhSignature {
                     sig_val_pb.belt_8.required("EightBelt", "belt_8")?.value,
                 ];
 
-                // Convert belt arrays to UBig
+                // Convert belt arrays to U256
                 let c_vec: Vec<ZBelt> = chal_belts.iter().map(|v| ZBelt(*v)).collect();
                 let s_vec: Vec<ZBelt> = sig_belts.iter().map(|v| ZBelt(*v)).collect();
 
-                let c = UBig::from_le_bytes(&ZBelt::to_bytes(&c_vec));
-                let s = UBig::from_le_bytes(&ZBelt::to_bytes(&s_vec));
+                let c = U256::from_le_slice(&ZBelt::to_bytes(&c_vec));
+                let s = U256::from_le_slice(&ZBelt::to_bytes(&s_vec));
 
                 let signature = Signature { c, s };
 
-                Ok((pkh, pubkey, signature))
+                Ok((pkh, (pubkey, signature)))
             })
             .collect::<Result<Vec<_>, ConversionError>>()?;
 
-        Ok(PkhSignature(entries))
+        Ok(PkhSignature(entries.into()))
+    }
+}
+
+fn public_key_to_pb(pubkey: iris_crypto::PublicKey) -> PbSchnorrPubkey {
+    PbSchnorrPubkey {
+        value: Some(crate::pb::common::v1::CheetahPoint {
+            x: Some(crate::pb::common::v1::SixBelt {
+                belt_1: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.x.0[0].0,
+                }),
+                belt_2: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.x.0[1].0,
+                }),
+                belt_3: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.x.0[2].0,
+                }),
+                belt_4: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.x.0[3].0,
+                }),
+                belt_5: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.x.0[4].0,
+                }),
+                belt_6: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.x.0[5].0,
+                }),
+            }),
+            y: Some(crate::pb::common::v1::SixBelt {
+                belt_1: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.y.0[0].0,
+                }),
+                belt_2: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.y.0[1].0,
+                }),
+                belt_3: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.y.0[2].0,
+                }),
+                belt_4: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.y.0[3].0,
+                }),
+                belt_5: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.y.0[4].0,
+                }),
+                belt_6: Some(crate::pb::common::v1::Belt {
+                    value: pubkey.0.y.0[5].0,
+                }),
+            }),
+            inf: pubkey.0.inf,
+        }),
+    }
+}
+
+fn schnorr_sig_to_pb(sig: iris_crypto::Signature) -> PbSchnorrSignature {
+    use iris_ztd::Belt as ZBelt;
+
+    // Convert UBig to Belt arrays for c and s
+    let c_bytes = sig.c.to_le_bytes();
+    let s_bytes = sig.s.to_le_bytes();
+    let c_belts = ZBelt::from_bytes(&c_bytes);
+    let s_belts = ZBelt::from_bytes(&s_bytes);
+
+    // Pad to 8 belts
+    let mut chal = [0u64; 8];
+    for (i, belt) in c_belts.iter().take(8).enumerate() {
+        chal[i] = belt.0;
+    }
+    let mut sig_val = [0u64; 8];
+    for (i, belt) in s_belts.iter().take(8).enumerate() {
+        sig_val[i] = belt.0;
+    }
+
+    PbSchnorrSignature {
+        chal: Some(crate::pb::common::v1::EightBelt {
+            belt_1: Some(crate::pb::common::v1::Belt { value: chal[0] }),
+            belt_2: Some(crate::pb::common::v1::Belt { value: chal[1] }),
+            belt_3: Some(crate::pb::common::v1::Belt { value: chal[2] }),
+            belt_4: Some(crate::pb::common::v1::Belt { value: chal[3] }),
+            belt_5: Some(crate::pb::common::v1::Belt { value: chal[4] }),
+            belt_6: Some(crate::pb::common::v1::Belt { value: chal[5] }),
+            belt_7: Some(crate::pb::common::v1::Belt { value: chal[6] }),
+            belt_8: Some(crate::pb::common::v1::Belt { value: chal[7] }),
+        }),
+        sig: Some(crate::pb::common::v1::EightBelt {
+            belt_1: Some(crate::pb::common::v1::Belt { value: sig_val[0] }),
+            belt_2: Some(crate::pb::common::v1::Belt { value: sig_val[1] }),
+            belt_3: Some(crate::pb::common::v1::Belt { value: sig_val[2] }),
+            belt_4: Some(crate::pb::common::v1::Belt { value: sig_val[3] }),
+            belt_5: Some(crate::pb::common::v1::Belt { value: sig_val[4] }),
+            belt_6: Some(crate::pb::common::v1::Belt { value: sig_val[5] }),
+            belt_7: Some(crate::pb::common::v1::Belt { value: sig_val[6] }),
+            belt_8: Some(crate::pb::common::v1::Belt { value: sig_val[7] }),
+        }),
+    }
+}
+
+fn pb_schnorr_pubkey_to_public_key(
+    pb: PbSchnorrPubkey,
+) -> Result<iris_crypto::PublicKey, ConversionError> {
+    use iris_ztd::crypto::cheetah::{CheetahPoint, F6lt};
+    use iris_ztd::Belt as ZBelt;
+
+    let pt = pb.value.required("SchnorrPubkey", "value")?;
+    let x_pb = pt.x.required("CheetahPoint", "x")?;
+    let y_pb = pt.y.required("CheetahPoint", "y")?;
+
+    Ok(iris_crypto::PublicKey(CheetahPoint {
+        x: F6lt([
+            ZBelt(x_pb.belt_1.required("SixBelt", "belt_1")?.value),
+            ZBelt(x_pb.belt_2.required("SixBelt", "belt_2")?.value),
+            ZBelt(x_pb.belt_3.required("SixBelt", "belt_3")?.value),
+            ZBelt(x_pb.belt_4.required("SixBelt", "belt_4")?.value),
+            ZBelt(x_pb.belt_5.required("SixBelt", "belt_5")?.value),
+            ZBelt(x_pb.belt_6.required("SixBelt", "belt_6")?.value),
+        ]),
+        y: F6lt([
+            ZBelt(y_pb.belt_1.required("SixBelt", "belt_1")?.value),
+            ZBelt(y_pb.belt_2.required("SixBelt", "belt_2")?.value),
+            ZBelt(y_pb.belt_3.required("SixBelt", "belt_3")?.value),
+            ZBelt(y_pb.belt_4.required("SixBelt", "belt_4")?.value),
+            ZBelt(y_pb.belt_5.required("SixBelt", "belt_5")?.value),
+            ZBelt(y_pb.belt_6.required("SixBelt", "belt_6")?.value),
+        ]),
+        inf: pt.inf,
+    }))
+}
+
+fn pb_schnorr_sig_to_sig(
+    pb: PbSchnorrSignature,
+) -> Result<iris_crypto::Signature, ConversionError> {
+    use iris_ztd::Belt as ZBelt;
+
+    let chal_pb = pb.chal.required("SchnorrSignature", "chal")?;
+    let sig_val_pb = pb.sig.required("SchnorrSignature", "sig")?;
+
+    let chal_belts = [
+        chal_pb.belt_1.required("EightBelt", "belt_1")?.value,
+        chal_pb.belt_2.required("EightBelt", "belt_2")?.value,
+        chal_pb.belt_3.required("EightBelt", "belt_3")?.value,
+        chal_pb.belt_4.required("EightBelt", "belt_4")?.value,
+        chal_pb.belt_5.required("EightBelt", "belt_5")?.value,
+        chal_pb.belt_6.required("EightBelt", "belt_6")?.value,
+        chal_pb.belt_7.required("EightBelt", "belt_7")?.value,
+        chal_pb.belt_8.required("EightBelt", "belt_8")?.value,
+    ];
+    let sig_belts = [
+        sig_val_pb.belt_1.required("EightBelt", "belt_1")?.value,
+        sig_val_pb.belt_2.required("EightBelt", "belt_2")?.value,
+        sig_val_pb.belt_3.required("EightBelt", "belt_3")?.value,
+        sig_val_pb.belt_4.required("EightBelt", "belt_4")?.value,
+        sig_val_pb.belt_5.required("EightBelt", "belt_5")?.value,
+        sig_val_pb.belt_6.required("EightBelt", "belt_6")?.value,
+        sig_val_pb.belt_7.required("EightBelt", "belt_7")?.value,
+        sig_val_pb.belt_8.required("EightBelt", "belt_8")?.value,
+    ];
+
+    let c_vec: Vec<ZBelt> = chal_belts.iter().map(|v| ZBelt(*v)).collect();
+    let s_vec: Vec<ZBelt> = sig_belts.iter().map(|v| ZBelt(*v)).collect();
+
+    let c = U256::from_le_slice(&ZBelt::to_bytes(&c_vec));
+    let s = U256::from_le_slice(&ZBelt::to_bytes(&s_vec));
+
+    Ok(iris_crypto::Signature { c, s })
+}
+
+impl From<LegacySignature> for PbLegacySignature {
+    fn from(signature: LegacySignature) -> Self {
+        PbLegacySignature {
+            entries: signature
+                .0
+                .into_iter()
+                .map(|(pubkey, signature)| PbSignatureEntry {
+                    schnorr_pubkey: Some(public_key_to_pb(pubkey)),
+                    signature: Some(schnorr_sig_to_pb(signature)),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl TryFrom<PbLegacySignature> for LegacySignature {
+    type Error = ConversionError;
+
+    fn try_from(pb: PbLegacySignature) -> Result<Self, Self::Error> {
+        let entries = pb
+            .entries
+            .into_iter()
+            .map(|e| {
+                let pubkey = pb_schnorr_pubkey_to_public_key(
+                    e.schnorr_pubkey
+                        .required("SignatureEntry", "schnorr_pubkey")?,
+                )?;
+                let sig =
+                    pb_schnorr_sig_to_sig(e.signature.required("SignatureEntry", "signature")?)?;
+                Ok((pubkey, sig))
+            })
+            .collect::<Result<ZMap<_, _>, ConversionError>>()?;
+        Ok(LegacySignature(entries))
     }
 }
 
@@ -502,20 +715,29 @@ impl From<Witness> for PbWitness {
 
 impl From<Spend> for PbSpend {
     fn from(spend: Spend) -> Self {
-        PbSpend {
-            spend_kind: Some(spend::SpendKind::Witness(PbWitnessSpend {
-                witness: Some(PbWitness::from(spend.witness)),
-                seeds: seeds_to_pb(spend.seeds),
-                fee: Some(PbNicks::from(spend.fee)),
-            })),
+        match spend {
+            Spend::S1(ws) => PbSpend {
+                spend_kind: Some(spend::SpendKind::Witness(PbWitnessSpend {
+                    witness: Some(PbWitness::from(ws.witness)),
+                    seeds: seeds_to_pb(ws.seeds),
+                    fee: Some(PbNicks::from(ws.fee)),
+                })),
+            },
+            Spend::S0(ls) => PbSpend {
+                spend_kind: Some(spend::SpendKind::Legacy(PbLegacySpend {
+                    signature: Some(PbLegacySignature::from(ls.signature)),
+                    seeds: seeds_to_pb(ls.seeds),
+                    fee: Some(PbNicks::from(ls.fee)),
+                })),
+            },
         }
     }
 }
 
-impl From<RawTx> for PbRawTransaction {
-    fn from(tx: RawTx) -> Self {
+impl From<v1::RawTxV1> for PbRawTransaction {
+    fn from(tx: v1::RawTxV1) -> Self {
         PbRawTransaction {
-            version: Some(PbNoteVersion::from(tx.version)),
+            version: Some(PbNoteVersion::from(tx.version())),
             id: Some(PbHash::from(tx.id)),
             spends: tx
                 .spends
@@ -526,6 +748,19 @@ impl From<RawTx> for PbRawTransaction {
                     spend: Some(PbSpend::from(spend)),
                 })
                 .collect(),
+        }
+    }
+}
+
+impl TryFrom<iris_nockchain_types::RawTx> for PbRawTransaction {
+    type Error = ConversionError;
+
+    fn try_from(tx: iris_nockchain_types::RawTx) -> Result<Self, Self::Error> {
+        match tx {
+            iris_nockchain_types::RawTx::V0(_) => Err(ConversionError::Invalid(
+                "V0 RawTx should use PbRawTransactionV0, not PbRawTransaction",
+            )),
+            iris_nockchain_types::RawTx::V1(tx) => Ok(PbRawTransaction::from(tx)),
         }
     }
 }
@@ -541,16 +776,157 @@ impl From<(Digest, Noun)> for PbHaxPreimage {
 
 // Balance and Note conversions
 
-impl From<Note> for PbNote {
-    fn from(note: Note) -> Self {
+impl From<v0::TimelockIntent> for PbTimeLockIntent {
+    fn from(intent: v0::TimelockIntent) -> Self {
+        PbTimeLockIntent {
+            value: intent.tim.map(|t| {
+                crate::pb::common::v1::time_lock_intent::Value::AbsoluteAndRelative(
+                    crate::pb::common::v1::TimeLockRangeAbsoluteAndRelative {
+                        absolute: Some(PbTimeLockRangeAbsolute {
+                            min: t.abs.min.map(|v| v.into()),
+                            max: t.abs.max.map(|v| v.into()),
+                        }),
+                        relative: Some(PbTimeLockRangeRelative {
+                            min: t.rel.min.map(|v| crate::pb::common::v1::BlockHeightDelta {
+                                value: v as u64,
+                            }),
+                            max: t.rel.max.map(|v| crate::pb::common::v1::BlockHeightDelta {
+                                value: v as u64,
+                            }),
+                        }),
+                    },
+                )
+            }),
+        }
+    }
+}
+
+impl TryFrom<PbTimeLockIntent> for v0::TimelockIntent {
+    type Error = ConversionError;
+
+    fn try_from(intent: PbTimeLockIntent) -> Result<Self, Self::Error> {
+        use crate::pb::common::v1::time_lock_intent;
+
+        let tim = match intent.value {
+            None | Some(time_lock_intent::Value::Neither(_)) => None,
+            Some(time_lock_intent::Value::Absolute(abs)) => Some(v0::Timelock {
+                rel: TimelockRange::none(),
+                abs: abs.into(),
+            }),
+            Some(time_lock_intent::Value::Relative(rel)) => Some(v0::Timelock {
+                rel: rel.into(),
+                abs: TimelockRange::none(),
+            }),
+            Some(time_lock_intent::Value::AbsoluteAndRelative(ar)) => Some(v0::Timelock {
+                rel: ar
+                    .relative
+                    .map(Into::into)
+                    .unwrap_or_else(TimelockRange::none),
+                abs: ar
+                    .absolute
+                    .map(Into::into)
+                    .unwrap_or_else(TimelockRange::none),
+            }),
+        };
+
+        Ok(v0::TimelockIntent { tim })
+    }
+}
+
+impl From<v0::Sig> for PbLegacyLock {
+    fn from(sig: v0::Sig) -> Self {
+        PbLegacyLock {
+            keys_required: sig.m as u32,
+            schnorr_pubkeys: sig.pubkeys.into_iter().map(public_key_to_pb).collect(),
+        }
+    }
+}
+
+impl TryFrom<PbLegacyLock> for v0::Sig {
+    type Error = ConversionError;
+
+    fn try_from(lock: PbLegacyLock) -> Result<Self, Self::Error> {
+        let pubkeys = lock
+            .schnorr_pubkeys
+            .into_iter()
+            .map(pb_schnorr_pubkey_to_public_key)
+            .collect::<Result<ZSet<iris_crypto::PublicKey>, ConversionError>>()?;
+
+        Ok(v0::Sig {
+            m: lock.keys_required as u64,
+            pubkeys,
+        })
+    }
+}
+
+// v0::Note <-> PbNoteV0 (crate::pb::common::v1::Note) conversions
+impl From<v0::NoteV0> for crate::pb::common::v1::Note {
+    fn from(note: v0::NoteV0) -> Self {
+        crate::pb::common::v1::Note {
+            origin_page: Some(PbBlockHeight::from(note.inner.origin_page)),
+            timelock: Some(PbTimeLockIntent::from(note.inner.timelock)),
+            name: Some(PbName::from(note.name)),
+            lock: Some(PbLegacyLock::from(note.sig)),
+            source: Some(PbSource::from(note.source)),
+            assets: Some(PbNicks::from(note.assets)),
+            version: Some(PbNoteVersion::from(note.inner.version)),
+        }
+    }
+}
+
+impl TryFrom<crate::pb::common::v1::Note> for v0::NoteV0 {
+    type Error = ConversionError;
+
+    fn try_from(pb: crate::pb::common::v1::Note) -> Result<Self, Self::Error> {
+        let origin_page: BlockHeight = pb.origin_page.required("Note", "origin_page")?.into();
+        let name: Name = pb.name.required("Note", "name")?.try_into()?;
+        let assets: Nicks = pb.assets.required("Note", "assets")?.into();
+        let version: Version = pb.version.required("Note", "version")?.try_into()?;
+        let source: Source = pb.source.required("Note", "source")?.try_into()?;
+        let sig: v0::Sig = pb.lock.required("Note", "lock")?.try_into()?;
+        let timelock: v0::TimelockIntent = if let Some(intent) = pb.timelock {
+            intent.try_into()?
+        } else {
+            v0::TimelockIntent { tim: None }
+        };
+
+        Ok(v0::NoteV0::new(
+            version,
+            origin_page,
+            timelock,
+            name,
+            sig,
+            source,
+            assets,
+        ))
+    }
+}
+
+impl From<iris_nockchain_types::Note> for PbNote {
+    fn from(note: iris_nockchain_types::Note) -> Self {
         PbNote {
-            note_version: Some(crate::pb::common::v2::note::NoteVersion::V1(PbNoteV1 {
-                version: Some(PbNoteVersion::from(note.version)),
-                origin_page: Some(PbBlockHeight::from(note.origin_page)),
-                name: Some(PbName::from(note.name)),
-                note_data: Some(PbNoteData::from(note.note_data)),
-                assets: Some(PbNicks::from(note.assets)),
-            })),
+            note_version: Some(match note {
+                iris_nockchain_types::Note::V0(note) => {
+                    crate::pb::common::v2::note::NoteVersion::Legacy(PbNoteV0 {
+                        version: Some(PbNoteVersion::from(note.inner.version)),
+                        origin_page: Some(PbBlockHeight::from(note.inner.origin_page)),
+                        timelock: Some(PbTimeLockIntent::from(note.inner.timelock)),
+                        name: Some(PbName::from(note.name)),
+                        lock: Some(PbLegacyLock::from(note.sig)),
+                        source: Some(PbSource::from(note.source)),
+                        assets: Some(PbNicks::from(note.assets)),
+                    })
+                }
+                iris_nockchain_types::Note::V1(note) => {
+                    crate::pb::common::v2::note::NoteVersion::V1(PbNoteV1 {
+                        version: Some(PbNoteVersion::from(note.version)),
+                        origin_page: Some(PbBlockHeight::from(note.origin_page)),
+                        name: Some(PbName::from(note.name)),
+                        note_data: Some(PbNoteData::from(note.note_data)),
+                        assets: Some(PbNicks::from(note.assets)),
+                    })
+                }
+            }),
         }
     }
 }
@@ -598,50 +974,78 @@ impl From<BalanceUpdate> for PbBalance {
 
 // Reverse conversions: protobuf -> native types
 
-impl TryFrom<PbNoteDataEntry> for NoteDataEntry {
-    type Error = ConversionError;
-
-    fn try_from(entry: PbNoteDataEntry) -> Result<Self, Self::Error> {
-        Ok(NoteDataEntry {
-            key: entry.key,
-            val: iris_ztd::cue(&entry.blob).ok_or(Self::Error::Invalid("cue failed"))?,
-        })
-    }
-}
-
-impl TryFrom<PbNoteData> for NoteData {
+impl TryFrom<PbNoteData> for iris_nockchain_types::v1::NoteData {
     type Error = ConversionError;
 
     fn try_from(pb_data: PbNoteData) -> Result<Self, Self::Error> {
-        let entries: Result<Vec<NoteDataEntry>, ConversionError> = pb_data
+        let entries: Result<Vec<(String, Noun)>, ConversionError> = pb_data
             .entries
             .into_iter()
-            .map(PbNoteDataEntry::try_into)
+            .map(|e| {
+                let key = e.key;
+                let val = iris_ztd::cue(&e.blob).ok_or(ConversionError::Invalid("cue failed"))?;
+                Ok((key, val))
+            })
             .collect();
         Ok(NoteData { entries: entries? })
     }
 }
 
-impl TryFrom<PbNote> for Note {
+impl TryFrom<PbNote> for iris_nockchain_types::Note {
     type Error = ConversionError;
 
     fn try_from(pb_note: PbNote) -> Result<Self, Self::Error> {
         match pb_note.note_version.required("Note", "note_version")? {
-            crate::pb::common::v2::note::NoteVersion::V1(v1) => Ok(Note {
-                version: v1.version.required("NoteV1", "version")?.into(),
-                origin_page: v1.origin_page.required("NoteV1", "origin_page")?.into(),
-                name: v1.name.required("NoteV1", "name")?.try_into()?,
-                note_data: v1.note_data.required("NoteV1", "note_data")?.try_into()?,
-                assets: v1.assets.required("NoteV1", "assets")?.into(),
-            }),
-            crate::pb::common::v2::note::NoteVersion::Legacy(_) => Err(
-                ConversionError::UnsupportedVersion("Legacy note format not supported".to_string()),
-            ),
+            crate::pb::common::v2::note::NoteVersion::V1(v1) => {
+                Ok(iris_nockchain_types::Note::V1(v1::NoteV1 {
+                    version: v1.version.required("NoteV1", "version")?.try_into()?,
+                    origin_page: v1.origin_page.required("NoteV1", "origin_page")?.into(),
+                    name: v1.name.required("NoteV1", "name")?.try_into()?,
+                    note_data: v1.note_data.required("NoteV1", "note_data")?.try_into()?,
+                    assets: v1.assets.required("NoteV1", "assets")?.into(),
+                }))
+            }
+            crate::pb::common::v2::note::NoteVersion::Legacy(legacy) => {
+                let PbNoteV0 {
+                    origin_page,
+                    timelock,
+                    name,
+                    lock,
+                    source,
+                    assets,
+                    version,
+                } = legacy;
+
+                let origin_page: BlockHeight =
+                    origin_page.required("LegacyNote", "origin_page")?.into();
+                let name: Name = name.required("LegacyNote", "name")?.try_into()?;
+                let assets: Nicks = assets.required("LegacyNote", "assets")?.into();
+                let version: Version = version.required("LegacyNote", "version")?.try_into()?;
+                let source: Source = source.required("LegacyNote", "source")?.try_into()?;
+
+                let sig: v0::Sig = lock.required("LegacyNote", "lock")?.try_into()?;
+
+                let timelock: v0::TimelockIntent = if let Some(intent) = timelock {
+                    intent.try_into()?
+                } else {
+                    v0::TimelockIntent { tim: None }
+                };
+
+                Ok(iris_nockchain_types::Note::V0(v0::NoteV0::new(
+                    version,
+                    origin_page,
+                    timelock,
+                    name,
+                    sig,
+                    source,
+                    assets,
+                )))
+            }
         }
     }
 }
 
-impl TryFrom<PbBalanceEntry> for (Name, Note) {
+impl TryFrom<PbBalanceEntry> for (Name, iris_nockchain_types::Note) {
     type Error = ConversionError;
 
     fn try_from(entry: PbBalanceEntry) -> Result<Self, Self::Error> {
@@ -655,7 +1059,7 @@ impl TryFrom<PbBalance> for BalanceUpdate {
     type Error = ConversionError;
 
     fn try_from(pb_balance: PbBalance) -> Result<Self, Self::Error> {
-        let notes: Result<Vec<(Name, Note)>, ConversionError> = pb_balance
+        let notes: Result<Vec<(Name, iris_nockchain_types::Note)>, ConversionError> = pb_balance
             .notes
             .into_iter()
             .map(|entry| entry.try_into())
@@ -667,7 +1071,7 @@ impl TryFrom<PbBalance> for BalanceUpdate {
                 .block_id
                 .required("Balance", "block_id")?
                 .try_into()?,
-            notes: Balance(notes?),
+            notes: Balance(notes?.into_iter().collect()),
         })
     }
 }
@@ -687,9 +1091,9 @@ impl TryFrom<PbLockPrimitive> for LockPrimitive {
             lock_primitive::Primitive::Pkh(pkh) => Ok(LockPrimitive::Pkh(pkh.try_into()?)),
             lock_primitive::Primitive::Tim(tim) => Ok(LockPrimitive::Tim(tim.try_into()?)),
             lock_primitive::Primitive::Hax(hax) => {
-                let hashes: Result<Vec<Digest>, ConversionError> =
+                let hashes: Result<ZSet<Digest>, ConversionError> =
                     hax.hashes.into_iter().map(|h| h.try_into()).collect();
-                Ok(LockPrimitive::Hax(Hax(hashes?)))
+                Ok(LockPrimitive::Hax(Hax { preimages: hashes? }))
             }
             lock_primitive::Primitive::Burn(_) => Ok(LockPrimitive::Brn),
         }
@@ -724,12 +1128,51 @@ impl TryFrom<PbSeed> for Seed {
     }
 }
 
-impl TryFrom<PbRawTransaction> for RawTx {
+impl TryFrom<PbLockMerkleProof> for LockMerkleProof {
+    type Error = ConversionError;
+    fn try_from(lock_merkle_proof: PbLockMerkleProof) -> Result<Self, Self::Error> {
+        let spend_condition = lock_merkle_proof
+            .spend_condition
+            .required("LockMerkleProof", "spend_condition")?
+            .try_into()?;
+        let proof = lock_merkle_proof
+            .proof
+            .required("LockMerkleProof", "proof")?;
+        let proof = MerkleProof {
+            root: proof.root.required("MerkleProof", "root")?.try_into()?,
+            path: proof
+                .path
+                .into_iter()
+                .map(|h| h.try_into())
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        let axis = lock_merkle_proof.axis;
+        match lock_merkle_proof.lmp_version {
+            None if axis == 1 => Ok(LockMerkleProof::Stub(LockMerkleProofStub {
+                spend_condition,
+                axis: Default::default(),
+                proof,
+            })),
+            Some(v) if v == tas!("full") => Ok(LockMerkleProof::Full(LockMerkleProofFull {
+                spend_condition,
+                axis,
+                proof,
+            })),
+            None => Err(ConversionError::Invalid("Stub merkle proof with axis != 1")),
+            _ => Err(ConversionError::Invalid("Unsupported merkle proof version")),
+        }
+    }
+}
+
+impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
     type Error = ConversionError;
     fn try_from(tx: PbRawTransaction) -> Result<Self, Self::Error> {
-        let version: Version = tx.version.required("RawTransaction", "version")?.into();
+        let version: Version = tx
+            .version
+            .required("RawTransaction", "version")?
+            .try_into()?;
         let id: Digest = tx.id.required("RawTransaction", "id")?.try_into()?;
-        let spends: Result<Vec<(Name, Spend)>, ConversionError> = tx
+        let spends: Result<ZMap<Name, Spend>, ConversionError> = tx
             .spends
             .into_iter()
             .map(|entry| {
@@ -745,27 +1188,9 @@ impl TryFrom<PbRawTransaction> for RawTx {
                         let lock_merkle_proof = witness_pb
                             .lock_merkle_proof
                             .required("Witness", "lock_merkle_proof")?;
-                        let spend_condition = lock_merkle_proof
-                            .spend_condition
-                            .required("LockMerkleProof", "spend_condition")?
-                            .try_into()?;
-                        let proof = lock_merkle_proof
-                            .proof
-                            .required("LockMerkleProof", "proof")?;
 
                         let witness = Witness {
-                            lock_merkle_proof: LockMerkleProof {
-                                spend_condition,
-                                axis: lock_merkle_proof.axis,
-                                proof: MerkleProof {
-                                    root: proof.root.required("MerkleProof", "root")?.try_into()?,
-                                    path: proof
-                                        .path
-                                        .into_iter()
-                                        .map(|h| h.try_into())
-                                        .collect::<Result<Vec<_>, _>>()?,
-                                },
-                            },
+                            lock_merkle_proof: lock_merkle_proof.try_into()?,
                             pkh_signature,
                             hax_map: {
                                 let mut map = iris_ztd::ZMap::new();
@@ -782,27 +1207,192 @@ impl TryFrom<PbRawTransaction> for RawTx {
                             tim: (),
                         };
 
-                        let seeds: Result<Vec<Seed>, ConversionError> =
+                        let seeds: Result<ZSet<Seed>, ConversionError> =
                             w.seeds.into_iter().map(|s| s.try_into()).collect();
 
-                        Spend {
+                        Spend::S1(Spend1 {
                             witness,
                             seeds: Seeds(seeds?),
                             fee: w.fee.required("WitnessSpend", "fee")?.into(),
-                        }
+                        })
                     }
-                    spend::SpendKind::Legacy(_) => {
-                        return Err(ConversionError::Invalid("Legacy spends are not supported"));
+                    spend::SpendKind::Legacy(l) => {
+                        let signature: LegacySignature = l
+                            .signature
+                            .required("LegacySpend", "signature")?
+                            .try_into()?;
+                        let seeds: Result<ZSet<Seed>, ConversionError> =
+                            l.seeds.into_iter().map(|s| s.try_into()).collect();
+                        Spend::S0(Spend0 {
+                            signature,
+                            seeds: Seeds(seeds?),
+                            fee: l.fee.required("LegacySpend", "fee")?.into(),
+                        })
                     }
                 };
                 Ok((name, spend))
             })
             .collect();
 
-        Ok(RawTx {
-            version,
+        match version {
+            Version::V1 => Ok(RawTx::V1(v1::RawTxV1 {
+                version: ExpectedVersion,
+                id,
+                spends: v1::SpendsV1(spends?),
+            })),
+            _ => Err(ConversionError::Invalid("Unsupported RawTx version")),
+        }
+    }
+}
+
+// ============================================
+// V0 Protobuf conversions (v1/blockchain.proto)
+// ============================================
+
+// V0 Seed conversion
+impl From<v0::SeedV0> for PbSeedV0 {
+    fn from(seed: v0::SeedV0) -> Self {
+        PbSeedV0 {
+            output_source: seed
+                .output_source
+                .map(|s| crate::pb::common::v1::OutputSource {
+                    source: Some(PbSource::from(s)),
+                }),
+            recipient: Some(PbLegacyLock::from(seed.recipient)),
+            timelock_intent: Some(PbTimeLockIntent::from(seed.timelock_intent)),
+            gift: Some(PbNicks::from(seed.gift)),
+            parent_hash: Some(PbHash::from(seed.parent_hash)),
+        }
+    }
+}
+
+impl TryFrom<PbSeedV0> for v0::SeedV0 {
+    type Error = ConversionError;
+
+    fn try_from(seed: PbSeedV0) -> Result<Self, Self::Error> {
+        Ok(v0::SeedV0 {
+            output_source: seed
+                .output_source
+                .and_then(|os| os.source)
+                .map(|s| s.try_into())
+                .transpose()?,
+            recipient: seed.recipient.required("Seed", "recipient")?.try_into()?,
+            timelock_intent: seed
+                .timelock_intent
+                .required("Seed", "timelock_intent")?
+                .try_into()?,
+            gift: seed.gift.required("Seed", "gift")?.into(),
+            parent_hash: seed
+                .parent_hash
+                .required("Seed", "parent_hash")?
+                .try_into()?,
+        })
+    }
+}
+
+// V0 Spend conversion
+impl From<v0::SpendV0> for PbSpendV0 {
+    fn from(spend: v0::SpendV0) -> Self {
+        PbSpendV0 {
+            signature: spend.signature.map(PbLegacySignature::from),
+            seeds: spend.seeds.0.into_iter().map(PbSeedV0::from).collect(),
+            miner_fee_nicks: Some(PbNicks::from(spend.fee)),
+        }
+    }
+}
+
+impl TryFrom<PbSpendV0> for v0::SpendV0 {
+    type Error = ConversionError;
+
+    fn try_from(spend: PbSpendV0) -> Result<Self, Self::Error> {
+        let signature: Option<LegacySignature> = if let Some(s) = spend.signature {
+            Some(s.try_into()?)
+        } else {
+            None
+        };
+        let seeds: Result<ZSet<v0::SeedV0>, ConversionError> =
+            spend.seeds.into_iter().map(|s| s.try_into()).collect();
+        Ok(v0::SpendV0 {
+            signature,
+            seeds: v0::SeedsV0(seeds?),
+            fee: spend
+                .miner_fee_nicks
+                .required("Spend", "miner_fee_nicks")?
+                .into(),
+        })
+    }
+}
+
+// V0 Input conversion
+impl From<v0::Input> for PbInputV0 {
+    fn from(input: v0::Input) -> Self {
+        PbInputV0 {
+            note: Some(crate::pb::common::v1::Note::from(input.note)),
+            spend: Some(PbSpendV0::from(input.spend)),
+        }
+    }
+}
+
+impl TryFrom<PbInputV0> for v0::Input {
+    type Error = ConversionError;
+
+    fn try_from(input: PbInputV0) -> Result<Self, Self::Error> {
+        Ok(v0::Input {
+            note: input.note.required("Input", "note")?.try_into()?,
+            spend: input.spend.required("Input", "spend")?.try_into()?,
+        })
+    }
+}
+
+// V0 RawTransaction conversion
+impl From<v0::RawTxV0> for PbRawTransactionV0 {
+    fn from(tx: v0::RawTxV0) -> Self {
+        PbRawTransactionV0 {
+            named_inputs: tx
+                .inputs
+                .0
+                .into_iter()
+                .map(|(name, input)| PbNamedInputV0 {
+                    name: Some(PbName::from(name)),
+                    input: Some(PbInputV0::from(input)),
+                })
+                .collect(),
+            timelock_range: Some(PbTimeLockRangeAbsolute {
+                min: tx.timelock_range.min.map(|v| v.into()),
+                max: tx.timelock_range.max.map(|v| v.into()),
+            }),
+            total_fees: Some(PbNicks::from(tx.total_fees)),
+            id: Some(PbHash::from(tx.id)),
+        }
+    }
+}
+
+impl TryFrom<PbRawTransactionV0> for v0::RawTxV0 {
+    type Error = ConversionError;
+
+    fn try_from(tx: PbRawTransactionV0) -> Result<Self, Self::Error> {
+        let id: Digest = tx.id.required("RawTransaction", "id")?.try_into()?;
+        let inputs: Result<ZMap<Name, v0::Input>, ConversionError> = tx
+            .named_inputs
+            .into_iter()
+            .map(|ni| {
+                let name = ni.name.required("NamedInput", "name")?.try_into()?;
+                let input = ni.input.required("NamedInput", "input")?.try_into()?;
+                Ok((name, input))
+            })
+            .collect();
+
+        let timelock_range = tx
+            .timelock_range
+            .map(|tr| tr.into())
+            .unwrap_or_else(TimelockRange::none);
+        let total_fees = tx.total_fees.map(|f| f.into()).unwrap_or(Nicks(0u64));
+
+        Ok(v0::RawTxV0 {
             id,
-            spends: Spends(spends?),
+            inputs: v0::Inputs(inputs?),
+            timelock_range,
+            total_fees,
         })
     }
 }
@@ -1000,7 +1590,7 @@ mod tests {
         println!("{pb_raw_tx:?}");
         let raw_tx: RawTx = pb_raw_tx.clone().try_into().unwrap();
         println!("{raw_tx:?}");
-        let pb2_raw_tx: PbRawTransaction = raw_tx.into();
+        let pb2_raw_tx: PbRawTransaction = raw_tx.try_into().unwrap();
         println!("{pb2_raw_tx:?}");
         assert_eq!(pb_raw_tx, pb2_raw_tx);
     }

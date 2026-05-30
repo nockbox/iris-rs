@@ -1,6 +1,7 @@
+use arrayvec::ArrayVec;
 use hmac::{Hmac, Mac};
-use ibig::UBig;
 use iris_ztd::crypto::cheetah::{ch_add, ch_scal_big, A_GEN, G_ORDER};
+use iris_ztd::U256;
 use sha2::Sha512;
 
 use crate::cheetah::{PrivateKey, PublicKey};
@@ -24,32 +25,34 @@ impl ExtendedKey {
     pub fn derive_child(&self, index: u32) -> ExtendedKey {
         let hardened = index >= (1 << 31);
 
-        let mut data = Vec::new();
+        let mut data = ArrayVec::<_, { 1 + 96 + 4 }>::new();
         if hardened {
             let private_key = self
                 .private_key
                 .as_ref()
                 .expect("Cannot derive hardened child without private key");
             data.push(0x00);
-            data.extend_from_slice(&private_key.to_be_bytes());
-            data.extend_from_slice(&index.to_be_bytes());
+            data.try_extend_from_slice(&private_key.to_be_bytes())
+                .unwrap();
+            data.try_extend_from_slice(&index.to_be_bytes()).unwrap();
         } else {
             data.push(0x01);
-            data.extend_from_slice(&self.public_key.to_slip10_bytes());
-            data.extend_from_slice(&index.to_be_bytes());
+            data.try_extend_from_slice(&self.public_key.as_slip10_bytes())
+                .unwrap();
+            data.try_extend_from_slice(&index.to_be_bytes()).unwrap();
         }
         let mut result = hmac_sha512(&self.chain_code, &data);
 
         loop {
-            let left = UBig::from_be_bytes(&result[..32]);
+            let left = U256::from_be_slice(&result[..32]);
             let mut chain_code = [0u8; 32];
             chain_code.copy_from_slice(&result[32..]);
 
-            if left < *G_ORDER {
+            if left < G_ORDER {
                 match self.private_key.as_ref() {
                     Some(pk) => {
-                        let s = (&left + &pk.0) % &*G_ORDER;
-                        if s != UBig::from(0u64) {
+                        let s = left.add_mod(&pk.0, &G_ORDER);
+                        if s != U256::ZERO {
                             let private_key = PrivateKey(s);
                             let public_key = private_key.public_key();
                             return ExtendedKey {
@@ -73,10 +76,10 @@ impl ExtendedKey {
                 }
             }
             // Invalid key: rehash 0x01 || right || index
-            let mut data = Vec::new();
+            let mut data = ArrayVec::<_, { 1 + 32 + 4 }>::new();
             data.push(0x01);
-            data.extend_from_slice(&chain_code);
-            data.extend_from_slice(&index.to_be_bytes());
+            data.try_extend_from_slice(&chain_code).unwrap();
+            data.try_extend_from_slice(&index.to_be_bytes()).unwrap();
             result = hmac_sha512(&self.chain_code, &data);
         }
     }
@@ -86,10 +89,10 @@ pub fn derive_master_key(seed: &[u8]) -> ExtendedKey {
     const DOMAIN_SEPARATOR: &[u8] = b"Nockchain seed";
     let mut result = hmac_sha512(DOMAIN_SEPARATOR, seed);
     loop {
-        let s = UBig::from_be_bytes(&result[..32]);
+        let s = U256::from_be_slice(&result[..32]);
         let mut chain_code = [0u8; 32];
         chain_code.copy_from_slice(&result[32..]);
-        if s < *G_ORDER && s != UBig::from(0u64) {
+        if s < G_ORDER && s != U256::ZERO {
             let private_key = PrivateKey(s);
             let public_key = private_key.public_key();
             return ExtendedKey {
@@ -102,12 +105,15 @@ pub fn derive_master_key(seed: &[u8]) -> ExtendedKey {
     }
 }
 
+#[cfg(feature = "alloc")]
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
     use bip39::Mnemonic;
     use iris_ztd::{Belt, Hashable, NounEncode};
 
+    #[cfg(feature = "alloc")]
     fn from_b58(s: &str) -> Vec<u8> {
         bs58::decode(s).into_vec().unwrap()
     }

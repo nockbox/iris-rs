@@ -1,56 +1,124 @@
-use std::collections::{BTreeMap, BTreeSet};
-
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use ibig::UBig;
-use iris_crypto::PrivateKey;
+
+use iris_crypto::PrivateKey as CryptoPrivateKey;
 use iris_grpc_proto::pb::common::v1 as pb_v1;
 use iris_grpc_proto::pb::common::v2 as pb;
 use iris_nockchain_types::{
-    builder::TxBuilder,
-    note::{Name, Note, NoteData, NoteDataEntry, Pkh, TimelockRange, Version},
-    tx::{LockPrimitive, LockRoot, NockchainTx, RawTx, Seed, SpendCondition},
-    Nicks,
+    builder::{MissingUnlocks, TxBuilder},
+    note::Note,
+    tx::RawTx,
+    v1::{Lock, LockRoot, NockchainTx, RawTxV1, SeedV1 as Seed, SpendCondition},
+    Nicks, SpendBuilder, TxEngineSettings,
 };
-use iris_nockchain_types::{Hax, LockTim, MissingUnlocks, Source, SpendBuilder};
-use iris_ztd::{cue, jam, Digest, Hashable as HashableTrait, NounDecode, NounEncode};
+use iris_ztd::{cue, Digest, U256};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use crate::memo::memo_from_js;
 
 // ============================================================================
-// Wasm Types - Core Types
+// Wasm Types - Adapters and Helpers
 // ============================================================================
 
-#[wasm_bindgen(js_name = Digest)]
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct WasmDigest {
-    #[wasm_bindgen(skip)]
-    pub value: String,
+#[wasm_bindgen(js_name = initPanicHook)]
+pub fn init_panic_hook() {
+    console_error_panic_hook::set_once();
 }
 
-#[wasm_bindgen(js_class = Digest)]
-impl WasmDigest {
-    #[wasm_bindgen(constructor)]
-    pub fn new(value: String) -> Self {
-        Self { value }
-    }
+#[wasm_bindgen(js_name = digestToProtobuf)]
+pub fn digest_to_protobuf(d: Digest) -> pb_v1::Hash {
+    d.into()
+}
 
-    #[wasm_bindgen(getter)]
-    pub fn value(&self) -> String {
-        self.value.clone()
-    }
+#[wasm_bindgen(js_name = digestFromProtobuf)]
+pub fn digest_from_protobuf(value: pb_v1::Hash) -> Result<Digest, JsValue> {
+    value
+        .try_into()
+        .map_err(|e| JsValue::from_str(&format!("{}", e)))
+}
 
-    fn to_internal(&self) -> Result<Digest, &'static str> {
-        self.value.as_str().try_into()
-    }
+/// Return default transaction engine settings for V1 signing.
+#[wasm_bindgen(js_name = txEngineSettingsV1Default)]
+pub fn tx_engine_settings_v1_default() -> TxEngineSettings {
+    TxEngineSettings::v1_default()
+}
 
-    fn from_internal(digest: &Digest) -> Self {
-        Self {
-            value: digest.to_string(),
+/// Return default transaction engine settings for V1 Bythos signing.
+#[wasm_bindgen(js_name = txEngineSettingsV1BythosDefault)]
+pub fn tx_engine_settings_v1_bythos_default() -> TxEngineSettings {
+    TxEngineSettings::v1_bythos_default()
+}
+
+/// Convert protobuf spend condition to native SpendCondition.
+/// Accepts the protobuf format used by the Nockchain gRPC interface and external dApps
+#[wasm_bindgen(js_name = spendConditionFromProtobuf)]
+pub fn spend_condition_from_protobuf(value: pb::SpendCondition) -> Result<SpendCondition, JsValue> {
+    value
+        .try_into()
+        .map_err(|e| JsValue::from_str(&format!("{}", e)))
+}
+
+/// Convert native SpendCondition to protobuf format.
+/// Returns the protobuf format used by the Nockchain gRPC interface and external dApps.
+#[wasm_bindgen(js_name = spendConditionToProtobuf)]
+pub fn spend_condition_to_protobuf(value: SpendCondition) -> pb::SpendCondition {
+    value.into()
+}
+
+#[wasm_bindgen(js_name = noteToProtobuf)]
+pub fn note_to_protobuf(note: Note) -> pb::Note {
+    note.into()
+}
+
+#[wasm_bindgen(js_name = noteFromProtobuf)]
+pub fn note_from_protobuf(value: pb::Note) -> Result<Note, JsValue> {
+    value
+        .try_into()
+        .map_err(|e| JsValue::from_str(&format!("{}", e)))
+}
+
+/// Convert raw transaction into protobuf format.
+///
+/// Protobuf format is the one used by the Nockchain's gRPC interface, and the initial iris
+/// extension format. The new iris transaction signing API moves away from this format to use
+/// `NockchainTx`, as it includes the necessary spend condition and note information.
+#[wasm_bindgen(js_name = rawTxToProtobuf)]
+pub fn raw_tx_to_protobuf(tx: RawTxV1) -> pb::RawTransaction {
+    tx.into()
+}
+
+#[wasm_bindgen(js_name = rawTxFromProtobuf)]
+pub fn raw_tx_from_protobuf(tx: pb::RawTransaction) -> Result<RawTx, JsValue> {
+    tx.try_into()
+        .map_err(|e| JsValue::from_str(&format!("{}", e)))
+}
+
+#[derive(Serialize, Deserialize, tsify::Tsify)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+pub struct TxNotes {
+    pub notes: Vec<Note>,
+    pub refund_locks: Vec<Option<LockRoot>>,
+}
+
+#[derive(Serialize, Deserialize, tsify::Tsify)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
+pub enum TxLock {
+    None,
+    Some { lock: Lock, lock_sp_index: usize },
+}
+
+impl TxLock {
+    fn into_tuple(self) -> Option<(Lock, usize)> {
+        match self {
+            TxLock::None => None,
+            TxLock::Some {
+                lock,
+                lock_sp_index,
+            } => Some((lock, lock_sp_index)),
         }
     }
 
@@ -1026,11 +1094,108 @@ impl WasmSeed {
             .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
         Ok(WasmSeed::from_internal(seed))
     }
+=======
+>>>>>>> upstream/main
 }
 
 // ============================================================================
 // Wasm Transaction Builder
 // ============================================================================
+
+enum PrivateKeyBackend {
+    Bytes(BytesPrivateKeyBackend),
+}
+
+struct BytesPrivateKeyBackend {
+    signing_key: CryptoPrivateKey,
+    public_key_bytes: [u8; 97],
+}
+
+#[wasm_bindgen(js_name = PrivateKey)]
+pub struct WasmPrivateKey {
+    backend: PrivateKeyBackend,
+}
+
+#[wasm_bindgen(js_class = PrivateKey)]
+impl WasmPrivateKey {
+    /// Construct a wasm `PrivateKey` from 32-byte private key material.
+    ///
+    /// This object is created in JavaScript and then passed into Rust signing APIs.
+    ///
+    /// # JavaScript example
+    ///
+    /// ```javascript
+    /// import init, { PrivateKey, TxBuilder } from "iris-wasm";
+    ///
+    /// await init();
+    ///
+    /// const keyBytes = Uint8Array.from([
+    ///   // 32 bytes
+    /// ]);
+    ///
+    /// const key = PrivateKey.fromBytes(keyBytes);
+    ///
+    /// const builder = new TxBuilder(settings);
+    /// // ... configure builder ...
+    /// await builder.sign(key);
+    /// ```
+    #[wasm_bindgen(constructor)]
+    pub fn new(signing_key_bytes: &[u8]) -> Result<Self, JsValue> {
+        Self::from_bytes(signing_key_bytes)
+    }
+
+    /// Construct a bytes-backed key.
+    #[wasm_bindgen(js_name = fromBytes)]
+    pub fn from_bytes(signing_key_bytes: &[u8]) -> Result<Self, JsValue> {
+        if signing_key_bytes.len() != 32 {
+            return Err(JsValue::from_str("Private key must be 32 bytes"));
+        }
+
+        let signing_key = CryptoPrivateKey(U256::from_be_slice(signing_key_bytes));
+        let public_key_bytes = signing_key.public_key().to_be_bytes();
+
+        Ok(Self {
+            backend: PrivateKeyBackend::Bytes(BytesPrivateKeyBackend {
+                signing_key,
+                public_key_bytes,
+            }),
+        })
+    }
+
+    /// Return this key's public key as 97-byte uncompressed bytes.
+    #[wasm_bindgen(getter, js_name = publicKey)]
+    pub fn public_key(&self) -> Vec<u8> {
+        match &self.backend {
+            PrivateKeyBackend::Bytes(bytes_backend) => bytes_backend.public_key_bytes.to_vec(),
+        }
+    }
+
+    /// Return the derivation path for this key backend, if available.
+    ///
+    /// Bytes-backed keys return `undefined` in JavaScript.
+    #[wasm_bindgen(getter, js_name = derivationPath)]
+    pub fn derivation_path(&self) -> Option<String> {
+        match &self.backend {
+            PrivateKeyBackend::Bytes(_) => None,
+        }
+    }
+
+    /// Return the backend kind for debugging and feature checks.
+    #[wasm_bindgen(js_name = backendKind)]
+    pub fn backend_kind(&self) -> String {
+        match &self.backend {
+            PrivateKeyBackend::Bytes(_) => "bytes".to_string(),
+        }
+    }
+}
+
+impl WasmPrivateKey {
+    fn signing_key(&self) -> &CryptoPrivateKey {
+        match &self.backend {
+            PrivateKeyBackend::Bytes(bytes_backend) => &bytes_backend.signing_key,
+        }
+    }
+}
 
 #[wasm_bindgen(js_name = TxBuilder)]
 pub struct WasmTxBuilder {
@@ -1041,38 +1206,23 @@ pub struct WasmTxBuilder {
 impl WasmTxBuilder {
     /// Create an empty transaction builder
     #[wasm_bindgen(constructor)]
-    pub fn new(fee_per_word: Nicks) -> Self {
+    pub fn new(settings: TxEngineSettings) -> Self {
         Self {
-            builder: TxBuilder::new(fee_per_word),
+            builder: TxBuilder::new(settings),
         }
     }
 
-    /// Reconstruct a builder from raw transaction and its input notes.
-    ///
-    /// To get the builder back, you must pass the notes and their corresponding spend conditions.
-    /// If serializing the builder, call `WasmTxBuilder::all_notes`.
-    #[wasm_bindgen(js_name = fromTx)]
-    pub fn from_tx(
-        tx: WasmRawTx,
-        notes: Vec<WasmNote>,
-        spend_conditions: Vec<WasmSpendCondition>,
-    ) -> Result<Self, JsValue> {
-        if notes.len() != spend_conditions.len() {
-            return Err(JsValue::from_str(
-                "notes and spend_conditions must have the same length",
-            ));
-        }
+    /// Reconstruct a builder from raw transaction.
+    #[wasm_bindgen(js_name = fromRawTx)]
+    pub fn from_raw_tx(tx: RawTx, settings: TxEngineSettings) -> Result<Self, JsValue> {
+        let builder = TxBuilder::from_raw_tx(tx, settings).map_err(|e| e.to_string())?;
+        Ok(Self { builder })
+    }
 
-        let internal_notes: Result<BTreeMap<Name, (Note, SpendCondition)>, String> = notes
-            .iter()
-            .zip(spend_conditions.iter())
-            .map(|(n, sc)| Ok((n.to_internal()?, sc.to_internal()?)))
-            .map(|v| v.map(|(a, b)| (a.name.clone(), (a, b))))
-            .collect();
-        let internal_notes = internal_notes.map_err(|e| JsValue::from_str(&e.to_string()))?;
-
-        let builder = TxBuilder::from_tx(tx.internal, internal_notes).map_err(|e| e.to_string())?;
-
+    /// Reconstruct a builder from Nockchain transaction.
+    #[wasm_bindgen(js_name = fromNockchainTx)]
+    pub fn from_nockchain_tx(tx: NockchainTx, settings: TxEngineSettings) -> Result<Self, JsValue> {
+        let builder = TxBuilder::from_nockchain_tx(tx, settings).map_err(|e| e.to_string())?;
         Ok(Self { builder })
     }
 
@@ -1101,29 +1251,31 @@ impl WasmTxBuilder {
     /// `include_lock_data` can be used to include `%lock` key in note-data, with the
     /// `SpendCondition` used. However, note-data costs 1 << 15 nicks, which means, it can get
     /// expensive.
+=======
+>>>>>>> upstream/main
     #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = simpleSpend)]
     pub fn simple_spend(
         &mut self,
-        notes: Vec<WasmNote>,
-        spend_conditions: Vec<WasmSpendCondition>,
-        recipient: WasmDigest,
+        notes: Vec<Note>,
+        locks: Vec<TxLock>,
+        recipient: Digest,
         gift: Nicks,
         fee_override: Option<Nicks>,
-        refund_pkh: WasmDigest,
+        refund_pkh: Digest,
         include_lock_data: bool,
         memo: Option<JsValue>,
     ) -> Result<(), JsValue> {
-        if notes.len() != spend_conditions.len() {
+        if notes.len() != locks.len() {
             return Err(JsValue::from_str(
-                "notes and spend_conditions must have the same length",
+                "notes and locks must have the same length",
             ));
         }
 
-        let internal_notes: Result<Vec<(Note, SpendCondition)>, String> = notes
-            .iter()
-            .zip(spend_conditions.iter())
-            .map(|(n, sc)| Ok((n.to_internal()?, sc.to_internal()?)))
+        let internal_notes: Vec<(Note, Option<(Lock, usize)>)> = notes
+            .into_iter()
+            .zip(locks)
+            .map(|(n, lck)| (n, lck.into_tuple()))
             .collect();
         let internal_notes = internal_notes.map_err(|e| JsValue::from_str(&e.to_string()))?;
         let memo = memo_from_js(memo)?;
@@ -1131,9 +1283,9 @@ impl WasmTxBuilder {
         self.builder
             .simple_spend_base(
                 internal_notes,
-                recipient.to_internal()?,
+                recipient,
                 gift,
-                refund_pkh.to_internal()?,
+                refund_pkh,
                 include_lock_data,
                 memo,
             )
@@ -1155,13 +1307,6 @@ impl WasmTxBuilder {
         self.builder.spend(spend.into()).map(|v| v.into())
     }
 
-    /// Distributes `fee` across builder's spends, and balances refunds out
-    ///
-    /// `adjust_fee` parameter allows the fee to be slightly tweaked, whenever notes are added or
-    /// removed to/from the builder's fee note pool. This is because using more or less notes
-    /// impacts the exact fee being required. If the caller estimates fee and sets it, adding more
-    /// notes will change the exact fee needed, and setting this parameter to true will allow one
-    /// to not have to call this function multiple times.
     #[wasm_bindgen(js_name = setFeeAndBalanceRefund)]
     pub fn set_fee_and_balance_refund(
         &mut self,
@@ -1175,7 +1320,6 @@ impl WasmTxBuilder {
         Ok(())
     }
 
-    /// Recalculate fee and set it, balancing things out with refunds
     #[wasm_bindgen(js_name = recalcAndSetFee)]
     pub fn recalc_and_set_fee(&mut self, include_lock_data: bool) -> Result<(), JsValue> {
         self.builder
@@ -1184,32 +1328,19 @@ impl WasmTxBuilder {
         Ok(())
     }
 
-    /// Appends `preimage_jam` to all spend conditions that expect this preimage.
     #[wasm_bindgen(js_name = addPreimage)]
-    pub fn add_preimage(&mut self, preimage_jam: &[u8]) -> Result<Option<WasmDigest>, JsValue> {
+    pub fn add_preimage(&mut self, preimage_jam: &[u8]) -> Result<Option<Digest>, JsValue> {
         let preimage = cue(preimage_jam).ok_or("Unable to cue preimage jam")?;
-        Ok(self
-            .builder
-            .add_preimage(preimage)
-            .map(|v| WasmDigest::from_internal(&v)))
+        Ok(self.builder.add_preimage(preimage))
     }
 
-    /// Sign the transaction with a private key.
-    ///
-    /// This will sign all spends that are still missing signature from
     #[wasm_bindgen]
-    pub fn sign(&mut self, signing_key_bytes: &[u8]) -> Result<(), JsValue> {
-        if signing_key_bytes.len() != 32 {
-            return Err(JsValue::from_str("Private key must be 32 bytes"));
-        }
-        let signing_key = PrivateKey(UBig::from_be_bytes(signing_key_bytes));
-
-        self.builder.sign(&signing_key);
+    pub async fn sign(&mut self, signing_key: &WasmPrivateKey) -> Result<(), JsValue> {
+        self.builder.sign(signing_key.signing_key());
 
         Ok(())
     }
 
-    /// Validate the transaction.
     #[wasm_bindgen]
     pub fn validate(&mut self) -> Result<(), JsValue> {
         self.builder
@@ -1219,46 +1350,19 @@ impl WasmTxBuilder {
         Ok(())
     }
 
-    /// Gets the current fee set on all spends.
     #[wasm_bindgen(js_name = curFee)]
     pub fn cur_fee(&self) -> Nicks {
         self.builder.cur_fee()
     }
 
-    /// Calculates the fee needed for the transaction.
-    ///
-    /// NOTE: if the transaction is unsigned, this function will estimate the fee needed, supposing
-    /// all signatures are added. However, this heuristic is only accurate for one signature. In
-    /// addition, this fee calculation does not estimate the size of missing preimages.
-    ///
-    /// So, first, add missing preimages, and only then calc the fee. If you're building a multisig
-    /// transaction, this value might be incorrect.
     #[wasm_bindgen(js_name = calcFee)]
     pub fn calc_fee(&self) -> Nicks {
         self.builder.calc_fee()
     }
 
-    #[wasm_bindgen(js_name = allNotes)]
-    pub fn all_notes(&self) -> WasmTxNotes {
-        let mut ret = WasmTxNotes {
-            notes: vec![],
-            spend_conditions: vec![],
-        };
-        self.builder
-            .all_notes()
-            .into_values()
-            .for_each(|(note, spend_condition)| {
-                ret.notes.push(WasmNote::from_internal(note));
-                ret.spend_conditions
-                    .push(WasmSpendCondition::from_internal(spend_condition));
-            });
-        ret
-    }
-
     #[wasm_bindgen]
-    pub fn build(&self) -> Result<WasmNockchainTx, JsValue> {
-        let tx = self.builder.build();
-        Ok(WasmNockchainTx::from_internal(&tx))
+    pub fn build(&self) -> Result<NockchainTx, JsValue> {
+        Ok(self.builder.build())
     }
 
     #[wasm_bindgen(js_name = allSpends)]
@@ -1268,27 +1372,6 @@ impl WasmTxBuilder {
             .values()
             .map(WasmSpendBuilder::from_internal)
             .collect()
-    }
-}
-
-#[wasm_bindgen(js_name = TxNotes)]
-pub struct WasmTxNotes {
-    #[wasm_bindgen(skip)]
-    pub notes: Vec<WasmNote>,
-    #[wasm_bindgen(skip)]
-    pub spend_conditions: Vec<WasmSpendCondition>,
-}
-
-#[wasm_bindgen(js_class = TxNotes)]
-impl WasmTxNotes {
-    #[wasm_bindgen(getter)]
-    pub fn notes(&self) -> Vec<WasmNote> {
-        self.notes.clone()
-    }
-
-    #[wasm_bindgen(getter, js_name = spendConditions)]
-    pub fn spend_conditions(&self) -> Vec<WasmSpendCondition> {
-        self.spend_conditions.clone()
     }
 }
 
@@ -1306,111 +1389,66 @@ impl WasmSpendBuilder {
     /// Create a new `SpendBuilder` with a given note and spend condition
     #[wasm_bindgen(constructor)]
     pub fn new(
-        note: WasmNote,
-        spend_condition: WasmSpendCondition,
-        refund_lock: Option<WasmSpendCondition>,
+        note: Note,
+        lock: Option<Lock>,
+        lock_sp_index: Option<usize>,
+        refund_lock: Option<LockRoot>,
     ) -> Result<Self, JsValue> {
         Ok(Self {
-            builder: SpendBuilder::new(
-                note.to_internal()?,
-                spend_condition.to_internal()?,
-                refund_lock.map(|v| v.to_internal()).transpose()?,
-            ),
+            builder: SpendBuilder::new(note, lock.zip(lock_sp_index), refund_lock)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?,
         })
     }
 
-    /// Set the fee of this spend
     pub fn fee(&mut self, fee: Nicks) {
         self.builder.fee(fee);
     }
 
-    /// Compute refund from any spare assets, given `refund_lock` was passed
     #[wasm_bindgen(js_name = computeRefund)]
     pub fn compute_refund(&mut self, include_lock_data: bool) {
         self.builder.compute_refund(include_lock_data);
     }
 
-    /// Get current refund
     #[wasm_bindgen(js_name = curRefund)]
-    pub fn cur_refund(&self) -> Option<WasmSeed> {
-        self.builder.cur_refund().map(|v| WasmSeed::from(v.clone()))
+    pub fn cur_refund(&self) -> Option<Seed> {
+        self.builder.cur_refund().cloned()
     }
 
-    /// Checks whether note.assets = seeds + fee
-    ///
-    /// This function needs to return true for `TxBuilder::validate` to pass
     #[wasm_bindgen(js_name = isBalanced)]
     pub fn is_balanced(&self) -> bool {
         self.builder.is_balanced()
     }
 
-    /// Add seed to this spend
-    ///
-    /// Seed is an output with a recipient (as defined by the spend condition).
-    ///
-    /// Nockchain transaction engine will take all seeds with matching lock from all spends in the
-    /// transaction, and merge them into one output note.
-    pub fn seed(&mut self, seed: WasmSeed) -> Result<(), JsValue> {
-        self.builder.seed(seed.to_internal()?);
+    pub fn seed(&mut self, seed: Seed) -> Result<(), JsValue> {
+        self.builder.seed(seed);
         Ok(())
     }
 
-    /// Manually invalidate signatures
-    ///
-    /// Each spend's fee+seeds are bound to one or more signatures. If they get changed, the
-    /// signature becomes invalid. This builder automatically invalidates signatures upon relevant
-    /// modifications, but this functionality is provided nonetheless.
     #[wasm_bindgen(js_name = invalidateSigs)]
     pub fn invalidate_sigs(&mut self) {
         self.builder.invalidate_sigs();
     }
 
-    /// Get the list of missing "unlocks"
-    ///
-    /// An unlock is a spend condition to be satisfied. For instance, for a `Pkh` spend condition,
-    /// if the transaction is unsigned, this function will return a Pkh type missing unlock, with
-    /// the list of valid PKH's and number of signatures needed. This will not return PKHs that are
-    /// already attatched to the spend (relevant for multisigs). For `Hax` spend condition, this
-    /// will return any missing preimages. This function will return a list of not-yet-validated
-    /// spend conditions.
     #[wasm_bindgen(js_name = missingUnlocks)]
-    pub fn missing_unlocks(&self) -> Result<Vec<JsValue>, JsValue> {
-        self.builder
-            .missing_unlocks()
-            .into_iter()
-            .map(|v| serde_wasm_bindgen::to_value(&WasmMissingUnlocks::from_internal(&v)))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.into())
+    pub fn missing_unlocks(&self) -> Result<Vec<MissingUnlocks>, JsValue> {
+        // MissingUnlocks is now Tsify, so we can return Vec<MissingUnlocks>
+        Ok(self.builder.missing_unlocks())
     }
 
-    /// Attatch a preimage to this spend
     #[wasm_bindgen(js_name = addPreimage)]
-    pub fn add_preimage(&mut self, preimage_jam: &[u8]) -> Result<Option<WasmDigest>, JsValue> {
+    pub fn add_preimage(&mut self, preimage_jam: &[u8]) -> Result<Option<Digest>, JsValue> {
         let preimage = cue(preimage_jam).ok_or("Unable to cue preimage jam")?;
-        Ok(self
-            .builder
-            .add_preimage(preimage)
-            .map(|v| WasmDigest::from_internal(&v)))
+        Ok(self.builder.add_preimage(preimage))
     }
 
-    /// Sign the transaction with a given private key
-    pub fn sign(&mut self, signing_key_bytes: &[u8]) -> Result<bool, JsValue> {
-        if signing_key_bytes.len() != 32 {
-            return Err(JsValue::from_str("Private key must be 32 bytes"));
-        }
-        let signing_key = PrivateKey(UBig::from_be_bytes(signing_key_bytes));
-        Ok(self.builder.sign(&signing_key))
+    pub async fn sign(&mut self, signing_key: &WasmPrivateKey) -> Result<bool, JsValue> {
+        Ok(self.builder.sign(signing_key.signing_key()))
     }
 
     fn from_internal(internal: &SpendBuilder) -> Self {
         Self {
             builder: internal.clone(),
         }
-    }
-
-    #[allow(unused)]
-    fn to_internal(&self) -> SpendBuilder {
-        self.builder.clone()
     }
 }
 
@@ -1423,179 +1461,5 @@ impl From<SpendBuilder> for WasmSpendBuilder {
 impl From<WasmSpendBuilder> for SpendBuilder {
     fn from(value: WasmSpendBuilder) -> Self {
         value.builder
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-pub enum WasmMissingUnlocks {
-    Pkh {
-        num_sigs: u64,
-        sig_of: BTreeSet<String>,
-    },
-    Hax {
-        preimages_for: BTreeSet<String>,
-    },
-    Brn,
-}
-
-impl WasmMissingUnlocks {
-    fn from_internal(internal: &MissingUnlocks) -> Self {
-        match internal {
-            MissingUnlocks::Pkh { num_sigs, sig_of } => Self::Pkh {
-                num_sigs: *num_sigs,
-                sig_of: sig_of
-                    .iter()
-                    .map(|v| WasmDigest::from_internal(v).value)
-                    .collect(),
-            },
-            MissingUnlocks::Hax { preimages_for } => Self::Hax {
-                preimages_for: preimages_for
-                    .iter()
-                    .map(|v| WasmDigest::from_internal(v).value)
-                    .collect(),
-            },
-            MissingUnlocks::Brn => Self::Brn,
-        }
-    }
-}
-
-// ============================================================================
-// Wasm Raw Transaction
-// ============================================================================
-
-#[wasm_bindgen(js_name = RawTx)]
-pub struct WasmRawTx {
-    // Store the full RawTx internally so we can convert to protobuf
-    #[wasm_bindgen(skip)]
-    pub(crate) internal: RawTx,
-}
-
-#[wasm_bindgen(js_class = RawTx)]
-impl WasmRawTx {
-    #[wasm_bindgen(getter)]
-    pub fn version(&self) -> WasmVersion {
-        WasmVersion::from_internal(&self.internal.version)
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn id(&self) -> WasmDigest {
-        WasmDigest::from_internal(&self.internal.id)
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn name(&self) -> String {
-        self.internal.id.to_string()
-    }
-
-    fn from_internal(tx: &RawTx) -> Self {
-        Self {
-            internal: tx.clone(),
-        }
-    }
-
-    /// Convert to protobuf RawTransaction for sending via gRPC
-    #[wasm_bindgen(js_name = toProtobuf)]
-    pub fn to_protobuf(&self) -> Result<JsValue, JsValue> {
-        let pb_tx = pb::RawTransaction::from(self.internal.clone());
-        serde_wasm_bindgen::to_value(&pb_tx)
-            .map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))
-    }
-
-    #[wasm_bindgen(js_name = fromProtobuf)]
-    pub fn from_protobuf(value: JsValue) -> Result<WasmRawTx, JsValue> {
-        let pb: pb::RawTransaction = serde_wasm_bindgen::from_value(value)?;
-        let tx: RawTx = pb
-            .try_into()
-            .map_err(|e| JsValue::from_str(&format!("{}", e)))?;
-        //web_sys::console::log_1(&JsValue::from_str(&format!("{tx:?}")));
-        Ok(WasmRawTx::from_internal(&tx))
-    }
-
-    /// Convert to jammed transaction file for inspecting through CLI
-    #[wasm_bindgen(js_name = toJam)]
-    pub fn to_jam(&self) -> js_sys::Uint8Array {
-        let n = self.internal.to_noun();
-        js_sys::Uint8Array::from(&jam(n)[..])
-    }
-
-    #[wasm_bindgen(js_name = fromJam)]
-    pub fn from_jam(jam: &[u8]) -> Result<Self, JsValue> {
-        let n = cue(jam).ok_or("Unable to decode jam")?;
-        let tx: RawTx = NounDecode::from_noun(&n).ok_or("Unable to decode noun")?;
-        Ok(Self::from_internal(&tx))
-    }
-
-    /// Calculate output notes from the transaction spends.
-    #[wasm_bindgen]
-    pub fn outputs(&self) -> Vec<WasmNote> {
-        self.internal
-            .outputs()
-            .into_iter()
-            .map(WasmNote::from_internal)
-            .collect()
-    }
-
-    #[wasm_bindgen(js_name = toNockchainTx)]
-    pub fn to_nockchain_tx(&self) -> WasmNockchainTx {
-        WasmNockchainTx::from_internal(&self.internal.to_nockchain_tx())
-    }
-}
-
-#[wasm_bindgen(js_name = NockchainTx)]
-pub struct WasmNockchainTx {
-    #[wasm_bindgen(skip)]
-    pub(crate) internal: NockchainTx,
-}
-
-#[wasm_bindgen(js_class = NockchainTx)]
-impl WasmNockchainTx {
-    #[wasm_bindgen(getter)]
-    pub fn version(&self) -> WasmVersion {
-        WasmVersion::from_internal(&self.internal.version)
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn id(&self) -> WasmDigest {
-        WasmDigest::from_internal(&self.internal.id)
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn name(&self) -> String {
-        self.internal.id.to_string()
-    }
-
-    fn from_internal(tx: &NockchainTx) -> Self {
-        Self {
-            internal: tx.clone(),
-        }
-    }
-
-    /// Convert to jammed transaction file for inspecting through CLI
-    #[wasm_bindgen(js_name = toJam)]
-    pub fn to_jam(&self) -> js_sys::Uint8Array {
-        let n = self.internal.to_noun();
-        js_sys::Uint8Array::from(&jam(n)[..])
-    }
-
-    /// Convert from CLI-compatible jammed transaction file
-    #[wasm_bindgen(js_name = fromJam)]
-    pub fn from_jam(jam: &[u8]) -> Result<Self, JsValue> {
-        let n = cue(jam).ok_or("Unable to decode jam")?;
-        let tx: NockchainTx = NounDecode::from_noun(&n).ok_or("Unable to decode noun")?;
-        Ok(Self::from_internal(&tx))
-    }
-
-    #[wasm_bindgen]
-    pub fn outputs(&self) -> Vec<WasmNote> {
-        self.internal
-            .outputs()
-            .into_iter()
-            .map(WasmNote::from_internal)
-            .collect()
-    }
-
-    #[wasm_bindgen(js_name = toRawTx)]
-    pub fn to_raw_tx(&self) -> WasmRawTx {
-        WasmRawTx::from_internal(&self.internal.to_raw_tx())
     }
 }

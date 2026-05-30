@@ -5,7 +5,7 @@ edition.workspace = true
 keywords = ["nockchain", "iris", "wallet", "nock"]
 license = "MIT"
 repository = "https://github.com/nockbox/iris-rs"
-rust-version = "1.85.0"
+rust-version = "1.88.0"
 description = "Cryptographic primitives for Iris Nockchain Wallet"
 documentation = "https://docs.rs/iris-crypto"
 homepage = "https://nockbox.org"
@@ -13,14 +13,28 @@ authors = ["NockBox inc. <tech@nockbox.org>"]
 
 [dependencies]
 iris-ztd = { workspace = true }
-iris-ztd-derive = { path = "../iris-ztd-derive" }
+iris-ztd-derive = { workspace = true }
 ibig = { workspace = true }
-bip39 = { version = "2.0", default-features = false, features = ["alloc", "std"] }
-argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
-hmac = "0.12"
-sha2 = "0.10"
-bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
-serde = { version = "1.0", features = ["derive"] }
+bip39 = { version = "2.0", default-features = false, features = [], optional = true }
+argon2 = { version = "0.5.3", default-features = false, features = [], optional = true }
+hmac = { version = "0.12", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+bs58 = { version = "0.5", default-features = false, features = [] }
+serde = { workspace = true }
+arrayvec = "0.7"
+tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+crypto-bigint.workspace = true
+serdect.workspace = true
+hex = { version = "0.4", optional = true }
 
 [dev-dependencies]
 hex = "0.4"
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+
+[features]
+default = ["alloc", "argon2", "mnemonic"]
+alloc = ["iris-ztd/alloc", "argon2/alloc", "bip39/alloc", "serde/alloc", "bs58/alloc", "serdect/alloc", "hex"]
+argon2 = ["dep:argon2", "alloc"]
+mnemonic = ["dep:bip39", "alloc"]
+wasm = ["iris-ztd/wasm", "tsify", "wasm-bindgen"]

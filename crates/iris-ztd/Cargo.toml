@@ -5,21 +5,30 @@ edition.workspace = true
 keywords = ["nockchain", "iris", "wallet", "nock"]
 license = "MIT"
 repository = "https://github.com/nockbox/iris-rs"
-rust-version = "1.85.0"
+rust-version = "1.88.0"
 description = "Base Zero-knowledge data structures and noun-lib for Nockchain"
 documentation = "https://docs.rs/iris-ztd"
 homepage = "https://nockbox.org"
 authors = ["NockBox inc. <tech@nockbox.org>"]
 
 [dependencies]
-bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
-bitvec = { version = "1.0", default-features = false, features = ["alloc"] }
+bs58 = { version = "0.5", default-features = false }
+bitvec = { version = "1.0", default-features = false }
 ibig = { workspace = true }
-once_cell = "1.21"
+crypto-bigint = { workspace = true }
 arrayref = "0.3"
 num-traits = { version = "0.2", default-features = false }
-serde = { version = "1.0", features = ["derive"], default-features = false }
+serde = { workspace = true }
+iris-ztd-derive = { workspace = true }
+arrayvec = "0.7"
+tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+either = { version = "1", default_features = false }
+
+[dev-dependencies]
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
 [features]
-default = ["std"]
-std = ["serde/std"]
+default = ["alloc"]
+alloc = ["bs58/alloc", "bitvec/alloc", "serde/alloc", "serde/rc"]
+wasm = ["tsify", "alloc", "wasm-bindgen"]

@@ -5,7 +5,7 @@ edition.workspace = true
 keywords = ["nockchain", "iris", "wallet", "nock"]
 license = "MIT"
 repository = "https://github.com/nockbox/iris-rs"
-rust-version = "1.85.0"
+rust-version = "1.88.0"
 description = "WASM bindings for Iris wallet"
 documentation = "https://docs.rs/iris-wasm"
 homepage = "https://nockbox.org"
@@ -15,19 +15,24 @@ authors = ["NockBox inc. <tech@nockbox.org>"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-iris-crypto = { workspace = true }
-iris-nockchain-types = { workspace = true }
-iris-ztd = { workspace = true }
-iris-grpc-proto = { path = "../iris-grpc-proto" }
+iris-crypto = { workspace = true, features = ["default", "wasm"] }
+iris-nockchain-types = { workspace = true, features = ["wasm"] }
+iris-ztd = { workspace = true, features = ["default", "wasm"] }
+iris-grpc-proto = { workspace = true, features = ["wasm"] }
 ibig = { workspace = true }
 bip39 = { version = "2.0", default-features = false, features = ["alloc", "std"] }
-serde = { version = "1.0", features = ["derive"] }
-wasm-bindgen = "0.2"
+serde = { workspace = true }
+tsify = { workspace = true }
+wasm-bindgen.workspace = true
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
-serde-wasm-bindgen = "0.6"
 tonic-web-wasm-client = "0.6"
 web-sys = { version = "0.3", features = ["console"] }
+console_error_panic_hook = "0.1.7"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+
+[features]
+default = ["private-api"]
+private-api = ["iris-grpc-proto/private-api"]

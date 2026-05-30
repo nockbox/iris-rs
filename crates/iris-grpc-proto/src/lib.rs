@@ -192,6 +192,7 @@ pub mod serde_hash_as_base58 {
     where
         S: Serializer,
         for<'a> &'a T: TryInto<Base58Belts<N>>,
+        Base58Belts<N>: iris_ztd::Limbable,
     {
         match hash {
             None => serializer.serialize_none(),
@@ -208,7 +209,7 @@ pub mod serde_hash_as_base58 {
     pub fn deserialize<'de, D, T, const N: usize>(deserializer: D) -> Result<Option<T>, D::Error>
     where
         D: Deserializer<'de>,
-        Base58Belts<N>: Into<T>,
+        Base58Belts<N>: Into<T> + iris_ztd::Limbable,
     {
         let s = Option::<String>::deserialize(deserializer)?;
         match s {
@@ -291,6 +292,13 @@ pub mod pb {
     pub mod public {
         pub mod v2 {
             include!(concat!(env!("OUT_DIR"), "/nockchain.public.v2.rs"));
+        }
+    }
+
+    #[cfg(feature = "private-api")]
+    pub mod private {
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/nockchain.private.v1.rs"));
         }
     }
 

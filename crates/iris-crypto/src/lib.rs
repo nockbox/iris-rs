@@ -1,13 +1,25 @@
+#![no_std]
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
+#[cfg(feature = "alloc")]
+use alloc::string::{String, ToString};
+
 pub mod cheetah;
 pub mod slip10;
 
 pub use cheetah::{PrivateKey, PublicKey, Signature};
 pub use slip10::{derive_master_key, ExtendedKey};
 
+#[cfg(feature = "mnemonic")]
+pub use bip39::Mnemonic;
+pub use iris_ztd::{Digest, Hashable};
+
+#[cfg(feature = "argon2")]
 use argon2::{Algorithm, Argon2, Params, Version};
-use bip39::Mnemonic;
 
 /// Generate master key from entropy and salt using Argon2 + BIP39 + SLIP-10
+#[cfg(all(feature = "argon2", feature = "mnemonic"))]
 pub fn gen_master_key(entropy: &[u8], salt: &[u8]) -> (String, ExtendedKey) {
     let mut argon_output = [0u8; 32];
     let params = Params::new(
@@ -33,6 +45,9 @@ pub fn gen_master_key(entropy: &[u8], salt: &[u8]) -> (String, ExtendedKey) {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
+    use alloc::string::{String, ToString};
+    use alloc::{vec, vec::Vec};
     use ibig::UBig;
     use iris_ztd::Hashable;
 
@@ -57,6 +72,7 @@ mod tests {
         res
     }
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn test_keygen() {
         const LOG_ENTROPY_DEC: &str =
@@ -82,6 +98,20 @@ mod tests {
         assert_eq!(
             keypair.public_key.hash().to_string(),
             "AyzPiJoqcqmdZdjxZ9aGLnVsbYcCphidHERKBWVXyKhNqTirshTmicG"
+        );
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_ledger_keygen() {
+        // This private key is derived from the default seed and default path for CX_CURVE_Ed25519
+        // on ledger devices
+        let speculos_default_seed =
+            hex::decode("781FB0E232257AE8F9471884436EBC5617E33BF9B8316C35E489052917D40055575003F3D82B18415AE90D24A70FCDE604FF27AD0D8E0FFDF10EF0C41447516D").unwrap();
+        let keypair = derive_master_key(&speculos_default_seed);
+        assert_eq!(
+            keypair.public_key.hash().to_string(),
+            "4EUr383qLuCEzejdmCigFhrsoDkHG2crGxBBFhR35zjVfzn5QdhazGb"
         );
     }
 }

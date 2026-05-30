@@ -1,0 +1,1847 @@
+use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
+use alloc::{boxed::Box, format};
+use iris_crypto::{PublicKey, Signature};
+use iris_ztd::{
+    tas, Bignum, Digest, Either, FixedU64, Hashable, MerkleProof, MerkleProvenAxis, Noun,
+    NounDecode, NounEncode, ZMap, ZSet,
+};
+use serde::{Deserialize, Serialize};
+
+use super::note::{BlockHeight, ExpectedVersion, Name, Note, Source, TimelockRange, Version};
+use super::v0::LegacySignature;
+use super::{BlockchainConstants, TxEngineSettings, TxId};
+use crate::Nicks;
+
+fn noun_words(n: &Noun) -> u64 {
+    match n {
+        Noun::Atom(_) => 1,
+        Noun::Cell(l, r) => noun_words(l) + noun_words(r),
+    }
+}
+
+#[derive(Debug, Clone, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct Pkh {
+    pub m: u64,
+    pub hashes: ZSet<Digest>,
+}
+
+#[iris_ztd::wasm_member_methods]
+impl Pkh {
+    pub fn new(m: u64, hashes: Vec<Digest>) -> Self {
+        Self {
+            m,
+            hashes: hashes.into(),
+        }
+    }
+
+    pub fn single(hash: Digest) -> Self {
+        Self {
+            m: 1,
+            hashes: [hash].into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, NounDecode, NounEncode)]
+#[iris_ztd::wasm_noun_codec]
+pub struct NoteData(pub ZMap<String, Noun>);
+
+impl Hashable for NoteData {
+    fn hash(&self) -> Digest {
+        fn hash_noun(noun: &Noun) -> Digest {
+            match noun {
+                Noun::Atom(a) => {
+                    let u: u64 = a.try_into().unwrap();
+                    u.hash()
+                }
+                Noun::Cell(left, right) => (hash_noun(left), hash_noun(right)).hash(),
+            }
+        }
+        self.0
+            .iter()
+            .map(|(k, v)| (k, hash_noun(v)))
+            .collect::<ZMap<_, _>>()
+            .hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
+}
+
+#[iris_ztd::wasm_member_methods]
+impl NoteData {
+    pub fn empty() -> Self {
+        Self(ZMap::new())
+    }
+
+    pub fn from_pkh(pkh: Pkh) -> Self {
+        let mut ret = Self::empty();
+        ret.push_pkh(pkh);
+        ret
+    }
+
+    pub fn fee_words(&self) -> u64 {
+        let mut w = 1;
+
+        for (_, v) in &self.0 {
+            w += 1 + noun_words(v);
+        }
+
+        w
+    }
+}
+
+impl NoteData {
+    pub fn push_lock(&mut self, lock: Lock) {
+        self.0.insert("lock".to_string(), (0, lock).to_noun());
+    }
+
+    pub fn push_pkh(&mut self, pkh: Pkh) {
+        self.0
+            .insert("lock".to_string(), (0, ("pkh", &pkh), 0).to_noun());
+    }
+}
+
+#[derive(Debug, Clone, Hashable, Serialize, Deserialize, NounEncode, NounDecode, PartialEq, Eq)]
+#[iris_ztd::wasm_noun_codec]
+pub struct NoteV1 {
+    pub version: Version,
+    pub origin_page: BlockHeight,
+    pub name: Name,
+    pub note_data: NoteData,
+    pub assets: Nicks,
+}
+
+impl NoteV1 {
+    pub fn new(
+        version: Version,
+        origin_page: BlockHeight,
+        name: Name,
+        note_data: NoteData,
+        assets: Nicks,
+    ) -> Self {
+        Self {
+            version,
+            origin_page,
+            name,
+            note_data,
+            assets,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+#[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
+pub enum LockRoot {
+    Hash(Digest),
+    Lock(Lock),
+}
+
+impl NounEncode for LockRoot {
+    fn to_noun(&self) -> Noun {
+        match self {
+            LockRoot::Hash(d) => d.to_noun(),
+            LockRoot::Lock(l) => l.hash().to_noun(),
+        }
+    }
+}
+
+impl NounDecode for LockRoot {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let d = Digest::from_noun(noun)?;
+        Some(Self::Hash(d))
+    }
+}
+
+impl From<Digest> for LockRoot {
+    fn from(value: Digest) -> Self {
+        Self::Hash(value)
+    }
+}
+
+impl From<LockRoot> for Digest {
+    fn from(value: LockRoot) -> Self {
+        match value {
+            LockRoot::Hash(d) => d,
+            LockRoot::Lock(l) => l.hash(),
+        }
+    }
+}
+
+impl Hashable for LockRoot {
+    fn hash(&self) -> Digest {
+        match self {
+            LockRoot::Hash(d) => *d,
+            LockRoot::Lock(l) => l.hash(),
+        }
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct SeedV1 {
+    pub output_source: Option<Source>,
+    pub lock_root: LockRoot,
+    pub note_data: NoteData,
+    pub gift: Nicks,
+    pub parent_hash: Digest,
+}
+
+#[iris_ztd::wasm_member_methods]
+impl SeedV1 {
+    pub fn new_single_pkh(
+        pkh: Digest,
+        gift: Nicks,
+        parent_hash: Digest,
+        include_lock_data: bool,
+    ) -> Self {
+        let lock_root = LockRoot::Lock(SpendCondition::new_pkh(Pkh::single(pkh)).into());
+        let mut note_data = NoteData::empty();
+        if include_lock_data {
+            note_data.push_pkh(Pkh::single(pkh));
+        }
+        Self {
+            output_source: None,
+            lock_root,
+            note_data,
+            gift,
+            parent_hash,
+        }
+    }
+
+    pub fn note_data_words(&self) -> u64 {
+        self.note_data.fee_words()
+    }
+}
+
+impl Hashable for SeedV1 {
+    fn hash(&self) -> Digest {
+        // output source is omitted
+        (
+            &self.lock_root,
+            &self.note_data,
+            &self.gift,
+            &self.parent_hash,
+        )
+            .hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        (
+            &self.lock_root,
+            (&self.note_data, &self.gift, &self.parent_hash),
+        )
+            .leaf_count()
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Some((
+            &self.lock_root,
+            (&self.note_data, &self.gift, &self.parent_hash),
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SigHashSeedV1<'a>(&'a SeedV1);
+
+impl Hashable for SigHashSeedV1<'_> {
+    fn hash(&self) -> Digest {
+        // output source is included
+        (
+            &self.0.output_source,
+            &self.0.lock_root,
+            &self.0.note_data,
+            &self.0.gift,
+            &self.0.parent_hash,
+        )
+            .hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        (
+            &self.0.output_source,
+            (
+                &self.0.lock_root,
+                &self.0.note_data,
+                &self.0.gift,
+                &self.0.parent_hash,
+            ),
+        )
+            .leaf_count()
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Some((
+            &self.0.output_source,
+            (
+                &self.0.lock_root,
+                &self.0.note_data,
+                &self.0.gift,
+                &self.0.parent_hash,
+            ),
+        ))
+    }
+}
+
+impl<'a> NounEncode for SigHashSeedV1<'a> {
+    fn to_noun(&self) -> Noun {
+        self.0.to_noun()
+    }
+}
+
+#[derive(Debug, Clone, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct SeedsV1(pub ZSet<SeedV1>);
+
+impl SeedsV1 {
+    pub fn sig_hash(&self) -> Digest {
+        ZSet::from_iter(self.0.iter().map(SigHashSeedV1)).hash()
+    }
+
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&SeedV1) -> bool,
+    {
+        let new_set: ZSet<SeedV1> = self.0.iter().filter(|s| f(s)).cloned().collect();
+        self.0 = new_set;
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+pub struct Spend0V1 {
+    pub signature: LegacySignature,
+    pub seeds: SeedsV1,
+    pub fee: Nicks,
+}
+
+impl Spend0V1 {
+    pub fn sig_hash(&self) -> Digest {
+        (&self.seeds.sig_hash(), self.fee).hash()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi, from_wasm_abi))]
+pub struct Spend1V1 {
+    pub witness: Witness,
+    pub seeds: SeedsV1,
+    pub fee: Nicks,
+}
+
+#[iris_ztd::wasm_member_methods]
+impl Spend1V1 {
+    pub fn sig_hash(&self) -> Digest {
+        (&self.seeds.sig_hash(), self.fee).hash()
+    }
+}
+
+#[iris_ztd::noun_derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    NounEncode,
+    NounDecode,
+    tsify_wasm
+)]
+#[iris_ztd::wasm_noun_codec(no_derive, no_hash)]
+pub enum SpendV1 {
+    #[noun(tag = 0)]
+    S0(Spend0V1),
+    #[noun(tag = 1)]
+    S1(Spend1V1),
+}
+
+impl AsRef<SpendV1> for SpendV1 {
+    fn as_ref(&self) -> &SpendV1 {
+        self
+    }
+}
+
+#[iris_ztd::wasm_member_methods]
+impl SpendV1 {
+    pub fn unclamped_fee(&self, settings: &TxEngineSettings) -> Nicks {
+        let (a, b) = self.calc_words();
+        settings.cost_per_word * (a + b)
+    }
+
+    pub fn new_legacy(seeds: SeedsV1, fee: Nicks) -> Self {
+        SpendV1::S0(Spend0V1 {
+            signature: LegacySignature::default(),
+            seeds,
+            fee,
+        })
+    }
+
+    pub fn new_witness(witness: Witness, seeds: SeedsV1, fee: Nicks) -> Self {
+        SpendV1::S1(Spend1V1 {
+            witness,
+            seeds,
+            fee,
+        })
+    }
+
+    pub fn fee(&self) -> Nicks {
+        match self {
+            SpendV1::S0(spend) => spend.fee,
+            SpendV1::S1(spend) => spend.fee,
+        }
+    }
+
+    pub fn total_gifts(&self) -> Nicks {
+        match self {
+            SpendV1::S0(spend) => spend.seeds.0.iter().fold(Nicks(0), |acc, s| acc + s.gift),
+            SpendV1::S1(spend) => spend.seeds.0.iter().fold(Nicks(0), |acc, s| acc + s.gift),
+        }
+    }
+
+    #[transform_output(SeedsV1, out.clone())]
+    pub fn seeds(&self) -> &SeedsV1 {
+        match self {
+            SpendV1::S0(spend) => &spend.seeds,
+            SpendV1::S1(spend) => &spend.seeds,
+        }
+    }
+
+    pub fn sig_hash(&self) -> Digest {
+        match self {
+            SpendV1::S0(spend) => spend.sig_hash(),
+            SpendV1::S1(spend) => spend.sig_hash(),
+        }
+    }
+}
+
+impl SpendV1 {
+    pub fn calc_words(&self) -> (u64, u64) {
+        match self {
+            SpendV1::S0(spend) => {
+                let seed_words: u64 = spend
+                    .seeds
+                    .0
+                    .iter()
+                    .map(|seed| seed.note_data_words())
+                    .sum();
+                let sig_words = noun_words(&spend.signature.to_noun());
+                (seed_words, sig_words)
+            }
+            SpendV1::S1(spend) => {
+                let seed_words: u64 = spend
+                    .seeds
+                    .0
+                    .iter()
+                    .map(|seed| seed.note_data_words())
+                    .sum();
+                let witness_words = noun_words(&spend.witness.to_noun());
+                (seed_words, witness_words)
+            }
+        }
+    }
+
+    pub fn fee_mut(&mut self) -> &mut Nicks {
+        match self {
+            SpendV1::S0(spend) => &mut spend.fee,
+            SpendV1::S1(spend) => &mut spend.fee,
+        }
+    }
+
+    pub fn seeds_mut(&mut self) -> &mut SeedsV1 {
+        match self {
+            SpendV1::S0(spend) => &mut spend.seeds,
+            SpendV1::S1(spend) => &mut spend.seeds,
+        }
+    }
+
+    pub fn add_signature(&mut self, key: PublicKey, signature: Signature) {
+        match self {
+            SpendV1::S0(spend) => {
+                spend.signature.add_entry(key, signature);
+            }
+            SpendV1::S1(spend) => {
+                spend
+                    .witness
+                    .pkh_signature
+                    .0
+                    .insert(key.hash(), (key, signature));
+            }
+        }
+    }
+
+    pub fn add_preimage(&mut self, preimage: Noun) -> Digest {
+        match self {
+            SpendV1::S0(_) => {
+                // Legacy spends do not carry hax preimages
+                preimage.hash()
+            }
+            SpendV1::S1(spend) => {
+                let digest = preimage.hash();
+                spend.witness.hax_map.insert(digest, preimage);
+                digest
+            }
+        }
+    }
+
+    pub fn clear_signatures(&mut self) {
+        match self {
+            SpendV1::S0(spend) => spend.signature.clear(),
+            SpendV1::S1(spend) => spend.witness.pkh_signature.0.clear(),
+        }
+    }
+}
+
+impl Hashable for SpendV1 {
+    fn hash(&self) -> Digest {
+        match self {
+            SpendV1::S0(spend) => (Version::V0, &spend.signature, &spend.seeds, &spend.fee).hash(),
+            SpendV1::S1(spend) => (Version::V1, &spend.witness, &spend.seeds, &spend.fee).hash(),
+        }
+    }
+
+    fn leaf_count(&self) -> usize {
+        match self {
+            SpendV1::S0(spend) => {
+                (Version::V0, &spend.signature, &spend.seeds, &spend.fee).leaf_count()
+            }
+            SpendV1::S1(spend) => {
+                (Version::V1, &spend.witness, &spend.seeds, &spend.fee).leaf_count()
+            }
+        }
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        match self {
+            SpendV1::S0(spend) => Some((
+                Version::V0,
+                (Either::Left(&spend.signature), &spend.seeds, &spend.fee),
+            )),
+            SpendV1::S1(spend) => Some((
+                Version::V1,
+                (Either::Right(&spend.witness), &spend.seeds, &spend.fee),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct PkhSignature(pub ZMap<Digest, (PublicKey, Signature)>);
+
+#[derive(Debug, Clone, Hashable, NounEncode, NounDecode, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct Witness {
+    pub lock_merkle_proof: LockMerkleProof,
+    pub pkh_signature: PkhSignature,
+    pub hax_map: ZMap<Digest, Noun>,
+    pub tim: (),
+}
+
+impl Witness {
+    pub fn new(lock: Lock, index: usize) -> Self {
+        let spend_condition = lock[index].clone();
+        let leaf_number = if lock.height() == 1 { index } else { index + 1 };
+        let MerkleProvenAxis { proof, axis } = MerkleProof::prove_hashable(&lock, leaf_number);
+        let lock_merkle_proof = if axis == 1 && proof.path.is_empty() {
+            LockMerkleProof::Stub(LockMerkleProofStub {
+                spend_condition,
+                axis: Default::default(),
+                proof,
+            })
+        } else {
+            LockMerkleProof::Full(LockMerkleProofFull {
+                spend_condition,
+                axis,
+                proof,
+            })
+        };
+        Self {
+            lock_merkle_proof,
+            pkh_signature: PkhSignature(ZMap::new()),
+            hax_map: ZMap::new(),
+            tim: (),
+        }
+    }
+
+    pub fn take_data(&mut self) -> Self {
+        let pkh_signature = core::mem::take(&mut self.pkh_signature);
+        let hax_map = core::mem::take(&mut self.hax_map);
+        Self {
+            lock_merkle_proof: self.lock_merkle_proof.clone(),
+            pkh_signature,
+            hax_map,
+            tim: (),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+#[iris_ztd::noun_derive(NounEncode, NounDecode, Hashable, Serialize, Deserialize, tsify_wasm)]
+#[iris_ztd::wasm_noun_codec(no_derive)]
+#[noun(tag_ident = version)]
+pub enum LockMerkleProof {
+    #[noun(cell)]
+    Stub(LockMerkleProofStub),
+    #[noun(tag = "full")]
+    Full(LockMerkleProofFull),
+}
+
+impl LockMerkleProof {
+    pub fn spend_condition(&self) -> &SpendCondition {
+        match self {
+            Self::Stub(lmp) => &lmp.spend_condition,
+            Self::Full(lmp) => &lmp.spend_condition,
+        }
+    }
+
+    pub fn axis(&self) -> u64 {
+        match self {
+            Self::Stub(lmp) => *lmp.axis,
+            Self::Full(lmp) => lmp.axis,
+        }
+    }
+
+    pub fn proof(&self) -> &MerkleProof {
+        match self {
+            Self::Stub(lmp) => &lmp.proof,
+            Self::Full(lmp) => &lmp.proof,
+        }
+    }
+
+    pub fn version(&self) -> Option<u64> {
+        match self {
+            Self::Stub(_) => None,
+            Self::Full(_) => Some(tas!("full")),
+        }
+    }
+
+    pub fn version_str(&self) -> Option<&str> {
+        match self {
+            Self::Stub(_) => None,
+            Self::Full(_) => Some("full"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize, Hashable)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockMerkleProofFull {
+    pub spend_condition: SpendCondition,
+    pub axis: u64,
+    pub proof: MerkleProof,
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockMerkleProofStub {
+    pub spend_condition: SpendCondition,
+    #[cfg_attr(feature = "wasm", tsify(type = "1"))]
+    pub axis: FixedU64<1>,
+    pub proof: MerkleProof,
+}
+
+impl Hashable for LockMerkleProofStub {
+    fn hash(&self) -> Digest {
+        // NOTE: lmao
+        let axis_mold_hash: Digest = "6mhCSwJQDvbkbiPAUNjetJtVoo1VLtEhmEYoU4hmdGd6ep1F6ayaV4A"
+            .try_into()
+            .unwrap();
+        (&self.spend_condition.hash(), axis_mold_hash, &self.proof).hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        (&self.spend_condition, 0, &self.proof).leaf_count()
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        // NOTE: lmao
+        let axis_mold_hash: Digest = "6mhCSwJQDvbkbiPAUNjetJtVoo1VLtEhmEYoU4hmdGd6ep1F6ayaV4A"
+            .try_into()
+            .unwrap();
+
+        Some((&self.spend_condition, (axis_mold_hash, &self.proof)))
+    }
+}
+
+#[iris_ztd::noun_derive(
+    Debug,
+    Clone,
+    NounEncode,
+    NounDecode,
+    Hashable,
+    Serialize,
+    Deserialize,
+    tsify_wasm
+)]
+#[iris_ztd::wasm_noun_codec(with_prove, no_derive)]
+pub enum Lock {
+    #[noun(cell)]
+    Single(SpendCondition),
+    #[noun(tag = 2)]
+    V2(LockV2),
+    #[noun(tag = 4)]
+    V4(LockV4),
+    #[noun(tag = 8)]
+    V8(LockV8),
+    #[noun(tag = 16)]
+    V16(LockV16),
+}
+
+#[iris_ztd::wasm_member_methods]
+impl Lock {
+    pub fn height(&self) -> usize {
+        match self {
+            Self::Single(_) => 1,
+            Self::V2(_) => 2,
+            Self::V4(_) => 3,
+            Self::V8(_) => 4,
+            Self::V16(_) => 5,
+        }
+    }
+
+    pub fn from_list(sps: Vec<SpendCondition>) -> Self {
+        let n = sps.len();
+        let mut it = sps.into_iter();
+        macro_rules! next {
+            () => {
+                it.next().unwrap()
+            };
+        }
+        macro_rules! v2 {
+            () => {
+                LockV2 {
+                    p: next!(),
+                    q: next!(),
+                }
+            };
+        }
+        macro_rules! v4 {
+            () => {
+                LockV4 { p: v2!(), q: v2!() }
+            };
+        }
+        macro_rules! v8 {
+            () => {
+                LockV8 { p: v4!(), q: v4!() }
+            };
+        }
+        match n {
+            1 => Lock::Single(next!()),
+            2 => Lock::V2(v2!()),
+            4 => Lock::V4(v4!()),
+            8 => Lock::V8(v8!()),
+            16 => Lock::V16(LockV16 { p: v8!(), q: v8!() }),
+            _ => panic!("Invalid spend condition count {n}, must be 1, 2, 4, 8, or 16"),
+        }
+    }
+
+    pub fn from_list_burnpad(sps: Vec<SpendCondition>) -> Self {
+        let mut sps = sps;
+        let len = sps.len();
+        assert!(
+            len > 0 && len <= 16,
+            "Spend condition count must be between 1 and 16, got {len}"
+        );
+        let target = len.next_power_of_two();
+        let brn = SpendCondition(vec![LockPrimitive::Brn]);
+        sps.resize(target, brn);
+        Self::from_list(sps)
+    }
+}
+
+impl From<SpendCondition> for Lock {
+    fn from(sp: SpendCondition) -> Self {
+        Self::Single(sp)
+    }
+}
+
+impl core::ops::Index<usize> for Lock {
+    type Output = SpendCondition;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        match self {
+            Self::Single(s) if idx < 1 => s,
+            Self::V2(s) if idx < 2 => &s[idx],
+            Self::V4(s) if idx < 4 => &s[idx],
+            Self::V8(s) if idx < 8 => &s[idx],
+            Self::V16(s) if idx < 16 => &s[idx],
+            _ => panic!(
+                "Index {idx} out of range for lock of height {}",
+                self.height()
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockV2 {
+    pub p: SpendCondition,
+    pub q: SpendCondition,
+}
+
+impl core::ops::Index<usize> for LockV2 {
+    type Output = SpendCondition;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        if idx < 1 {
+            &self.p
+        } else {
+            &self.q
+        }
+    }
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockV4 {
+    pub p: LockV2,
+    pub q: LockV2,
+}
+
+impl core::ops::Index<usize> for LockV4 {
+    type Output = SpendCondition;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        if idx < 2 {
+            &self.p[idx % 2]
+        } else {
+            &self.q[idx % 2]
+        }
+    }
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockV8 {
+    pub p: LockV4,
+    pub q: LockV4,
+}
+
+impl core::ops::Index<usize> for LockV8 {
+    type Output = SpendCondition;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        if idx < 4 {
+            &self.p[idx % 4]
+        } else {
+            &self.q[idx % 4]
+        }
+    }
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockV16 {
+    pub p: LockV8,
+    pub q: LockV8,
+}
+
+impl core::ops::Index<usize> for LockV16 {
+    type Output = SpendCondition;
+
+    fn index(&self, idx: usize) -> &Self::Output {
+        if idx < 8 {
+            &self.p[idx % 8]
+        } else {
+            &self.q[idx % 8]
+        }
+    }
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct SpendCondition(pub Vec<LockPrimitive>);
+
+#[iris_ztd::wasm_member_methods]
+impl SpendCondition {
+    pub fn new_pkh(pkh: Pkh) -> Self {
+        SpendCondition([LockPrimitive::Pkh(pkh)].into())
+    }
+
+    pub fn first_name(&self) -> Digest {
+        (true, self.hash()).hash()
+    }
+
+    #[transform_output(Vec<Pkh>, out.cloned().collect())]
+    pub fn pkh(&self) -> impl Iterator<Item = &Pkh> + '_ {
+        self.0.iter().filter_map(|v| {
+            if let LockPrimitive::Pkh(p) = v {
+                Some(p)
+            } else {
+                None
+            }
+        })
+    }
+
+    #[transform_output(Vec<LockTim>, out.cloned().collect())]
+    pub fn tim(&self) -> impl Iterator<Item = &LockTim> + '_ {
+        self.0.iter().filter_map(|v| {
+            if let LockPrimitive::Tim(t) = v {
+                Some(t)
+            } else {
+                None
+            }
+        })
+    }
+
+    #[transform_output(Vec<Hax>, out.cloned().collect())]
+    pub fn hax(&self) -> impl Iterator<Item = &Hax> + '_ {
+        self.0.iter().filter_map(|v| {
+            if let LockPrimitive::Hax(h) = v {
+                Some(h)
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn brn(&self) -> bool {
+        self.0.iter().any(|v| matches!(v, LockPrimitive::Brn))
+    }
+}
+
+#[derive(Debug, Clone)]
+#[iris_ztd::noun_derive(NounEncode, NounDecode, Serialize, Deserialize, Hashable, tsify_wasm)]
+#[iris_ztd::wasm_noun_codec(no_derive)]
+pub enum LockPrimitive {
+    #[noun(tag = "pkh")]
+    Pkh(Pkh),
+    #[noun(tag = "tim")]
+    Tim(LockTim),
+    #[noun(tag = "hax")]
+    Hax(Hax),
+    #[noun(tag = "brn")]
+    Brn,
+}
+
+#[derive(
+    Debug, Clone, Copy, NounEncode, Hashable, NounDecode, Serialize, Deserialize, PartialEq, Eq,
+)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockTim {
+    pub rel: TimelockRange,
+    pub abs: TimelockRange,
+}
+
+impl LockTim {
+    pub fn coinbase() -> Self {
+        Self {
+            rel: TimelockRange {
+                min: Some(100),
+                max: None,
+            },
+            abs: TimelockRange::none(),
+        }
+    }
+
+    pub fn none() -> Self {
+        Self {
+            rel: TimelockRange::none(),
+            abs: TimelockRange::none(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct Hax {
+    pub preimages: ZSet<Digest>,
+}
+
+pub fn words_for_unordered_spends<'a>(
+    spends: impl Iterator<Item = (Name, &'a SpendV1)> + 'a,
+    settings: &TxEngineSettings,
+) -> (u64, u64) {
+    let spends = spends.collect::<ZMap<Name, &'a SpendV1>>();
+    words_for_ordered_spends(spends.into_iter().map(|(_, v)| v), settings)
+}
+
+pub fn words_for_ordered_spends<'a>(
+    spends: impl Iterator<Item = &'a SpendV1> + 'a,
+    settings: &TxEngineSettings,
+) -> (u64, u64) {
+    if settings.tx_engine_version == Version::V0 {
+        panic!("fee() called on v0 settings");
+    }
+
+    let mut sw = 0;
+    let mut ww = 0;
+
+    if settings.tx_engine_patch == 0 {
+        for spend in spends {
+            let (s, w) = spend.calc_words();
+            sw += s;
+            ww += w;
+        }
+    } else {
+        let mut merged_note_data: ZMap<Digest, NoteData> = ZMap::new();
+
+        for spend in spends {
+            let (_, w) = spend.calc_words();
+            ww += w;
+            for seed in &spend.seeds().0 {
+                if let Some(note_data) = merged_note_data.get_mut(&seed.lock_root.hash()) {
+                    for (k, v) in seed.note_data.0.clone() {
+                        note_data.0.insert(k, v);
+                    }
+                } else {
+                    merged_note_data.insert(seed.lock_root.hash(), seed.note_data.clone());
+                }
+            }
+        }
+
+        for (_, note_data) in merged_note_data {
+            sw += note_data.fee_words();
+        }
+    }
+
+    (sw, ww)
+}
+
+#[derive(Debug, Clone, Default, Hashable, NounDecode, NounEncode, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct SpendsV1(pub ZMap<Name, SpendV1>);
+
+impl SpendsV1 {
+    pub fn fee_for_many<T: AsRef<SpendV1>>(
+        spends: impl Iterator<Item = T>,
+        settings: &TxEngineSettings,
+    ) -> Nicks {
+        let fee = spends
+            .map(|v| v.as_ref().unclamped_fee(settings))
+            .sum::<Nicks>();
+        fee.max(settings.min_fee)
+    }
+
+    pub fn fee_words(&self, settings: &TxEngineSettings) -> (u64, u64) {
+        words_for_ordered_spends(self.0.iter().map(|(_, v)| v), settings)
+    }
+
+    pub fn split_witness(&self) -> (SpendsV1, WitnessData) {
+        let mut spends = SpendsV1(ZMap::new());
+        let mut witness_data = WitnessData::default();
+        for (name, spend) in &self.0 {
+            let mut spend = spend.clone();
+            match &mut spend {
+                SpendV1::S1(ws) => {
+                    let witness = ws.witness.take_data();
+                    spends.0.insert(*name, spend);
+                    witness_data.data.insert(*name, witness);
+                }
+                SpendV1::S0(_) => {
+                    spends.0.insert(*name, spend);
+                }
+            }
+        }
+        (spends, witness_data)
+    }
+}
+
+#[iris_ztd::wasm_member_methods]
+impl SpendsV1 {
+    pub fn unclamped_fee(&self, settings: &TxEngineSettings) -> Nicks {
+        let (sw, ww) = self.fee_words(settings);
+        settings.cost_per_word * sw + settings.cost_per_word * ww / settings.witness_word_div
+    }
+
+    pub fn fee(&self, settings: &TxEngineSettings) -> Nicks {
+        core::cmp::max(settings.min_fee, self.unclamped_fee(settings))
+    }
+
+    pub fn total_fees(&self) -> Nicks {
+        self.0.iter().fold(Nicks(0), |acc, (_, s)| acc + s.fee())
+    }
+
+    pub fn total_gifts(&self) -> Nicks {
+        self.0
+            .iter()
+            .fold(Nicks(0), |acc, (_, s)| acc + s.total_gifts())
+    }
+
+    pub fn apply_witness(&self, witness_data: &WitnessData) -> SpendsV1 {
+        let mut spends = SpendsV1::default();
+        for (name, spend) in &self.0 {
+            let mut spend = spend.clone();
+            // NOTE: this behavior does not match the wallet hoon, but if the worst that can happen is transaction remain invalid, it's ok.
+            if let SpendV1::S1(ws) = &mut spend {
+                if let Some(witness) = witness_data.data.get(name) {
+                    ws.witness = witness.clone();
+                }
+            }
+            spends.0.insert(*name, spend);
+        }
+        spends
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode, Hashable)]
+#[iris_ztd::wasm_noun_codec]
+pub struct OutputV1 {
+    pub note: NoteV1,
+    pub seeds: SeedsV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode, Hashable)]
+#[iris_ztd::wasm_noun_codec]
+pub struct OutputsV1(pub ZSet<OutputV1>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode)]
+#[iris_ztd::wasm_noun_codec(no_hash)]
+pub struct TxV1 {
+    pub raw: RawTxV1,
+    pub total_size: u64,
+    pub outputs: OutputsV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, NounEncode, NounDecode)]
+#[iris_ztd::wasm_noun_codec(no_hash)]
+pub struct RawTxV1 {
+    #[cfg_attr(feature = "wasm", tsify(type = "1"))]
+    pub version: ExpectedVersion<1>,
+    pub id: TxId,
+    pub spends: SpendsV1,
+}
+
+#[iris_ztd::wasm_member_methods]
+impl RawTxV1 {
+    pub fn new(spends: SpendsV1) -> Self {
+        let id = (Version::V1, &spends).hash();
+        Self {
+            version: ExpectedVersion,
+            id,
+            spends,
+        }
+    }
+
+    pub fn version(&self) -> Version {
+        Version::V1
+    }
+
+    pub fn input_spend_conditions(&self) -> Vec<SpendCondition> {
+        let mut conditions = vec![];
+        for (_, spend) in &self.spends.0 {
+            match spend {
+                SpendV1::S0(_) => return Default::default(),
+                SpendV1::S1(ws) => {
+                    conditions.push(ws.witness.lock_merkle_proof.spend_condition().clone())
+                }
+            }
+        }
+        conditions
+    }
+
+    /// Calculate output notes from the transaction spends.
+    ///
+    /// This function combines seeds across multiple spends into one output note per-lock-root.
+    pub fn outputs(
+        &self,
+        origin_page: BlockHeight,
+        tx_engine_settings: TxEngineSettings,
+    ) -> Vec<NoteV1> {
+        // Already a ZMap, no conversion needed
+        let spends = &self.spends.0;
+
+        let mut seeds_by_lock: BTreeMap<Digest, Vec<SeedV1>> = BTreeMap::new();
+        for (_, spend) in spends {
+            for seed in spend.seeds().0.iter() {
+                seeds_by_lock
+                    .entry(seed.lock_root.hash())
+                    .or_default()
+                    .push(seed.clone());
+            }
+        }
+
+        let mut outputs: Vec<NoteV1> = Vec::new();
+
+        for (lock_root_hash, seeds) in seeds_by_lock {
+            let seeds: Vec<SeedV1> = seeds.into_iter().collect();
+
+            if seeds.is_empty() {
+                continue;
+            }
+
+            let total_assets: Nicks = seeds.iter().map(|s| s.gift).sum();
+
+            let note_data = if tx_engine_settings.tx_engine_patch >= 1 {
+                // Post-bythos, we're now unifying the data
+                seeds.iter().fold(NoteData::empty(), |mut acc, seed| {
+                    for (k, v) in seed.note_data.0.clone() {
+                        acc.0.insert(k, v);
+                    }
+                    acc
+                })
+            } else {
+                // Pre-bythos behavior (only take the first note-data).
+                seeds[0].note_data.clone()
+            };
+
+            let mut normalized_seeds_set: ZSet<SeedV1> = ZSet::new();
+            for seed in seeds {
+                let mut normalized_seed = seed.clone();
+                normalized_seed.output_source = None;
+                normalized_seeds_set.insert(normalized_seed);
+            }
+
+            let src_hash = normalized_seeds_set.hash();
+
+            let src = Source {
+                hash: src_hash,
+                is_coinbase: false,
+            };
+
+            let name = Name::new_v1(lock_root_hash, src);
+
+            let note = NoteV1::new(Version::V1, origin_page, name, note_data, total_assets);
+
+            outputs.push(note);
+        }
+
+        outputs
+    }
+
+    pub fn input_names(&self) -> Vec<Name> {
+        self.spends.0.iter().map(|(n, _)| *n).collect()
+    }
+
+    pub fn to_nockchain_tx(&self) -> NockchainTx {
+        let (spends, witness_data) = self.spends.split_witness();
+        let id = (&Version::V1, &spends).hash();
+        NockchainTx {
+            version: Version::V1,
+            id,
+            spends,
+            display: TransactionDisplay::default(),
+            witness_data,
+        }
+    }
+
+    pub fn calc_id(&self) -> TxId {
+        (&Version::V1, &self.spends).hash()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec(no_hash)]
+pub struct NockchainTx {
+    pub version: Version,
+    pub id: TxId,
+    pub spends: SpendsV1,
+    pub display: TransactionDisplay,
+    pub witness_data: WitnessData,
+}
+
+#[iris_ztd::wasm_member_methods]
+impl NockchainTx {
+    pub fn to_raw_tx(&self) -> RawTxV1 {
+        assert_eq!(
+            self.version,
+            Version::V1,
+            "Non-V1 TXs presently unsupported"
+        );
+
+        let spends = self.spends.apply_witness(&self.witness_data);
+        let id = (&Version::V1, &spends).hash();
+
+        RawTxV1 {
+            version: ExpectedVersion,
+            id,
+            spends,
+        }
+    }
+
+    pub fn outputs(
+        &self,
+        origin_page: BlockHeight,
+        tx_engine_settings: TxEngineSettings,
+    ) -> Vec<NoteV1> {
+        self.to_raw_tx().outputs(origin_page, tx_engine_settings)
+    }
+}
+
+impl NounEncode for NockchainTx {
+    fn to_noun(&self) -> Noun {
+        (
+            &self.version,
+            &self.id.to_string(),
+            &self.spends,
+            &self.display,
+            &self.witness_data,
+        )
+            .to_noun()
+    }
+}
+
+impl NounDecode for NockchainTx {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let (Version::V1, name, spends, display, witness_data): (_, String, _, _, _) =
+            NounDecode::from_noun(noun)?
+        else {
+            return None;
+        };
+
+        let id = TxId::try_from(&*name).ok()?;
+
+        Some(Self {
+            version: Version::V1,
+            id,
+            spends,
+            display,
+            witness_data,
+        })
+    }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec(no_hash)]
+pub struct WitnessData {
+    pub data: ZMap<Name, Witness>,
+}
+
+impl NounEncode for WitnessData {
+    fn to_noun(&self) -> Noun {
+        (1, &self.data).to_noun()
+    }
+}
+
+impl NounDecode for WitnessData {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        let (Version::V1, data) = NounDecode::from_noun(noun)? else {
+            return None;
+        };
+        Some(Self { data })
+    }
+}
+
+#[derive(Debug, Clone, NounEncode, NounDecode, Hashable, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec]
+pub struct LockMetadata {
+    pub lock: Lock,
+    pub include_data: bool,
+}
+
+impl From<Lock> for LockMetadata {
+    fn from(value: Lock) -> Self {
+        Self {
+            lock: value,
+            include_data: false,
+        }
+    }
+}
+
+#[iris_ztd::noun_derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    NounEncode,
+    NounDecode,
+    tsify_wasm
+)]
+#[iris_ztd::wasm_noun_codec(no_derive, no_hash)]
+pub enum DisplayInput {
+    #[noun(tag = 0)]
+    V0(crate::v0::Sig),
+    #[noun(tag = 1)]
+    V1(SpendCondition),
+}
+
+#[iris_ztd::noun_derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    NounEncode,
+    NounDecode,
+    tsify_wasm
+)]
+#[iris_ztd::wasm_noun_codec(no_derive, no_hash)]
+pub enum InputDisplay {
+    // NOTE: non-standard. TODO: upstream this
+    #[noun(cell)]
+    Mixed { inputs: ZMap<Name, DisplayInput> },
+    #[noun(tag = 0)]
+    V0 { inputs: ZMap<Name, crate::v0::Sig> },
+    #[noun(tag = 1)]
+    V1 { inputs: ZMap<Name, SpendCondition> },
+}
+
+impl Default for InputDisplay {
+    fn default() -> Self {
+        Self::V0 {
+            inputs: ZMap::new(),
+        }
+    }
+}
+
+impl InputDisplay {
+    pub fn standardize(self) -> Result<Self, Self> {
+        let Self::Mixed { inputs } = self else {
+            return Ok(self);
+        };
+        let mut v0 = ZMap::new();
+        let mut v1 = ZMap::new();
+        for (name, input) in inputs {
+            match input {
+                DisplayInput::V0(sig) => v0.insert(name, sig),
+                DisplayInput::V1(spend_condition) => v1.insert(name, spend_condition),
+            }
+        }
+        if v0.is_empty() {
+            Ok(Self::V1 { inputs: v1 })
+        } else if v1.is_empty() {
+            Ok(Self::V0 { inputs: v0 })
+        } else {
+            let mut inputs = ZMap::new();
+            for (name, sig) in v0 {
+                inputs.insert(name, DisplayInput::V0(sig));
+            }
+            for (name, spend_condition) in v1 {
+                inputs.insert(name, DisplayInput::V1(spend_condition));
+            }
+            Err(Self::Mixed { inputs })
+        }
+    }
+
+    pub fn get(&self, name: &Name) -> Option<DisplayInput> {
+        match self {
+            Self::Mixed { inputs } => inputs.get(name).cloned(),
+            Self::V0 { inputs } => inputs.get(name).cloned().map(DisplayInput::V0),
+            Self::V1 { inputs } => inputs.get(name).cloned().map(DisplayInput::V1),
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
+#[iris_ztd::wasm_noun_codec(no_hash)]
+pub struct TransactionDisplay {
+    pub inputs: InputDisplay,
+    pub outputs: ZMap<Digest, LockMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
+#[iris_ztd::wasm_noun_codec(no_hash, no_noun)]
+pub struct PageV1 {
+    pub digest: Digest,
+    pub pow: Option<Noun>,
+    pub parent: Digest,
+    pub tx_ids: ZSet<Digest>,
+    pub coinbase: CoinbaseSplitV1,
+    pub timestamp: crate::v0::ChainTimestamp,
+    pub epoch_counter: u32,
+    pub target: Bignum,
+    pub accumulated_work: Bignum,
+    pub height: BlockHeight,
+    pub msg: crate::v0::PageMsg,
+}
+
+impl PageV1 {
+    pub fn coinbase(&self, consts: BlockchainConstants) -> Vec<Note> {
+        let mut notes = vec![];
+
+        // No more first month checks
+        let timelock = LockTim {
+            rel: TimelockRange {
+                min: Some(consts.coinbase_timelock_min),
+                max: None,
+            },
+            abs: TimelockRange::none(),
+        };
+
+        for (pkh, assets) in self.coinbase.0.clone() {
+            let source = Source {
+                hash: self.parent,
+                is_coinbase: true,
+            };
+            let lock = Lock::Single(SpendCondition(
+                [
+                    LockPrimitive::Pkh(Pkh::single(pkh)),
+                    LockPrimitive::Tim(timelock),
+                ]
+                .into(),
+            ));
+            let name = Name::new_v1(lock.hash(), source);
+            notes.push(Note::V1(NoteV1 {
+                version: Version::V1,
+                origin_page: self.height,
+                name,
+                note_data: NoteData::empty(),
+                assets,
+            }))
+        }
+
+        notes
+    }
+
+    pub fn block_commitment(&self) -> Digest {
+        let Self {
+            parent,
+            tx_ids,
+            coinbase,
+            timestamp,
+            epoch_counter,
+            target,
+            accumulated_work,
+            height,
+            msg,
+            ..
+        } = self;
+
+        (
+            parent,
+            tx_ids,
+            coinbase,
+            timestamp,
+            epoch_counter,
+            target,
+            accumulated_work,
+            height,
+            msg,
+        )
+            .hash()
+    }
+}
+
+/// Maps Pkh -> Nicks (coins)
+#[derive(Debug, Clone, Serialize, Deserialize, Hashable, NounDecode, NounEncode)]
+#[iris_ztd::wasm_noun_codec]
+pub struct CoinbaseSplitV1(pub ZMap<Digest, Nicks>);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Page, RawTx, Tx};
+    use bip39::Mnemonic;
+    use iris_crypto::derive_master_key;
+    use iris_ztd::Hashable;
+
+    use super::{RawTxV1, SeedV1 as Seed, SpendV1 as Spend, SpendsV1 as Spends};
+
+    fn check_hash(name: &str, h: &impl Hashable, exp: &str) {
+        assert_eq!(h.hash().to_string(), exp, "hash mismatch for {}", name);
+    }
+
+    const TX1: &[u8] = include_bytes!(
+        "../../test_vectors/45x6JVbHdgtWbGhJFEjYUoryo2axyq34CFyBfKnknEkbgUM6dwEnPSz.tx"
+    );
+    // Computed with (txr being the raw-tx from TX1):
+    // /| txo tx |=  [v=@tas b=spends:v1:transact]  =/  a  (new:raw-tx:v1:transact b)  =/  tx  (new:tx:v1:transact a 0)  =/  outs  outputs.tx  =/  g  |=  [n=nnote:v1:transact b=seeds:v1:transact]  n  =/  ol  ~(tap z-in outs)  (turn ol g)
+    const TX1_OUTPUTS: &[u8] = include_bytes!(
+        "../../test_vectors/45x6JVbHdgtWbGhJFEjYUoryo2axyq34CFyBfKnknEkbgUM6dwEnPSz.txo"
+    );
+
+    const TX2: &[u8] = include_bytes!(
+        "../../test_vectors/6bh1qizhspMEMeLWpB5bf6GRgcxKxPZyuYRpGBaV2Dc1kLPoyFRRbBf.tx"
+    );
+
+    // /( tx raw-transaction/AkZYChVAdPSv4WnGkCBgnsxGLgT4hJxGmZ8Q38XPLuKPYCRuP214WAF
+    // /j tx crates/iris-nockchain-types/test_vectors/AkZYChVAdPSv4WnGkCBgnsxGLgT4hJxGmZ8Q38XPLuKPYCRuP214WAF.tx
+    const TX3: &[u8] = include_bytes!(
+        "../../test_vectors/AkZYChVAdPSv4WnGkCBgnsxGLgT4hJxGmZ8Q38XPLuKPYCRuP214WAF.tx"
+    );
+
+    // /( tx block-transaction/6nRbf6A9W4bTQUdB36KKASwtz9XYNX2aoFHfHvpjLZkQgUDoTxhV9D8/C6BgvFrBmT4cVHcXNN2W3FWUuKZauK7Dv1LgRCZQc5zsVGRK8u9hoyW
+    // /j tx crates/iris-nockchain-types/test_vectors/C6BgvFrBmT4cVHcXNN2W3FWUuKZauK7Dv1LgRCZQc5zsVGRK8u9hoyW.tx
+    const TX4: &[u8] = include_bytes!(
+        "../../test_vectors/C6BgvFrBmT4cVHcXNN2W3FWUuKZauK7Dv1LgRCZQc5zsVGRK8u9hoyW.tx"
+    );
+
+    // This transaction is unique in a sense that it has 2 seeds to the same lock root. One of the seeds has note data, other doesn't.
+    // In terms of z-order, the output should have no note-data created.
+    // /( b block/77aAcbLMWfbhFw6Mfj7VT1xyrgNFkbT1TyD7yqAtnKQ5DTArCftz5jj
+    // /j b crates/iris-nockchain-types/test_vectors/53384.block
+    const BLOCK_53384: &[u8] = include_bytes!("../../test_vectors/53384.block");
+
+    #[test]
+    fn check_tx_note_data_order() {
+        let noun = iris_ztd::cue(TX3).unwrap();
+        let Some(Some(tx)): Option<Option<RawTxV1>> = NounDecode::from_noun(&noun).unwrap() else {
+            panic!("Cannot parse tx");
+        };
+        for note in tx.outputs(52561, TxEngineSettings::v1_default()) {
+            assert_eq!(note.note_data.0, ZMap::default());
+        }
+    }
+
+    #[test]
+    fn check_tx_42560() {
+        let noun = iris_ztd::cue(TX4).unwrap();
+        let Some(Some(Tx::V1(_))): Option<Option<Tx>> = NounDecode::from_noun(&noun).unwrap()
+        else {
+            panic!("Cannot parse tx");
+        };
+    }
+
+    #[test]
+    fn check_tx_v0_v1() {
+        let noun = iris_ztd::cue(TX1).unwrap();
+        let (txid, spends): (String, Spends) = NounDecode::from_noun(&noun).unwrap();
+        let tx = RawTxV1::new(spends);
+        let id = tx.calc_id();
+        assert_eq!(id.to_string(), txid);
+
+        let out_noun = iris_ztd::cue(TX1_OUTPUTS).unwrap();
+        let mut outs: Vec<NoteV1> = NounDecode::from_noun(&out_noun).unwrap();
+        outs.sort_by_key(|note| note.name);
+
+        let mut tx_outs = tx.outputs(0, TxEngineSettings::v1_default());
+        tx_outs.sort_by_key(|note| note.name);
+
+        assert_eq!(outs, tx_outs);
+    }
+
+    #[test]
+    fn check_1padding() {
+        let noun = iris_ztd::cue(TX2).unwrap();
+        let tx: NockchainTx = NounDecode::from_noun(&noun).unwrap();
+        let _ = tx
+            .display
+            .inputs
+            .clone()
+            .standardize()
+            .expect("Did not standardise to norm");
+        let id = tx.to_raw_tx().calc_id();
+        assert_eq!(
+            id.to_string(),
+            "qX7A68ALk3uoUF1zeYQ6YnCxRD8oFLdqr53D6Q988kDbZtS7eaRTm"
+        );
+    }
+
+    #[test]
+    fn check_tx_id() {
+        let tx_bytes = hex::decode("7101047c379f8ffbd300a503081807fe895b2c89ca071070f500fb178f756a0f2020d6f8dc7daec0a90810b0c9e9665210f92bac0208cc4ede056771030906f8b1287cb3c0c9c3bb0104e24490e2e1c0b5880308a0748189a8b6669c037e93e53b87dd89cb6601f6d296b46758cb841f200ff63aba955efdeb0002d2eb569bde85c692017ec49e7977f2e1563e4080f1d0ecca4acbdcdbb82ae0c1ada1e30208302f6b7482f1300f061050861696e5aa69a20f20c01f65b4e7a52bac1b40802654a715537af51220f0cd44601ca826519b1a1760f7f0feb4a08cd6e701fe83df4a788b5dfe6280fe1575b988d421e10c20b0812cad8144baf40ff8932478f409ad48cd56c3c5b302082c143e2881c4867b06e89d0ff9cf9bb7f0f00002e3db85de4bcc71c3017ac4694ccfe96c253b800086a0bb8b404bed28e0671d5b29445746b317a0a7bd518a3ba839b603e4b38b0120593fd11ce0574d6a59738959d50610704c8929038c39540fb0374561f9170c5968800046a2cc5ca7cd4a3717205864ed680fe831abb77280409696393d40e02c6fcb18f05706c6b001821e18a6d400014cc33d35d03ff3c6d800818e30096a8040dd3f4e3d40e0d869de1ef0bd12d7a80191325833e0f23e8f316017380d75e0b3cd96ea8723f47084ae2c8080c28edfa6cd00287700012b7115916b50e7ce00b92117c2d849713e0610c06ff5f8b0b6c5b807fcf4e104e7329368c40c6800007380bf5feb45a2a01ab619a0675ed1c4b170e64403fce481d6412190c5c700bff236677af1d8771220c044d5424598bea49a65c3513a03a6f317c2612de17084061e002030ab0002e578b5eaa5f12db901febec80c05397433700081bec1757695bd8de000ff20075a70c1e87d13205040bf385d63fb1c5f008137df35146a01dded00bb003544c8641f3b0d20101aa5d5010051951e40a0cbb7e981d738b91bf0bbc7f2086a67adfc8dab862b66010f2d0c5f80bd9061b4d8dc9d0007e837a5793fb26948ca003feca5910f43d3e53c8000554e10b75366223aa057365e63c375d8898723b4714396bbd570f16cc81b2c40005bf9e71dd0e13e7bc4808ed12155060876b3f5f303047a46fda7013dcc9a590c1010a0caeb027fdf905e182048d7f3390f10f8d0dbaa07f4dd35de334040cd14e718d02bd0f1f4008114433a6e405f2574e181bfa30a0e1c8ed0c311bab221cb3d031a00801c4040010fb51fb88b0e3f8080bff571977ed87e6080ff362236762e30511b40c068f3d707b6c4751ef073cd9cdbe81d7090b36c384a0fdbb28723b4c3111a").unwrap();
+        let noun = iris_ztd::cue(&tx_bytes).unwrap();
+
+        let mut zm = ZMap::<String, Noun>::new();
+        zm.insert("ver".to_string(), Version::V1.to_noun());
+        zm.insert("ve2".to_string(), Version::V1.to_noun());
+        let zm_noun = zm.to_noun();
+        let _zm_decode = ZSet::<Noun>::from_noun(&zm_noun).unwrap();
+
+        let _: (Version, TxId, ZMap<Name, Noun>) = NounDecode::from_noun(&noun).unwrap();
+        let Some(RawTx::V1(_)) = RawTx::from_noun(&noun) else {
+            panic!("Cannot parse tx");
+        };
+        let Some(tx) = RawTxV1::from_noun(&noun) else {
+            panic!("Cannot parse tx v1");
+        };
+        check_hash(
+            "tx_id",
+            &tx.id,
+            "7dinV9KdtAUZgKhCZN1P8SZH9ux2RTe9kYUdh4fRvYWjX5wMopDQ6py",
+        );
+        check_hash(
+            "tx_id",
+            &tx.calc_id(),
+            "ChtgwirfCoC1T8fg5EvkA6aGp9YPQh4mVxCDYrmhaBvq2oSCmpzrK6f",
+        );
+    }
+
+    #[test]
+    fn test_hash_vectors() {
+        let pkh = "6psXufjYNRxffRx72w8FF9b5MYg8TEmWq2nEFkqYm51yfqsnkJu8XqX"
+            .try_into()
+            .unwrap();
+        let seed1 = Seed::new_single_pkh(
+            pkh,
+            Nicks(4290881913),
+            "6qF9RtWRUWfCX8NS8QU2u7A3BufVrsMwwWWZ8KSzZ5gVn4syqmeVa4"
+                .try_into()
+                .unwrap(),
+            true,
+        );
+
+        check_hash(
+            "lock_root",
+            &seed1.lock_root,
+            "5bSsB8Hij6E3xefbs8WFdAw5CYSurBbJ4kL5kjoiuYFLak1eizq3v6b",
+        );
+        check_hash(
+            "note-data",
+            &seed1.note_data,
+            "7hLhhBXik77vGuhxz9V9EKB5WcXhr692PsmV6AffGrQaxuF1df3kYUT",
+        );
+
+        let mut seed2 = seed1.clone();
+        seed2.gift = Nicks(1234567);
+
+        let mut spend = Spend::new_witness(
+            Witness::new(
+                SpendCondition(
+                    [
+                        LockPrimitive::Pkh(Pkh::single(pkh)),
+                        LockPrimitive::Tim(LockTim::coinbase()),
+                    ]
+                    .into(),
+                )
+                .into(),
+                0,
+            ),
+            SeedsV1([seed1.clone(), seed2.clone()].into()),
+            Nicks(2850816),
+        );
+
+        check_hash(
+            "sig-hash",
+            &spend.sig_hash(),
+            "B17CfQv9SuHTxn1k576S6EcKrxmb7WRcUFFx9eTXTzVyhtVVGwCKXSn",
+        );
+
+        let mnemonic = Mnemonic::parse("dice domain inspire horse time initial monitor nature mass impose tone benefit vibrant dash kiss mosquito rice then color ribbon agent method drop fat").unwrap();
+        let private_key = derive_master_key(&mnemonic.to_seed(""))
+            .private_key
+            .unwrap();
+
+        let signature = private_key.sign(&spend.sig_hash());
+        check_hash(
+            "(hash of) signature",
+            &signature.to_noun(),
+            "DKGrE8s8hhacsnGMzLWqRKfTtXx4QG6tDvC3k1Xu6FA7xAaetGPK6Aj",
+        );
+        spend.add_signature(private_key.public_key(), signature);
+
+        check_hash(
+            "spend",
+            &spend,
+            "CTYHRFefGkubLBG8WszvXq1v5XevLkbP3aBezMza9zen6Fbvyu8dD17",
+        );
+
+        let name = Name::new(
+            "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                .try_into()
+                .unwrap(),
+            "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+                .try_into()
+                .unwrap(),
+        );
+        check_hash(
+            "name",
+            &name,
+            "AvHDRESkhM9F2FMPiYFPeQ9GrL2kX8QkmHP8dGpVT8Pr2f8xM1SLGJW",
+        );
+
+        let SpendV1::S1(ws) = &spend else {
+            panic!("expected witness spend");
+        };
+
+        check_hash(
+            "spend condition tim",
+            &ws.witness.lock_merkle_proof.spend_condition().0[1],
+            "B5RtZnbphbf1D5vQwsZjHycLN2Ldp7RD2pK6V3qAMFCrxnUXAhgmKgg",
+        );
+
+        check_hash(
+            "spend condition pkh",
+            &ws.witness.lock_merkle_proof.spend_condition().0[0],
+            "65RqCgowDZJziLZzpQkPULVy2tb1dMGMUrgsxxfC1mPPK6hSNKAP6DP",
+        );
+
+        check_hash(
+            "spend condition",
+            &ws.witness.lock_merkle_proof.spend_condition(),
+            "5k2qTDtcxyQWBmsVTi1fEmbSeoAnq5B83SGoJwDU8NJkRfXWevwQDWn",
+        );
+
+        check_hash(
+            "pkh",
+            &ws.witness.pkh_signature,
+            "4oMCHwUMend6ds2Gt3bUyz4cNrZto4PepFgbQQWYDRKMB3v9qaccMT",
+        );
+
+        check_hash(
+            "merkle proof",
+            &ws.witness.lock_merkle_proof.proof(),
+            "MefKNQSmk8wzDzCPpY93GMdM53Pv1TGbUZe2Kn427FiuvbgjSZe5eJ",
+        );
+
+        check_hash(
+            "lock merkle proof",
+            &ws.witness.lock_merkle_proof,
+            "6MNHCVrns4DjMxAV4CJQWKsPcpXPDSqizJsChgMYozsHsLBev52RRW1",
+        );
+
+        check_hash(
+            "witness",
+            &ws.witness,
+            "4fnjd1sxmaxupG3EYqBkvaQs6aiKHi9bZKciYipBA9an4DXuRH938L8",
+        );
+
+        check_hash(
+            "seeds",
+            spend.seeds(),
+            "7Zuskz3WibckR2anDXDuPcMUk45A2iJnrdPsFALj4Rc5NTufyca39gY",
+        );
+
+        let spends = Spends([(name, spend)].into());
+        check_hash(
+            "spends",
+            &spends,
+            "7WHUF24eUFiKm4gZ7Rw9EyB9FygRth9o7KVa7G3wKizb8xXR3hm4vjW",
+        );
+
+        let tx = RawTxV1::new(spends);
+        check_hash(
+            "transaction id",
+            &tx.id,
+            "3j4vkn72mcpVtQrTgNnYyoF3rDuYax3aebT5axu3Qe16jm9x2wLtepW",
+        );
+    }
+
+    #[test]
+    fn parse_block_53384() {
+        let noun = iris_ztd::cue(BLOCK_53384).unwrap();
+        let Some(Some(Page::V1(block))): Option<Option<Page>> =
+            NounDecode::from_noun(&noun).unwrap()
+        else {
+            panic!("Invalid page decoding");
+        };
+
+        let str_msg = "";
+        let page_msg = crate::v0::PageMsg::from(str_msg);
+
+        assert_eq!(page_msg, block.msg);
+        let coinbase = block.coinbase(Default::default());
+        assert_eq!(
+            coinbase.iter().map(|v| v.name()).collect::<Vec<_>>(),
+            &[
+                Name::new(
+                    "4g8Dsxjj7QCvHwz67cFPu9qE8BohCSusRXAXYknix6Q8X8KuqJhFdG8"
+                        .try_into()
+                        .unwrap(),
+                    "5Vndp49nTLS9TTy95iq3cFqqtnkk3C2hz446y82QNsfsb6TuWCtgQMW"
+                        .try_into()
+                        .unwrap()
+                ),
+                Name::new(
+                    "3VmnKbeM61f3s5oovtMvxyTeaf46Ap5UnuQCB5DWnu3DgXZsKRi1iAt"
+                        .try_into()
+                        .unwrap(),
+                    "5Vndp49nTLS9TTy95iq3cFqqtnkk3C2hz446y82QNsfsb6TuWCtgQMW"
+                        .try_into()
+                        .unwrap()
+                ),
+            ],
+            "{coinbase:?}",
+        );
+    }
+}

@@ -1,24 +1,34 @@
-extern crate alloc;
-use alloc::vec::Vec;
+#[cfg(feature = "wasm")]
+use alloc::{boxed::Box, format, string::ToString};
+use core::fmt;
 
 use bs58;
-use ibig::UBig;
-use once_cell::sync::Lazy;
+use crypto_bigint::{MulMod, U256};
+use serde::{Deserialize, Serialize};
 
-use crate::belt::{bneg, Belt, PRIME};
+use crate::belt::{bneg, Belt};
 use crate::belt::{bpegcd, bpscal};
 
-pub static G_ORDER: Lazy<UBig> = Lazy::new(|| {
-    UBig::from_str_radix(
-        "7af2599b3b3f22d0563fbf0f990a37b5327aa72330157722d443623eaed4accf",
-        16,
-    )
-    .unwrap()
-});
+// Pre-computed constants stored as big-endian byte arrays
+pub const G_ORDER: U256 = U256::from_be_slice(&[
+    0x7a, 0xf2, 0x59, 0x9b, 0x3b, 0x3f, 0x22, 0xd0, 0x56, 0x3f, 0xbf, 0x0f, 0x99, 0x0a, 0x37, 0xb5,
+    0x32, 0x7a, 0xa7, 0x23, 0x30, 0x15, 0x77, 0x22, 0xd4, 0x43, 0x62, 0x3e, 0xae, 0xd4, 0xac, 0xcf,
+]);
 
-pub static P_BIG: Lazy<UBig> = Lazy::new(|| UBig::from(PRIME));
-pub static P_BIG_2: Lazy<UBig> = Lazy::new(|| &*P_BIG * &*P_BIG);
-pub static P_BIG_3: Lazy<UBig> = Lazy::new(|| &*P_BIG_2 * &*P_BIG);
+pub const P_BIG: U256 = U256::from_be_slice(&[
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01,
+]);
+
+pub const P_BIG_2: U256 = U256::from_be_slice(&[
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xff, 0xff, 0xff, 0xfe, 0x00, 0x00, 0x00, 0x02, 0xff, 0xff, 0xff, 0xfe, 0x00, 0x00, 0x00, 0x01,
+]);
+
+pub const P_BIG_3: U256 = U256::from_be_slice(&[
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xfd, 0x00, 0x00, 0x00, 0x05,
+    0xff, 0xff, 0xff, 0xf9, 0x00, 0x00, 0x00, 0x05, 0xff, 0xff, 0xff, 0xfd, 0x00, 0x00, 0x00, 0x01,
+]);
 
 pub const A_GEN: CheetahPoint = CheetahPoint {
     x: F6lt([
@@ -42,59 +52,135 @@ pub const A_GEN: CheetahPoint = CheetahPoint {
 
 #[derive(Debug)]
 pub enum CheetahError {
-    Base58(bs58::decode::Error),
+    Base58Decode(bs58::decode::Error),
+    Base58Encode(bs58::encode::Error),
     InvalidLength(usize),
     ArrayConversion,
     NotOnCurve,
     DivisionByZero,
 }
 
-impl From<bs58::decode::Error> for CheetahError {
-    fn from(e: bs58::decode::Error) -> Self {
-        CheetahError::Base58(e)
+impl fmt::Display for CheetahError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CheetahError::Base58Decode(e) => write!(f, "Base58 decode: {}", e),
+            CheetahError::Base58Encode(e) => write!(f, "Base58 encode: {}", e),
+            CheetahError::InvalidLength(len) => write!(f, "Invalid length: {}", len),
+            CheetahError::ArrayConversion => write!(f, "Array conversion failed"),
+            CheetahError::NotOnCurve => write!(f, "Point is not on the curve"),
+            CheetahError::DivisionByZero => write!(f, "Division by zero"),
+        }
     }
 }
 
+/// Size: 1 byte prefix + 12 belts × 8 bytes = 97
+const CHEETAH_POINT_BYTES: usize = 97;
+/// Buffer for base58 encoding (ceil(97 * 1.366) ≈ 133, using 200 for safety)
+const CHEETAH_BS58_BUF: usize = 200;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(
+    feature = "wasm",
+    tsify(
+        into_wasm_abi,
+        from_wasm_abi,
+        type = "string & { __tag_cheetah_point: undefined }"
+    )
+)]
 pub struct CheetahPoint {
     pub x: F6lt,
     pub y: F6lt,
     pub inf: bool,
 }
 
+impl fmt::Display for CheetahPoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (buf, len) = self.into_base58_buf().unwrap();
+        let s = core::str::from_utf8(&buf[..len]).unwrap();
+        write!(f, "{}", s)
+    }
+}
+
+impl Serialize for CheetahPoint {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let (buf, len) = self.into_base58_buf().map_err(serde::ser::Error::custom)?;
+        let s = core::str::from_utf8(&buf[..len]).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for CheetahPoint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct CheetahVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for CheetahVisitor {
+            type Value = CheetahPoint;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a base58-encoded CheetahPoint string")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                CheetahPoint::from_base58(v).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(CheetahVisitor)
+    }
+}
+
+impl TryFrom<&str> for CheetahPoint {
+    type Error = CheetahError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::from_base58(value)
+    }
+}
+
 impl CheetahPoint {
-    pub fn into_base58(&self) -> Result<alloc::string::String, CheetahError> {
+    /// Serialize to a fixed-size byte array: [0x01 | y[5]..y[0] | x[5]..x[0]] (big-endian belts)
+    pub fn to_bytes(&self) -> Result<[u8; CHEETAH_POINT_BYTES], CheetahError> {
         if self.inf {
             return Err(CheetahError::NotOnCurve);
         }
-        let mut bytes = Vec::new();
-        bytes.push(0x1);
+        let mut bytes = [0u8; CHEETAH_POINT_BYTES];
+        bytes[0] = 0x01;
+        let mut offset = 1;
         for belt in self.y.0.iter().rev().chain(self.x.0.iter().rev()) {
-            bytes.extend_from_slice(&belt.0.to_be_bytes());
+            bytes[offset..offset + 8].copy_from_slice(&belt.0.to_be_bytes());
+            offset += 8;
         }
-        Ok(bs58::encode(bytes).into_string())
+        Ok(bytes)
     }
 
-    pub fn from_base58(b58: &str) -> Result<Self, CheetahError> {
-        let v = bs58::decode(b58).into_vec()?;
-
-        if v.len() != 97 {
+    /// Deserialize from a byte slice (expected 97 bytes)
+    pub fn from_bytes(v: &[u8]) -> Result<Self, CheetahError> {
+        if v.len() != CHEETAH_POINT_BYTES {
             return Err(CheetahError::InvalidLength(v.len()));
         }
 
-        let mut v64 = v[1..]
-            .chunks_exact(8)
-            .map(|a| {
-                let arr = <[u8; 8]>::try_from(a).map_err(|_| CheetahError::ArrayConversion)?;
-                Ok(Belt(u64::from_be_bytes(arr)))
-            })
-            .collect::<Result<Vec<Belt>, CheetahError>>()?;
-
-        v64.reverse();
+        let mut belts = [Belt(0); 12];
+        for (i, chunk) in v[1..].chunks_exact(8).enumerate() {
+            let arr: [u8; 8] = chunk
+                .try_into()
+                .map_err(|_| CheetahError::ArrayConversion)?;
+            belts[i] = Belt(u64::from_be_bytes(arr));
+        }
+        belts.reverse();
 
         let c_pt = CheetahPoint {
-            x: F6lt(<[Belt; 6]>::try_from(&v64[..6]).map_err(|_| CheetahError::ArrayConversion)?),
-            y: F6lt(<[Belt; 6]>::try_from(&v64[6..]).map_err(|_| CheetahError::ArrayConversion)?),
+            x: F6lt(<[Belt; 6]>::try_from(&belts[..6]).map_err(|_| CheetahError::ArrayConversion)?),
+            y: F6lt(<[Belt; 6]>::try_from(&belts[6..]).map_err(|_| CheetahError::ArrayConversion)?),
             inf: false,
         };
 
@@ -103,6 +189,35 @@ impl CheetahPoint {
         } else {
             Err(CheetahError::NotOnCurve)
         }
+    }
+
+    /// Encode to base58 into a fixed buffer; returns (buffer, length).
+    pub fn into_base58_buf(&self) -> Result<([u8; CHEETAH_BS58_BUF], usize), CheetahError> {
+        let raw = self.to_bytes()?;
+        let mut buf = [0u8; CHEETAH_BS58_BUF];
+        let len = bs58::encode(&raw)
+            .onto(&mut buf[..])
+            .map_err(CheetahError::Base58Encode)?;
+        Ok((buf, len))
+    }
+
+    /// Decode from a base58 string (alloc-less).
+    pub fn from_base58(b58: &str) -> Result<Self, CheetahError> {
+        let mut buf = [0u8; CHEETAH_POINT_BYTES];
+        let len = bs58::decode(b58)
+            .onto(&mut buf[..])
+            .map_err(CheetahError::Base58Decode)?;
+        if len != CHEETAH_POINT_BYTES {
+            return Err(CheetahError::InvalidLength(len));
+        }
+        Self::from_bytes(&buf[..len])
+    }
+
+    #[cfg(feature = "alloc")]
+    pub fn into_base58(&self) -> Result<alloc::string::String, CheetahError> {
+        let (buf, len) = self.into_base58_buf()?;
+        let s = core::str::from_utf8(&buf[..len]).map_err(|_| CheetahError::ArrayConversion)?;
+        Ok(alloc::string::String::from(s))
     }
 
     pub fn in_curve(&self) -> bool {
@@ -118,7 +233,7 @@ impl CheetahPoint {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct F6lt(pub [Belt; 6]);
 
 #[inline(always)]
@@ -321,28 +436,31 @@ pub fn ch_scal(n: u64, p: &CheetahPoint) -> Result<CheetahPoint, CheetahError> {
 }
 
 #[inline(always)]
-pub fn ch_scal_big(n: &UBig, p: &CheetahPoint) -> Result<CheetahPoint, CheetahError> {
-    let mut n_copy = n.clone();
-    let zero = UBig::from(0u64);
-    let mut p_copy = *p;
+pub fn ch_scal_big(n: &U256, p: &CheetahPoint) -> Result<CheetahPoint, CheetahError> {
+    if *n == U256::ZERO {
+        return Ok(A_ID);
+    }
     let mut acc = A_ID;
-
-    while n_copy > zero {
-        // Check if least significant bit is set
-        if n_copy.bit(0) {
-            acc = ch_add(&acc, &p_copy)?;
+    for byte in n.to_be_bytes() {
+        for bit in (0..8).rev() {
+            acc = ch_double(acc)?;
+            if (byte >> bit) & 1 == 1 {
+                acc = ch_add(&acc, p)?;
+            }
         }
-        p_copy = ch_double(p_copy)?;
-        n_copy >>= 1; // Right shift by 1 bit
     }
     Ok(acc)
 }
 
-pub fn trunc_g_order(a: &[u64]) -> UBig {
-    let mut result = UBig::from(a[0]);
-    result += &*P_BIG * UBig::from(a[1]);
-    result += &*P_BIG_2 * UBig::from(a[2]);
-    result += &*P_BIG_3 * UBig::from(a[3]);
+pub fn trunc_g_order(a: &[u64]) -> U256 {
+    let mut result = U256::from_u64(a[0]);
 
-    result % &*G_ORDER
+    let term1 = MulMod::mul_mod(&P_BIG, &U256::from_u64(a[1]), &G_ORDER);
+    result = result.add_mod(&term1, &G_ORDER);
+
+    let term2 = MulMod::mul_mod(&P_BIG_2, &U256::from_u64(a[2]), &G_ORDER);
+    result = result.add_mod(&term2, &G_ORDER);
+
+    let term3 = MulMod::mul_mod(&P_BIG_3, &U256::from_u64(a[3]), &G_ORDER);
+    result.add_mod(&term3, &G_ORDER)
 }

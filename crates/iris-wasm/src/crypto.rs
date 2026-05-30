@@ -1,50 +1,9 @@
-use ibig::UBig;
+use iris_ztd::U256;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use iris_crypto::cheetah::{PrivateKey, PublicKey, Signature};
 use iris_crypto::slip10::{derive_master_key as derive_master_key_internal, ExtendedKey};
-
-#[wasm_bindgen(js_name = Signature)]
-#[derive(Clone, Serialize, Deserialize)]
-pub struct WasmSignature {
-    #[wasm_bindgen(skip)]
-    pub c: Vec<u8>,
-    #[wasm_bindgen(skip)]
-    pub s: Vec<u8>,
-}
-
-#[wasm_bindgen(js_class = Signature)]
-impl WasmSignature {
-    #[wasm_bindgen(constructor)]
-    pub fn new(c: Vec<u8>, s: Vec<u8>) -> Self {
-        Self { c, s }
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn c(&self) -> Vec<u8> {
-        self.c.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn s(&self) -> Vec<u8> {
-        self.s.clone()
-    }
-
-    fn from_internal(sig: &Signature) -> Self {
-        Self {
-            c: sig.c.to_be_bytes(),
-            s: sig.s.to_be_bytes(),
-        }
-    }
-
-    fn to_internal(&self) -> Signature {
-        Signature {
-            c: UBig::from_be_bytes(&self.c),
-            s: UBig::from_be_bytes(&self.s),
-        }
-    }
-}
 
 #[wasm_bindgen(js_name = ExtendedKey)]
 #[derive(Serialize, Deserialize)]
@@ -88,7 +47,7 @@ impl WasmExtendedKey {
             if pk_bytes.len() != 32 {
                 return Err("Private key must be 32 bytes".to_string());
             }
-            Some(PrivateKey(UBig::from_be_bytes(pk_bytes)))
+            Some(PrivateKey(U256::from_be_slice(pk_bytes)))
         } else {
             None
         };
@@ -180,21 +139,21 @@ pub fn hash_noun(noun: &[u8]) -> Result<String, JsValue> {
 
 /// Sign a message string with a private key
 #[wasm_bindgen(js_name = signMessage)]
-pub fn sign_message(private_key_bytes: &[u8], message: &str) -> Result<WasmSignature, JsValue> {
+pub fn sign_message(private_key_bytes: &[u8], message: &str) -> Result<Signature, JsValue> {
     use iris_ztd::{Belt, Hashable, NounEncode};
     if private_key_bytes.len() != 32 {
         return Err(JsValue::from_str("Private key must be 32 bytes"));
     }
-    let private_key = PrivateKey(UBig::from_be_bytes(private_key_bytes));
+    let private_key = PrivateKey(U256::from_be_slice(private_key_bytes));
     let digest = Belt::from_bytes(message.as_bytes()).to_noun().hash();
-    Ok(WasmSignature::from_internal(&private_key.sign(&digest)))
+    Ok(private_key.sign(&digest))
 }
 
 /// Verify a signature with a public key
 #[wasm_bindgen(js_name = verifySignature)]
 pub fn verify_signature(
     public_key_bytes: &[u8],
-    signature: &WasmSignature,
+    signature: &Signature,
     message: &str,
 ) -> Result<bool, JsValue> {
     use iris_ztd::{Belt, Hashable, NounEncode};
@@ -205,5 +164,5 @@ pub fn verify_signature(
     pub_bytes.copy_from_slice(public_key_bytes);
     let public_key = PublicKey::from_be_bytes(&pub_bytes);
     let digest = Belt::from_bytes(message.as_bytes()).to_noun().hash();
-    Ok(public_key.verify(&digest, &signature.to_internal()))
+    Ok(public_key.verify(&digest, signature))
 }

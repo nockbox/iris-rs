@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use super::note::{BlockHeight, Name, Note, Version};
 use crate::Nicks;
 use alloc::vec::Vec;
@@ -112,6 +114,7 @@ pub enum RawTx {
     V1(crate::v1::RawTxV1),
 }
 
+#[allow(deprecated)]
 #[iris_ztd_derive::wasm_member_methods]
 impl RawTx {
     pub fn id(&self) -> TxId {

@@ -40,9 +40,7 @@ pub fn memo_from_js(value: Option<JsValue>) -> Result<Option<Noun>, JsValue> {
     // Treat array values as jammed noun bytes.
     let bytes = if v.is_instance_of::<Uint8Array>() {
         Uint8Array::from(v).to_vec()
-    } else if v.is_instance_of::<ArrayBuffer>() {
-        Uint8Array::new(&v).to_vec()
-    } else if Array::is_array(&v) {
+    } else if v.is_instance_of::<ArrayBuffer>() || Array::is_array(&v) {
         Uint8Array::new(&v).to_vec()
     } else {
         return Err(JsValue::from_str(

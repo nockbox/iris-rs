@@ -228,13 +228,16 @@ pub fn seeds_to_pb(seeds: Seeds) -> Vec<PbSeed> {
     seeds.0.into_iter().map(PbSeed::from).collect()
 }
 
-impl From<NoteData> for PbNoteData {
-    fn from(data: NoteData) -> Self {
+impl From<iris_nockchain_types::v1::NoteData> for PbNoteData {
+    fn from(data: iris_nockchain_types::v1::NoteData) -> Self {
         Self {
             entries: data
-                .entries
+                .0
                 .into_iter()
-                .map(PbNoteDataEntry::from)
+                .map(|(k, v)| PbNoteDataEntry {
+                    key: k,
+                    blob: jam(v),
+                })
                 .collect(),
         }
     }
@@ -987,7 +990,7 @@ impl TryFrom<PbNoteData> for iris_nockchain_types::v1::NoteData {
                 Ok((key, val))
             })
             .collect();
-        Ok(NoteData { entries: entries? })
+        Ok(iris_nockchain_types::v1::NoteData(entries?.into()))
     }
 }
 

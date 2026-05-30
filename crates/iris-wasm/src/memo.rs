@@ -1,4 +1,3 @@
-use iris_nockchain_types::note::MemoBytes;
 use iris_ztd::{cue, Noun, NounEncode};
 use js_sys::{Array, ArrayBuffer, Uint8Array};
 use wasm_bindgen::prelude::*;
@@ -13,10 +12,13 @@ fn noun_atoms_fit_u64(noun: &Noun) -> bool {
     }
 }
 
-/// Encode a UTF-8 string memo into the same noun format used by nockchain CLI:
-/// a null-terminated noun list of @ux bytes (each byte is a u64 atom 0..=255).
+/// Encode a UTF-8 string memo using the compact atom<->belts conversion.
+/// This produces a BeltSeq noun (list of field-fitting atoms) instead of a
+/// null-terminated byte list, which is far more efficient for transaction size.
 fn encode_utf8_string_memo(s: &str) -> Noun {
-    MemoBytes::from_utf8(s).to_noun()
+    let bytes = s.as_bytes();
+    let ubig = ibig::UBig::from_le_bytes(bytes);
+    iris_ztd::BeltSeq(iris_ztd::belts_from_ubig(ubig)).to_noun()
 }
 
 /// Parse optional memo from JS into an internal `Noun`.

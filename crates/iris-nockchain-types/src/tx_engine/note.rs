@@ -1,10 +1,6 @@
-use alloc::boxed::Box;
-use alloc::string::ToString;
-use alloc::vec::Vec;
-use alloc::{format, string::String, vec};
+use alloc::{boxed::Box, format, string::ToString};
 use core::convert::TryFrom;
-use iris_ztd::{Digest, Either, Hashable, Noun, NounDecode, NounEncode, ZMap, ZSet};
-use iris_ztd_derive::{Hashable, NounDecode, NounEncode};
+use iris_ztd::{Digest, Either, Hashable, Noun, NounDecode, NounEncode, ZMap};
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 /// 64-bit unsigned integer representing the number of assets.
@@ -21,87 +17,12 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 #[allow(clippy::derive_ord_xor_partial_ord)]
 pub struct Nicks(pub u64);
 
-/// Memo encoded as `(list @ux)` (a null-terminated list of byte atoms), matching nockchain CLI.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MemoBytes(pub Vec<u8>);
-
-impl MemoBytes {
-    pub fn from_utf8(s: &str) -> Self {
-        Self(s.as_bytes().to_vec())
-    }
-
-    pub fn to_utf8_string(&self) -> Option<String> {
-        String::from_utf8(self.0.clone()).ok()
-    }
-}
-
-impl NounEncode for MemoBytes {
-    fn to_noun(&self) -> Noun {
-        // `(list @ux)` where each element is an atom 0..=255 and the list ends with 0.
-        let mut list = 0u64.to_noun();
-        for &byte in self.0.iter().rev() {
-            list = Noun::Cell(Box::new((byte as u64).to_noun()), Box::new(list));
-        }
-        list
-    }
-}
-
-impl NounDecode for MemoBytes {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let mut bytes = Vec::<u8>::new();
-        let mut cur = noun;
-
-        loop {
-            match cur {
-                Noun::Atom(a) => {
-                    // end of list marker must be 0
-                    let u: u64 = a.try_into().ok()?;
-                    if u == 0 {
-                        return Some(Self(bytes));
-                    } else {
-                        return None;
-                    }
-                }
-                Noun::Cell(head, tail) => {
-                    let Noun::Atom(a) = &**head else {
-                        return None;
-                    };
-                    let u: u64 = a.try_into().ok()?;
-                    if u > 255 {
-                        return None;
-                    }
-                    bytes.push(u as u8);
-                    cur = tail;
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Pkh {
-    pub m: u64,
-    pub hashes: Vec<Digest>,
-}
-
-impl Pkh {
-    pub fn new(m: u64, hashes: Vec<Digest>) -> Self {
-        Self { m, hashes }
-    }
-
-    pub fn single(hash: Digest) -> Self {
-        Self {
-            m: 1,
-            hashes: vec![hash],
-        }
-=======
 impl Serialize for Nicks {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         serializer.serialize_str(&self.0.to_string())
->>>>>>> upstream/main
     }
 }
 
@@ -256,84 +177,6 @@ macro_rules! impl_math_ops {
     };
 }
 
-pub const MEMO_KEY: &str = "memo";
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NoteData {
-    pub entries: Vec<NoteDataEntry>,
-}
-
-impl NoteData {
-    pub fn empty() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
-    }
-
-    pub fn push_pkh(&mut self, pkh: Pkh) {
-        self.entries.push(NoteDataEntry {
-            key: "lock".to_string(),
-            val: (0, ("pkh", &pkh), 0).to_noun(),
-        });
-    }
-
-    // TODO: support 2,4,8,16-way spend conditions.
-    pub fn push_lock(&mut self, spend_condition: SpendCondition) {
-        self.entries.push(NoteDataEntry {
-            key: "lock".to_string(),
-            val: (0, spend_condition).to_noun(),
-        });
-    }
-
-    pub fn from_pkh(pkh: Pkh) -> Self {
-        let mut ret = Self::empty();
-        ret.push_pkh(pkh);
-        ret
-    }
-
-    pub fn push_memo(&mut self, memo: Noun) {
-        self.entries.push(NoteDataEntry {
-            key: MEMO_KEY.to_string(),
-            val: memo.clone(),
-        });
-    }
-
-    pub fn push_memo_bytes(&mut self, memo: MemoBytes) {
-        self.push_memo(memo.to_noun());
-    }
-
-    pub fn push_memo_utf8(&mut self, memo: &str) {
-        self.push_memo_bytes(MemoBytes::from_utf8(memo));
-    }
-}
-
-impl NounEncode for NoteData {
-    fn to_noun(&self) -> Noun {
-        ZSet::from_iter(&self.entries).to_noun()
-    }
-}
-impl NounDecode for NoteData {
-    fn from_noun(noun: &Noun) -> Option<Self> {
-        let set = ZSet::<NoteDataEntry>::from_noun(noun)?;
-        let entries: Vec<NoteDataEntry> = set.into_iter().collect();
-        Some(Self { entries })
-    }
-}
-
-impl Hashable for NoteData {
-    fn hash(&self) -> Digest {
-        ZSet::from_iter(&self.entries).hash()
-    }
-}
-
-#[derive(Debug, Clone, Hashable, Serialize, Deserialize)]
-pub struct Note {
-    pub version: Version,
-    pub origin_page: BlockHeight,
-    pub name: Name,
-    pub note_data: NoteData,
-    pub assets: Nicks,
-=======
 macro_rules! impl_from_ops {
     ($($t:ty),*) => {
         $(

@@ -251,7 +251,9 @@
                 log('Deriving private key from mnemonic...', 'loading');
                 const masterKey = deriveMasterKeyFromMnemonic(mnemonicInput, "");
                 const privateKeyBytes = masterKey.private_key;
-                const pubkeyHashString = hashPublicKey(masterKey.public_key);
+                const privateKey = PrivateKey.fromBytes(privateKeyBytes);
+                const publicKey = await privateKey.publicKey();
+                const pubkeyHashString = hashPublicKey(publicKey);
 
                 log('Fetching balance to get available notes...', 'loading');
                 client = new GrpcClient(endpoint);
@@ -287,7 +289,6 @@
                     feeAmount,
                     refundDigest
                 );
-                const privateKey = PrivateKey.fromBytes(privateKeyBytes);
                 await builder.sign(privateKey);
                 const rawTx = builder.build();
                 log('Transaction built successfully!', 'success');

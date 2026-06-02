@@ -2,7 +2,7 @@ use alloc::collections::btree_map::BTreeMap;
 use alloc::collections::btree_set::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
-use iris_crypto::{PrivateKey, PublicKey};
+use iris_crypto::{PublicKey, Signature, SigningKey};
 use iris_ztd::{noun_deserialize, noun_serialize, Digest, Hashable as HashableTrait, Noun, ZMap};
 use serde::{Deserialize, Serialize};
 
@@ -343,20 +343,41 @@ impl SpendBuilder {
         None
     }
 
-    pub fn sign(&mut self, signing_key: &PrivateKey) -> bool {
+    pub fn sig_hash(&self) -> Digest {
+        self.spend.sig_hash()
+    }
+
+    pub fn accepts_signing_pubkey(&self, public_key: &PublicKey) -> bool {
+        match &self.spend {
+            Spend::S1(spend) => {
+                let pkpkh = public_key.hash();
+                spend
+                    .witness
+                    .lock_merkle_proof
+                    .spend_condition()
+                    .pkh()
+                    .any(|p| p.hashes.contains(&pkpkh))
+            }
+            Spend::S0(_) => {
+                let Some(sig) = &self.note_info.sig else {
+                    panic!("Note is not V0");
+                };
+                sig.pubkeys.contains(public_key)
+            }
+        }
+    }
+
+    pub fn try_apply_signature(&mut self, public_key: PublicKey, signature: Signature) -> bool {
         match &mut self.spend {
             Spend::S1(spend) => {
-                let pkpkh = signing_key.public_key().hash();
-
+                let pkpkh = public_key.hash();
                 for p in spend.witness.lock_merkle_proof.spend_condition().pkh() {
                     if p.hashes.contains(&pkpkh) {
-                        spend.witness.pkh_signature.0.insert(
-                            signing_key.public_key().hash(),
-                            (
-                                signing_key.public_key(),
-                                signing_key.sign(&spend.sig_hash()),
-                            ),
-                        );
+                        spend
+                            .witness
+                            .pkh_signature
+                            .0
+                            .insert(public_key.hash(), (public_key, signature));
                         return true;
                     }
                 }
@@ -365,17 +386,41 @@ impl SpendBuilder {
                 let Some(sig) = &self.note_info.sig else {
                     panic!("Note is not V0");
                 };
-                if sig.pubkeys.contains(&signing_key.public_key()) {
-                    spend.signature.0.insert(
-                        signing_key.public_key(),
-                        signing_key.sign(&spend.sig_hash()),
-                    );
+                if sig.pubkeys.contains(&public_key) {
+                    spend.signature.0.insert(public_key, signature);
                     return true;
                 }
             }
         }
-
         false
+    }
+
+    pub async fn sign<K>(&mut self, signing_key: &K) -> Result<bool, SigningError<K::Error>>
+    where
+        K: SigningKey,
+    {
+        let pk = signing_key
+            .public_key()
+            .await
+            .map_err(SigningError::Signer)?;
+        if !self.accepts_signing_pubkey(&pk) {
+            return Ok(false);
+        }
+        let digest = self.sig_hash();
+        let sig = signing_key
+            .sign_digests(&[digest])
+            .await
+            .map_err(SigningError::Signer)?
+            .pop()
+            .ok_or(SigningError::SignatureRejected)?;
+        if !pk.verify(&digest, &sig) {
+            return Err(SigningError::InvalidSignature);
+        }
+        if !self.try_apply_signature(pk, sig) {
+            return Err(SigningError::SignatureRejected);
+        }
+
+        Ok(true)
     }
 
     fn missing_unlocks_fee(&self, settings: &TxEngineSettings) -> Nicks {
@@ -544,11 +589,48 @@ impl TxBuilder {
         ret
     }
 
-    pub fn sign(&mut self, signing_key: &PrivateKey) -> &mut Self {
-        for spend in self.spends.values_mut() {
-            spend.sign(signing_key);
+    pub async fn sign<K>(&mut self, signing_key: &K) -> Result<&mut Self, SigningError<K::Error>>
+    where
+        K: SigningKey,
+    {
+        let pk = signing_key
+            .public_key()
+            .await
+            .map_err(SigningError::Signer)?;
+        let mut name_and_digest = Vec::new();
+        let mut digests = Vec::new();
+
+        for (name, spend) in &self.spends {
+            if spend.accepts_signing_pubkey(&pk) {
+                let digest = spend.sig_hash();
+                name_and_digest.push((*name, digest));
+                digests.push(digest);
+            }
         }
-        self
+
+        let signatures = signing_key
+            .sign_digests(&digests)
+            .await
+            .map_err(SigningError::Signer)?;
+
+        if signatures.len() != name_and_digest.len() {
+            return Err(SigningError::SignatureRejected);
+        }
+
+        for ((name, digest), sig) in name_and_digest.into_iter().zip(signatures.into_iter()) {
+            if !pk.verify(&digest, &sig) {
+                return Err(SigningError::InvalidSignature);
+            }
+            let Some(spend) = self.spends.get_mut(&name) else {
+                debug_assert!(false, "signature staging used names from self.spends");
+                return Err(SigningError::SignatureRejected);
+            };
+            if !spend.try_apply_signature(pk, sig) {
+                return Err(SigningError::SignatureRejected);
+            }
+        }
+
+        Ok(self)
     }
 
     pub fn validate(&mut self) -> Result<&mut Self, BuildError> {
@@ -853,6 +935,25 @@ pub enum BuildError {
     MissingUnlocks(Vec<MissingUnlocks>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SigningError<E> {
+    Signer(E),
+    InvalidSignature,
+    SignatureRejected,
+}
+
+impl<E: core::fmt::Debug> core::fmt::Display for SigningError<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            SigningError::Signer(error) => write!(f, "signer failed: {error:?}"),
+            SigningError::InvalidSignature => {
+                write!(f, "signer returned a signature that does not verify")
+            }
+            SigningError::SignatureRejected => write!(f, "signature was rejected by spend builder"),
+        }
+    }
+}
+
 impl core::fmt::Display for BuildError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -897,17 +998,46 @@ impl core::fmt::Display for BuildError {
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
+
     use super::*;
     use crate::v1::{self, LockPrimitive, LockTim};
     use alloc::{string::ToString, vec};
     use bip39::Mnemonic;
-    use iris_crypto::{derive_master_key, PublicKey};
+    use iris_crypto::{derive_master_key, PrivateKey, PublicKey};
     use iris_ztd::{jam, NounEncode};
 
     fn keys() -> (PrivateKey, PublicKey) {
         let mnemonic = Mnemonic::parse("dice domain inspire horse time initial monitor nature mass impose tone benefit vibrant dash kiss mosquito rice then color ribbon agent method drop fat").unwrap();
         let ek = derive_master_key(&mnemonic.to_seed(""));
         (ek.private_key.unwrap(), ek.public_key)
+    }
+
+    fn block_on<F: core::future::Future>(future: F) -> F::Output {
+        use core::pin::pin;
+        use core::task::{Context, Poll};
+        use std::sync::Arc;
+        use std::task::{Wake, Waker};
+
+        struct NoopWaker;
+
+        impl Wake for NoopWaker {
+            fn wake(self: Arc<Self>) {}
+        }
+
+        let waker = Waker::from(Arc::new(NoopWaker));
+        let mut context = Context::from_waker(&waker);
+        let mut future = pin!(future);
+        loop {
+            match future.as_mut().poll(&mut context) {
+                Poll::Ready(output) => return output,
+                Poll::Pending => std::thread::yield_now(),
+            }
+        }
+    }
+
+    fn sign_builder(builder: &mut TxBuilder, private_key: &PrivateKey) {
+        block_on(builder.sign(private_key)).unwrap();
     }
 
     #[test]
@@ -959,7 +1089,8 @@ mod tests {
                 "BzEPGBGvTfqo4saYmXLem7NgzmGzZdKNk2EUwWBfhgd1yzkdTeA8yQN",
             ),
         ] {
-            let tx = TxBuilder::new(settings)
+            let mut builder = TxBuilder::new(settings);
+            builder
                 .simple_spend_base(
                     vec![(note.clone(), Some(spend_condition.clone()))],
                     recipient,
@@ -969,11 +1100,9 @@ mod tests {
                 )
                 .unwrap()
                 .set_fee_and_balance_refund(fee, false, true)
-                .unwrap()
-                .sign(&private_key)
-                .validate()
-                .unwrap()
-                .build();
+                .unwrap();
+            sign_builder(&mut builder, &private_key);
+            let tx = builder.validate().unwrap().build();
 
             let InputDisplay::V1 { .. } = tx.display.inputs else {
                 panic!("Expected V1 inputs");
@@ -997,8 +1126,8 @@ mod tests {
         )
         .unwrap()
         .set_fee_and_balance_refund(fee, false, true)
-        .unwrap()
-        .sign(&private_key);
+        .unwrap();
+        sign_builder(&mut tx, &private_key);
 
         assert!(tx.validate().is_err());
 
@@ -1017,7 +1146,8 @@ mod tests {
 
         let fee1 = builder.calc_fee();
 
-        let tx = builder.sign(&private_key).build();
+        sign_builder(&mut builder, &private_key);
+        let tx = builder.build();
 
         assert_eq!(tx.to_raw_tx().spends.fee(&settings), Nicks(2520000));
         assert_eq!(fee1, Nicks(2520000));
@@ -1127,7 +1257,7 @@ mod tests {
         assert_eq!(builder.cur_fee(), Nicks(992));
 
         // After signing, the fee shouldn't change.
-        builder.sign(&private_key);
+        sign_builder(&mut builder, &private_key);
         assert_eq!(builder.calc_fee(), Nicks(992));
         assert_eq!(builder.cur_fee(), Nicks(992));
 
@@ -1207,7 +1337,8 @@ mod tests {
         let gift = Nicks(4294967296 * 3 - 65536 * 100);
         let refund_pkh = public_key.hash();
 
-        let tx = TxBuilder::new(TxEngineSettings::v1_default())
+        let mut builder = TxBuilder::new(TxEngineSettings::v1_default());
+        builder
             .simple_spend_base(
                 notes
                     .into_iter()
@@ -1235,11 +1366,9 @@ mod tests {
             )
             .unwrap()
             .recalc_and_set_fee(false)
-            .unwrap()
-            .sign(&private_key)
-            .validate()
-            .unwrap()
-            .build();
+            .unwrap();
+        sign_builder(&mut builder, &private_key);
+        let tx = builder.validate().unwrap().build();
 
         assert_eq!(
             tx.id.to_string(),
@@ -1376,19 +1505,16 @@ mod tests {
                             .try_into()
                             .unwrap(),
                     )),
-                    LockPrimitive::Hax(
-                        Hax {
-                            preimages: [Digest([
-                                Belt(1730770831742798981),
-                                Belt(2676322185709933211),
-                                Belt(8329210750824781744),
-                                Belt(16756092452590401876),
-                                Belt(3547445316740171466),
-                            ])]
-                            .into(),
-                        }
+                    LockPrimitive::Hax(Hax {
+                        preimages: [Digest([
+                            Belt(1730770831742798981),
+                            Belt(2676322185709933211),
+                            Belt(8329210750824781744),
+                            Belt(16756092452590401876),
+                            Belt(3547445316740171466),
+                        ])]
                         .into(),
-                    ),
+                    }),
                 ]
                 .into(),
             )
@@ -1464,7 +1590,8 @@ mod tests {
             .into(),
             0,
         );
-        let tx = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(1)))
+        let mut builder = TxBuilder::new(TxEngineSettings::v1_with_word_cost(Nicks(1)));
+        builder
             .simple_spend_base(
                 vec![(note.clone(), Some(spend_condition.clone()))],
                 recipient,
@@ -1474,11 +1601,9 @@ mod tests {
             )
             .unwrap()
             .set_fee_and_balance_refund(fee, false, true)
-            .unwrap()
-            .sign(&private_key)
-            .validate()
-            .unwrap()
-            .build();
+            .unwrap();
+        sign_builder(&mut builder, &private_key);
+        let tx = builder.validate().unwrap().build();
         assert_eq!(
             tx.id.to_string(),
             "3pmkA1knKhJzmd28t5TULP9DADK7GhWsHaNSTpPcGcN4nxzrWsDK2xe",

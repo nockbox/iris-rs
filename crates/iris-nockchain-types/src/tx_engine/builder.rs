@@ -408,9 +408,11 @@ impl SpendBuilder {
         }
         let digest = self.sig_hash();
         let sig = signing_key
-            .sign_digest(digest)
+            .sign_digests(&[digest])
             .await
-            .map_err(SigningError::Signer)?;
+            .map_err(SigningError::Signer)?
+            .pop()
+            .ok_or(SigningError::SignatureRejected)?;
         if !pk.verify(&digest, &sig) {
             return Err(SigningError::InvalidSignature);
         }
@@ -595,23 +597,30 @@ impl TxBuilder {
             .public_key()
             .await
             .map_err(SigningError::Signer)?;
-        let mut signatures = Vec::new();
+        let mut name_and_digest = Vec::new();
+        let mut digests = Vec::new();
 
         for (name, spend) in &self.spends {
             if spend.accepts_signing_pubkey(&pk) {
                 let digest = spend.sig_hash();
-                let sig = signing_key
-                    .sign_digest(digest)
-                    .await
-                    .map_err(SigningError::Signer)?;
-                if !pk.verify(&digest, &sig) {
-                    return Err(SigningError::InvalidSignature);
-                }
-                signatures.push((*name, pk, sig));
+                name_and_digest.push((*name, digest));
+                digests.push(digest);
             }
         }
 
-        for (name, pk, sig) in signatures {
+        let signatures = signing_key
+            .sign_digests(&digests)
+            .await
+            .map_err(SigningError::Signer)?;
+
+        if signatures.len() != name_and_digest.len() {
+            return Err(SigningError::SignatureRejected);
+        }
+
+        for ((name, digest), sig) in name_and_digest.into_iter().zip(signatures.into_iter()) {
+            if !pk.verify(&digest, &sig) {
+                return Err(SigningError::InvalidSignature);
+            }
             let Some(spend) = self.spends.get_mut(&name) else {
                 debug_assert!(false, "signature staging used names from self.spends");
                 return Err(SigningError::SignatureRejected);

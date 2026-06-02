@@ -305,10 +305,10 @@ pub trait SigningKey {
 
     fn public_key(&self) -> impl Future<Output = Result<PublicKey, Self::Error>> + '_;
 
-    fn sign_digest(
-        &self,
-        digest: Digest,
-    ) -> impl Future<Output = Result<Signature, Self::Error>> + '_;
+    fn sign_digests<'a>(
+        &'a self,
+        digests: &'a [Digest],
+    ) -> impl Future<Output = Result<alloc::vec::Vec<Signature>, Self::Error>> + 'a;
 }
 
 #[derive(Debug, Clone)]
@@ -321,11 +321,14 @@ impl SigningKey for PrivateKey {
         ready(Ok(PrivateKey::public_key(self)))
     }
 
-    fn sign_digest(
-        &self,
-        digest: Digest,
-    ) -> impl Future<Output = Result<Signature, Self::Error>> + '_ {
-        ready(Ok(PrivateKey::sign(self, &digest)))
+    fn sign_digests<'a>(
+        &'a self,
+        digests: &'a [Digest],
+    ) -> impl Future<Output = Result<alloc::vec::Vec<Signature>, Self::Error>> + 'a {
+        ready(Ok(digests
+            .iter()
+            .map(|d| PrivateKey::sign(self, d))
+            .collect()))
     }
 }
 

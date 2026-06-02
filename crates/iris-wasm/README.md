@@ -187,9 +187,10 @@ const signingKey = PrivateKey.fromCallbacks({
     return ledgerPublicKeyBytes; // Uint8Array(97)
   },
 
-  async signDigest(digest) {
-    // digest is Uint8Array(40). Return c || s, each 32-byte little-endian.
-    return ledgerSignatureBytes; // Uint8Array(64)
+  async signDigests(digests) {
+    // digests is Uint8Array[]; each digest is Uint8Array(40).
+    // Return one signature per digest: Uint8Array(64) = c || s, each 32-byte little-endian.
+    return ledgerSignatureBytesArray; // Uint8Array(64)[]
   }
 });
 

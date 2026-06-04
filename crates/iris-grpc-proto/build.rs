@@ -112,14 +112,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .field_attribute(
             "MerkleProof.path",
             "#[serde(with = \"crate::serde_hash_vec_as_base58\")] #[cfg_attr(feature = \"wasm\", tsify(type = \"string[]\"))]",
-        )
-        .field_attribute(
-            "LegacySpend.seeds",
-            "#[cfg_attr(feature = \"wasm\", tsify(type = \"[PbCom2Seed, ...PbCom2Seed[]]\"))]",
-        )
-        .field_attribute(
-            "WitnessSpend.seeds",
-            "#[cfg_attr(feature = \"wasm\", tsify(type = \"[PbCom2Seed, ...PbCom2Seed[]]\"))]",
         );
 
     // For WASM, we need to disable the transport-based convenience methods

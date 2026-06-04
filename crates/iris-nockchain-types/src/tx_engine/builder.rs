@@ -199,6 +199,10 @@ impl SpendBuilder {
                 let seed = self.build_seed(lock_root, refund, include_lock_data);
                 // NOTE: by convention, the refund seed is always first
                 self.spend.seeds_mut().0.insert(seed);
+            } else if self.spend.seeds().0.is_empty() {
+                let seed = self.build_seed(lock_root, Nicks(0), include_lock_data);
+                // Keep the seed set non-empty even when the full note is consumed by fees.
+                self.spend.seeds_mut().0.insert(seed);
             }
         }
         self
@@ -558,6 +562,14 @@ impl TxBuilder {
             return Err(BuildError::InvalidFee(needed_fee, cur_fee));
         }
 
+        if let Some(name) = self
+            .spends
+            .iter()
+            .find_map(|(name, spend)| spend.spend.seeds().0.is_empty().then_some(*name))
+        {
+            return Err(BuildError::SpendWithoutSeed(name));
+        }
+
         if self.spends.values().any(|v| !v.is_balanced()) {
             return Err(BuildError::UnbalancedSpends);
         }
@@ -734,6 +746,7 @@ impl TxBuilder {
                 };
                 r.compute_refund(include_lock_data);
                 let rs = r.cur_refund().expect("Fee pool entry must have refund");
+                let refund_gift = rs.gift;
                 if adjust_fee {
                     let (mut sw, ww) = r.spend.calc_words();
                     // If we are on Bythos, then seed words are merged by lock root, i.e. we don't need to pay for this one refund pool entry.
@@ -746,7 +759,7 @@ impl TxBuilder {
                         + self.settings.cost_per_word * ww / self.settings.witness_word_div;
                     fee_left += r.missing_unlocks_fee(&self.settings);
                 }
-                let sub_refund = rs.gift.min(fee_left);
+                let sub_refund = refund_gift.min(fee_left);
                 if sub_refund > 0 {
                     let cur_fee = r.spend.fee();
                     r.fee(cur_fee + sub_refund);
@@ -849,6 +862,7 @@ pub enum BuildError {
     InvalidVersion,
     InvalidSpendCondition,
     UnbalancedSpends,
+    SpendWithoutSeed(Name),
     MissingSpendCondition,
     MissingUnlocks(Vec<MissingUnlocks>),
 }
@@ -878,6 +892,11 @@ impl core::fmt::Display for BuildError {
                 f,
                 "Some spends are not balanced (forgot to compute refunds?)"
             ),
+            BuildError::SpendWithoutSeed(name) => write!(
+                f,
+                "Spend [{} {}] must contain at least one seed",
+                name.first, name.last
+            ),
             BuildError::MissingSpendCondition => {
                 write!(f, "Spend condition is missing for this input note")
             }
@@ -899,15 +918,97 @@ impl core::fmt::Display for BuildError {
 mod tests {
     use super::*;
     use crate::v1::{self, LockPrimitive, LockTim};
-    use alloc::{string::ToString, vec};
+    use alloc::{collections::btree_set::BTreeSet, string::ToString, vec};
     use bip39::Mnemonic;
     use iris_crypto::{derive_master_key, PublicKey};
-    use iris_ztd::{jam, NounEncode};
+    use iris_ztd::{cue, jam, NounDecode, NounEncode};
 
     fn keys() -> (PrivateKey, PublicKey) {
         let mnemonic = Mnemonic::parse("dice domain inspire horse time initial monitor nature mass impose tone benefit vibrant dash kiss mosquito rice then color ribbon agent method drop fat").unwrap();
         let ek = derive_master_key(&mnemonic.to_seed(""));
         (ek.private_key.unwrap(), ek.public_key)
+    }
+
+    #[test]
+    fn test_v0_migration_fee_balancing_preserves_seed_invariant() {
+        const FIXTURE_JAM: &[u8] = include_bytes!("../../test_vectors/test_notes.jam");
+        let noun = cue(FIXTURE_JAM).expect("fixture jam");
+        let mut notes = Vec::<Note>::from_noun(&noun).expect("fixture Vec<Note>");
+        assert!(!notes.is_empty(), "expected at least one fixture note");
+        assert!(
+            notes.iter().all(|note| matches!(note, Note::V0(_))),
+            "expected fixture notes to all be v0"
+        );
+        notes.sort_by_key(|note| note.assets());
+
+        let (_, target_public_key) = keys();
+        let target_spend_condition = SpendCondition::new_pkh(Pkh::single(target_public_key.hash()));
+        let refund_lock = LockRoot::Hash(Lock::from(target_spend_condition).hash());
+        let mut builder = TxBuilder::new(TxEngineSettings::v1_bythos_default());
+
+        for note in notes {
+            let mut spend =
+                SpendBuilder::new(note, None, Some(refund_lock.clone())).expect("spend builder");
+            spend.compute_refund(false);
+            builder.spend(spend);
+        }
+
+        let fee_before_balancing = builder.cur_fee();
+        builder
+            .recalc_and_set_fee(false)
+            .expect("recalc_and_set_fee");
+        assert!(
+            builder.cur_fee() > fee_before_balancing,
+            "fixture should exercise fee balancing over migration spends"
+        );
+
+        let tx = builder.build();
+
+        for (name, spend) in tx.spends.0.iter() {
+            assert!(
+                spend.seeds().0.iter().next().is_some(),
+                "fee balancing must not leave spend {} seedless",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_fee_only_spend_keeps_zero_gift_seed() {
+        let (private_key, _) = keys();
+        let note = Note::V1(v1::NoteV1 {
+            version: Version::V1,
+            origin_page: 13,
+            name: Name::new(
+                "2H7WHTE9dFXiGgx4J432DsCLuMovNkokfcnCGRg7utWGM9h13PgQvsH"
+                    .try_into()
+                    .unwrap(),
+                "7yMzrJjkb2Xu8uURP7YB3DFcotttR8dKDXF1tSp2wJmmXUvLM7SYzvM"
+                    .try_into()
+                    .unwrap(),
+            ),
+            note_data: NoteData::empty(),
+            assets: Nicks(10),
+        });
+        let spend_condition: (Lock, usize) = (
+            SpendCondition::new_pkh(Pkh::single(private_key.public_key().hash())).into(),
+            0,
+        );
+        let refund_lock = LockRoot::Hash(
+            Lock::from(SpendCondition::new_pkh(Pkh::single(
+                private_key.public_key().hash(),
+            )))
+            .hash(),
+        );
+        let mut spend =
+            SpendBuilder::new(note, Some(spend_condition), Some(refund_lock)).expect("spend");
+
+        spend.fee(Nicks(10)).compute_refund(false);
+
+        assert!(spend.is_balanced());
+        let seeds = &spend.spend.seeds().0;
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds.iter().next().expect("zero seed").gift, Nicks(0));
     }
 
     #[test]
@@ -1376,19 +1477,16 @@ mod tests {
                             .try_into()
                             .unwrap(),
                     )),
-                    LockPrimitive::Hax(
-                        Hax {
-                            preimages: [Digest([
-                                Belt(1730770831742798981),
-                                Belt(2676322185709933211),
-                                Belt(8329210750824781744),
-                                Belt(16756092452590401876),
-                                Belt(3547445316740171466),
-                            ])]
-                            .into(),
-                        }
+                    LockPrimitive::Hax(Hax {
+                        preimages: [Digest([
+                            Belt(1730770831742798981),
+                            Belt(2676322185709933211),
+                            Belt(8329210750824781744),
+                            Belt(16756092452590401876),
+                            Belt(3547445316740171466),
+                        ])]
                         .into(),
-                    ),
+                    }),
                 ]
                 .into(),
             )

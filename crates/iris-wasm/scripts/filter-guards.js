@@ -50,6 +50,27 @@ const customGuardImplementations = {
     'PageMsg': `return (typeof typedObj === "string") || (Array.isArray(typedObj) && typedObj.every((e: any) => (typeof e === "number" && e < 256)))`,
     'Bignum': `return (typeof typedObj === "string" && ${nockchainHexRegex}.test(typedObj))`,
 };
+
+// Enforce non-empty aliases whose generated guard is otherwise just Array.isArray + every(...).
+const nonEmptyArrayAliasGuards = ['SeedsV1'];
+
+function patchNonEmptyArrayAliasGuard(content, typeName) {
+    const guardPattern = new RegExp(
+        `export function is${typeName}\\(obj: unknown\\): obj is ${typeName} \\{\\n[\\s\\S]*?\\n\\}`,
+        'm'
+    );
+    const guardMatch = content.match(guardPattern);
+    if (!guardMatch || guardMatch[0].includes('typedObj.length >= 1')) {
+        return content;
+    }
+
+    const patchedGuard = guardMatch[0].replace(
+        'Array.isArray(typedObj) &&',
+        'Array.isArray(typedObj) &&\n        typedObj.length >= 1 &&'
+    );
+    return content.replace(guardMatch[0], patchedGuard);
+}
+
 let insideTaggedGuard = false;
 let currentTaggedGuardName = '';
 
@@ -209,4 +230,8 @@ export function isZMap<K, V>(obj: unknown, isK: (k: unknown) => k is K, isV: (v:
 newLines.push(genericGuards);
 
 // Write the result
-fs.writeFileSync(guardOut, newLines.join('\n'));
+let guardContent = newLines.join('\n');
+for (const typeName of nonEmptyArrayAliasGuards) {
+    guardContent = patchNonEmptyArrayAliasGuard(guardContent, typeName);
+}
+fs.writeFileSync(guardOut, guardContent);

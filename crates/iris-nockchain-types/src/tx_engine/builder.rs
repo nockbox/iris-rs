@@ -12,9 +12,9 @@ use alloc::{boxed::Box, format, string::ToString};
 use super::note::Note;
 use super::v0::Sig;
 use super::v1::{
-    words_for_unordered_spends, DisplayInput, InputDisplay, Lock, LockRoot, NockchainTx, NoteData,
-    Pkh, SeedV1 as Seed, SeedsV1 as Seeds, SpendCondition, SpendV1 as Spend, SpendsV1 as Spends,
-    TransactionDisplay, Witness,
+    words_for_unordered_spends, DisplayInput, Hax, InputDisplay, Lock, LockRoot, NockchainTx,
+    NoteData, Pkh, SeedV1 as Seed, SeedsV1 as Seeds, SpendCondition, SpendV1 as Spend,
+    SpendsV1 as Spends, TransactionDisplay, Witness,
 };
 use super::{Name, TxEngineSettings, Version};
 use crate::{Nicks, RawTx};
@@ -335,7 +335,7 @@ impl SpendBuilder {
             return None;
         };
 
-        let digest = preimage.hash();
+        let digest = Hax::hash_preimage(&preimage);
 
         for h in spend.witness.lock_merkle_proof.spend_condition().hax() {
             if h.preimages.contains(&digest) {

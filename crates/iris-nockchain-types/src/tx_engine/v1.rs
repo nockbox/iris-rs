@@ -5,9 +5,10 @@ use alloc::vec::Vec;
 use alloc::{boxed::Box, format};
 use iris_crypto::{PublicKey, Signature};
 use iris_ztd::{
-    tas, Bignum, Digest, Either, FixedU64, Hashable, MerkleProof, MerkleProvenAxis, Noun,
-    NounDecode, NounEncode, ZMap, ZSet,
+    hash_noun, tas, Belt, Bignum, Digest, Either, FixedU64, Hashable, MerkleProof,
+    MerkleProvenAxis, Noun, NounDecode, NounEncode, ZMap, ZSet,
 };
+use iris_ztd::tip5::hash::hash_fixed;
 use serde::{Deserialize, Serialize};
 
 use super::note::{BlockHeight, ExpectedVersion, Name, Note, Source, TimelockRange, Version};
@@ -490,13 +491,13 @@ impl SpendV1 {
     }
 
     pub fn add_preimage(&mut self, preimage: Noun) -> Digest {
+        let digest = Hax::hash_preimage(&preimage);
         match self {
             SpendV1::S0(_) => {
                 // Legacy spends do not carry hax preimages
-                preimage.hash()
+                digest
             }
             SpendV1::S1(spend) => {
-                let digest = preimage.hash();
                 spend.witness.hax_map.insert(digest, preimage);
                 digest
             }
@@ -548,7 +549,7 @@ impl Hashable for SpendV1 {
 #[iris_ztd::wasm_noun_codec]
 pub struct PkhSignature(pub ZMap<Digest, (PublicKey, Signature)>);
 
-#[derive(Debug, Clone, Hashable, NounEncode, NounDecode, Serialize, Deserialize)]
+#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
 #[iris_ztd::wasm_noun_codec]
 pub struct Witness {
     pub lock_merkle_proof: LockMerkleProof,
@@ -967,6 +968,69 @@ impl LockTim {
 #[iris_ztd::wasm_noun_codec]
 pub struct Hax {
     pub preimages: ZSet<Digest>,
+}
+
+#[iris_ztd::wasm_member_methods]
+impl Hax {
+    /// Structural `hash-noun` matching the Nockchain node's `hash-noun:hax`
+    /// (tx-engine-1.hoon) / `+hash-noun` (ztd/three.hoon): `hash-varlen` on every
+    /// belt-atom leaf, `hash-ten-cell` on every cell.
+    ///
+    /// This is DIFFERENT from `<Noun as Hashable>::hash` (and the `hashNoun` wasm
+    /// export), which computes `hash-varlen` over the WHOLE noun (one leaf-sequence +
+    /// dyck). The two coincide only for a single atom; for a structured noun (e.g. a
+    /// `tasBelts` list) they differ. HTLC hax-preimage commitments MUST use this
+    /// structural variant so the committed digest matches the node's hax check
+    /// (`=(h (hash-noun u.preimage))`).
+    pub fn hash_preimage(preimage: &Noun) -> Digest {
+        match preimage {
+            // atom leaf: hash-noun-varlen of the single belt == hash_noun([belt], [])
+            Noun::Atom(b) => {
+                let belt = Belt(b.try_into().expect("atom too large"));
+                hash_noun(&[belt], &[])
+            }
+            // cell: hash-ten-cell(structural(left), structural(right))
+            Noun::Cell(left, right) => {
+                let l = Self::hash_preimage(left);
+                let r = Self::hash_preimage(right);
+                let mut belts = [Belt(0); 10];
+                belts[..5].copy_from_slice(&l.0);
+                belts[5..].copy_from_slice(&r.0);
+                Digest(hash_fixed(&mut belts).map(Belt))
+            }
+        }
+    }
+}
+
+impl Hashable for Witness {
+    // Mirrors the node's `hashable:witness` (tx-engine-1.hoon):
+    //   [hash+(hash lmp) hash+(hash pkh) hash+(hash-hashable (hashable-hax hax)) leaf+tim]
+    // The pkh_signature IS included for every spend (the node does NOT strip it).
+    // The only subtlety is the hax_map: the node hashes each preimage value with the
+    // STRUCTURAL hash-noun (`hashable-noun` = hash-varlen per belt leaf + hash-ten-cell
+    // per cell == Hax::hash_preimage), NOT `<Noun as Hashable>::hash` (whole-noun
+    // varlen). So we transform the values through Hax::hash_preimage; the resulting
+    // ZMap<Digest, Digest> hashes its (already-digest) values by identity, matching
+    // the node's `hash+(hashable-noun value)`.
+    fn hash(&self) -> Digest {
+        let lmp = self.lock_merkle_proof.hash();
+        let pkh = self.pkh_signature.hash();
+        let tim = self.tim.hash();
+        let hax: ZMap<Digest, Digest> = self
+            .hax_map
+            .iter()
+            .map(|(k, v)| (*k, Hax::hash_preimage(v)))
+            .collect();
+        (lmp, pkh, hax, tim).hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        None::<(Digest, Digest)>
+    }
 }
 
 pub fn words_for_unordered_spends<'a>(
@@ -1842,6 +1906,60 @@ mod tests {
                 ),
             ],
             "{coinbase:?}",
+        );
+    }
+    // A real HTLC hax preimage jam (from a failing claim). The node's hax check
+    // computes the STRUCTURAL hash-noun of the cued preimage; hash_noun_structural
+    // must reproduce it. The whole-noun `Noun::hash` (== hashNoun) must NOT.
+    #[test]
+    fn hax_hash_matches_hoon_hax_hash() {
+        let jam: [u8; 79] = [
+            1, 4, 94, 58, 17, 242, 138, 59, 221, 17, 3, 236, 145, 212, 172, 51, 41, 91, 17, 50, 64,
+            143, 128, 4, 27, 38, 225, 48, 160, 7, 16, 192, 24, 8, 250, 63, 48, 130, 139, 12, 240,
+            187, 33, 147, 240, 145, 120, 104, 131, 3, 244, 36, 50, 199, 221, 55, 56, 152, 120, 0,
+            129, 72, 209, 194, 114, 52, 110, 8, 86, 192, 239, 178, 176, 65, 126, 22, 54, 38, 6,
+        ];
+        let preimage = iris_ztd::cue(&jam).expect("cue preimage");
+        // structural hash-noun == what the node verifies in check:hax
+        assert_eq!(
+            Hax::hash_preimage(&preimage).to_string(),
+            "8XiEzPMGNQp29EwSdtGhHsyEmXsDR2AkZfuTWCfydWVA8XbKsLk7BGo"
+        );
+        // whole-noun varlen (the buggy hashNoun) is the OTHER, non-matching digest
+        assert_eq!(
+            preimage.hash().to_string(),
+            "2o4PMCq3d6uUxcVZsYncUbX2F4bcYcDJQAv3Qo28GYY7CDs3WekhYVA"
+        );
+    }
+
+    /// Shows that the manual Hashable impl for Witness (which transforms hax_map values
+    /// through Hax::hash_preimage) produces a different tx id than the derived impl would.
+    /// If you comment out the manual impl, calc_id() will use the wrong preimage digests
+    /// and the id will change for any hax spend.
+    #[test]
+    fn hax_map_entry_uses_hash_preimage() {
+        // A minimal cell preimage whose structural hash differs from the varlen hash.
+        let atom1: iris_ztd::Noun = Noun::Atom(1u64.into());
+        let atom2: iris_ztd::Noun = Noun::Atom(2u64.into());
+        let preimage = Noun::Cell(iris_ztd::HashNoun::from(atom1), iris_ztd::HashNoun::from(atom2));
+        let structural = Hax::hash_preimage(&preimage);
+        let wrong = preimage.hash();
+        assert_ne!(structural, wrong, "structural and varlen hashes must differ for a cell");
+
+        // What the manual Witness impl does: build a ZMap<Digest, Digest> where the
+        // *value* is the structural preimage digest, then hash that map.
+        let mut transformed: ZMap<Digest, Digest> = ZMap::new();
+        transformed.insert(structural, structural); // key = committed, value = structural digest of preimage
+        let id_contribution = transformed.hash();
+
+        // What a naive map with the wrong digest as the value would contribute.
+        let mut wrong_transformed: ZMap<Digest, Digest> = ZMap::new();
+        wrong_transformed.insert(structural, wrong);
+        let wrong_contribution = wrong_transformed.hash();
+
+        assert_ne!(
+            id_contribution, wrong_contribution,
+            "tx id contribution from hax_map must change when the preimage digest is the structural one"
         );
     }
 }

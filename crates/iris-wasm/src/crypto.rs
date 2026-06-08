@@ -1,10 +1,10 @@
-use iris_ztd::{U256, Digest};
+use iris_ztd::{Digest, U256};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
-use iris_nockchain_types::v1::{Hax};
 use iris_crypto::cheetah::{PrivateKey, PublicKey, Signature};
 use iris_crypto::slip10::{derive_master_key as derive_master_key_internal, ExtendedKey};
+use iris_nockchain_types::v1::Hax;
 
 #[wasm_bindgen(js_name = ExtendedKey)]
 #[derive(Serialize, Deserialize)]
@@ -141,7 +141,7 @@ pub fn hash_noun(noun: &[u8]) -> Result<String, JsValue> {
 /// Hash a hax preimage (jam as input)
 #[wasm_bindgen(js_name = hashPreimage)]
 pub fn hash_preimage(preimage_jam: &[u8]) -> Result<Digest, JsValue> {
-    use iris_ztd::{cue};
+    use iris_ztd::cue;
     let preimage = cue(preimage_jam).ok_or("Unable to cue preimage jam")?;
     Ok(Hax::hash_preimage(&preimage))
 }

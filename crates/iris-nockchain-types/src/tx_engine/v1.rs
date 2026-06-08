@@ -4,11 +4,11 @@ use alloc::vec;
 use alloc::vec::Vec;
 use alloc::{boxed::Box, format};
 use iris_crypto::{PublicKey, Signature};
+use iris_ztd::tip5::hash::hash_fixed;
 use iris_ztd::{
     hash_noun, tas, Belt, Bignum, Digest, Either, FixedU64, Hashable, MerkleProof,
     MerkleProvenAxis, Noun, NounDecode, NounEncode, ZMap, ZSet,
 };
-use iris_ztd::tip5::hash::hash_fixed;
 use serde::{Deserialize, Serialize};
 
 use super::note::{BlockHeight, ExpectedVersion, Name, Note, Source, TimelockRange, Version};
@@ -1941,10 +1941,16 @@ mod tests {
         // A minimal cell preimage whose structural hash differs from the varlen hash.
         let atom1: iris_ztd::Noun = Noun::Atom(1u64.into());
         let atom2: iris_ztd::Noun = Noun::Atom(2u64.into());
-        let preimage = Noun::Cell(iris_ztd::HashNoun::from(atom1), iris_ztd::HashNoun::from(atom2));
+        let preimage = Noun::Cell(
+            iris_ztd::HashNoun::from(atom1),
+            iris_ztd::HashNoun::from(atom2),
+        );
         let structural = Hax::hash_preimage(&preimage);
         let wrong = preimage.hash();
-        assert_ne!(structural, wrong, "structural and varlen hashes must differ for a cell");
+        assert_ne!(
+            structural, wrong,
+            "structural and varlen hashes must differ for a cell"
+        );
 
         // What the manual Witness impl does: build a ZMap<Digest, Digest> where the
         // *value* is the structural preimage digest, then hash that map.

@@ -554,31 +554,38 @@ pub struct Witness {
 
 impl Hashable for Witness {
     fn hash(&self) -> Digest {
+        let (left, right) = self.hashable_pair().expect("witness has fields");
+        (left.hash(), right.hash()).hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        // The hax map counts as one leaf regardless of its value type, so the
+        // count matches the derived (untransformed) field tuple.
+        (
+            &self.lock_merkle_proof,
+            &self.pkh_signature,
+            &self.hax_map,
+            &self.tim,
+        )
+            .leaf_count()
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
         // Mirrors hashable:witness (tx-engine-1.hoon): each hax preimage value is
         // hashed with the structural hash-noun (hashable-noun), not the whole-noun
         // varlen hash a ZMap<Digest, Noun> would use. Digests hash to themselves,
         // so pre-hashing the values reproduces hoon's `hash+` entries while keeping
-        // the tree shape (it is determined by the unchanged keys).
+        // the map tree shape (it is determined by the unchanged keys). The pair
+        // nesting matches what the Hashable derive produces for the field tuple.
         let hax_map: ZMap<Digest, Digest> = self
             .hax_map
             .iter()
             .map(|(digest, preimage)| (*digest, preimage.hash_structural()))
             .collect();
-        (
+        Some((
             &self.lock_merkle_proof,
-            &self.pkh_signature,
-            &hax_map,
-            &self.tim,
-        )
-            .hash()
-    }
-
-    fn leaf_count(&self) -> usize {
-        1
-    }
-
-    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
-        Option::<((), ())>::None
+            (&self.pkh_signature, (hax_map, &self.tim)),
+        ))
     }
 }
 
@@ -1925,5 +1932,10 @@ mod tests {
         )
             .hash();
         assert_eq!(witness.hash(), expected);
+
+        // hashable_pair must stay consistent with hash(), or merkle proofs
+        // over structures containing a witness would not verify.
+        let proven = MerkleProof::prove_hashable(&witness, 0);
+        assert_eq!(proven.proof.root, witness.hash());
     }
 }

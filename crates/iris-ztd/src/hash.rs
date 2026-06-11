@@ -798,10 +798,26 @@ impl Noun {
     /// leaf-sequence plus dyck word. The two only coincide for a lone atom.
     /// Anything the node hashes through `hashable:tip5` with nouns embedded
     /// structurally (hax preimages, note-data values) must use this variant.
+    ///
+    /// Panics if an atom leaf exceeds `u64`. Atom leaves are hashed as single
+    /// field elements, never decomposed into belts: the node's `hash-varlen`
+    /// asserts on non-`based` leaves and `based:witness` rejects such
+    /// preimages outright, so there is no node-side digest to match. Validate
+    /// untrusted nouns with [`Noun::is_based`] first.
     pub fn hash_structural(&self) -> Digest {
         match self {
             Noun::Atom(a) => Belt(a.try_into().expect("atom too large")).hash(),
             Noun::Cell(left, right) => (left.hash_structural(), right.hash_structural()).hash(),
+        }
+    }
+
+    /// Whether every atom leaf is a valid field element, mirroring
+    /// `based-noun` in `based:witness` (tx-engine-1.hoon). The node rejects
+    /// hax preimages that fail this check, since hashing them would assert.
+    pub fn is_based(&self) -> bool {
+        match self {
+            Noun::Atom(a) => u64::try_from(a).is_ok_and(crate::belt::based_check),
+            Noun::Cell(left, right) => left.is_based() && right.is_based(),
         }
     }
 }

@@ -319,6 +319,49 @@ impl NounDecode for Noun {
     }
 }
 
+/// A noun that hashes *structurally*: [`Noun::hash_structural`] instead of the
+/// whole-noun varlen hash of `<Noun as Hashable>::hash`.
+///
+/// Use this as the field type wherever the node embeds a raw noun structurally
+/// in a `hashable:tip5` (hax preimages in `hashable:witness`, note-data
+/// values), so derived `Hashable` impls pick the correct hash without manual
+/// transformation. Encoding, serialization, and the TS type are identical to
+/// [`Noun`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(
+    feature = "wasm",
+    tsify(into_wasm_abi, from_wasm_abi, type = "string | [Noun]")
+)]
+pub struct StructuralNoun(pub Noun);
+
+impl From<Noun> for StructuralNoun {
+    fn from(noun: Noun) -> Self {
+        Self(noun)
+    }
+}
+
+impl core::ops::Deref for StructuralNoun {
+    type Target = Noun;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl NounEncode for StructuralNoun {
+    fn to_noun(&self) -> Noun {
+        self.0.clone()
+    }
+}
+
+impl NounDecode for StructuralNoun {
+    fn from_noun(noun: &Noun) -> Option<Self> {
+        Some(Self(noun.clone()))
+    }
+}
+
 impl NounEncode for () {
     fn to_noun(&self) -> Noun {
         atom(0)

@@ -711,7 +711,11 @@ impl From<Witness> for PbWitness {
         PbWitness {
             lock_merkle_proof: Some(PbLockMerkleProof::from(witness.lock_merkle_proof)),
             pkh_signature: Some(PbPkhSignature::from(witness.pkh_signature)),
-            hax: witness.hax_map.into_iter().map(|hax| hax.into()).collect(),
+            hax: witness
+                .hax_map
+                .into_iter()
+                .map(|(hash, preimage)| (hash, preimage.0).into())
+                .collect(),
         }
     }
 }
@@ -1203,7 +1207,7 @@ impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
                                     let noun = iris_ztd::cue(&hax.value).ok_or(
                                         ConversionError::Invalid("HaxPreimage value (invalid jam)"),
                                     )?;
-                                    map.insert(hash, noun);
+                                    map.insert(hash, iris_ztd::StructuralNoun(noun));
                                 }
                                 map
                             },

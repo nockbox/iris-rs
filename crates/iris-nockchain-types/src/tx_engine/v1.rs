@@ -6,7 +6,7 @@ use alloc::{boxed::Box, format};
 use iris_crypto::{PublicKey, Signature};
 use iris_ztd::{
     tas, Bignum, Digest, Either, FixedU64, Hashable, MerkleProof, MerkleProvenAxis, Noun,
-    NounDecode, NounEncode, ZMap, ZSet,
+    NounDecode, NounEncode, StructuralNoun, ZMap, ZSet,
 };
 use serde::{Deserialize, Serialize};
 
@@ -483,9 +483,8 @@ impl SpendV1 {
     }
 
     pub fn add_preimage(&mut self, preimage: Noun) -> Digest {
-        // The node checks hax locks against the structural hash-noun of the
-        // preimage (hash-noun:hax, tx-engine-1.hoon), not the varlen noun hash.
-        let digest = preimage.hash_structural();
+        let preimage = StructuralNoun(preimage);
+        let digest = preimage.hash();
         match self {
             SpendV1::S0(_) => {
                 // Legacy spends do not carry hax preimages
@@ -543,50 +542,16 @@ impl Hashable for SpendV1 {
 #[iris_ztd::wasm_noun_codec]
 pub struct PkhSignature(pub ZMap<Digest, (PublicKey, Signature)>);
 
-#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hashable, NounEncode, NounDecode, Serialize, Deserialize)]
 #[iris_ztd::wasm_noun_codec]
 pub struct Witness {
     pub lock_merkle_proof: LockMerkleProof,
     pub pkh_signature: PkhSignature,
-    pub hax_map: ZMap<Digest, Noun>,
+    // StructuralNoun hashes preimages the way hashable:witness
+    // (tx-engine-1.hoon) embeds them: with the structural hash-noun, not the
+    // whole-noun varlen hash.
+    pub hax_map: ZMap<Digest, StructuralNoun>,
     pub tim: (),
-}
-
-impl Hashable for Witness {
-    fn hash(&self) -> Digest {
-        let (left, right) = self.hashable_pair().expect("witness has fields");
-        (left.hash(), right.hash()).hash()
-    }
-
-    fn leaf_count(&self) -> usize {
-        // The hax map counts as one leaf regardless of its value type, so the
-        // count matches the derived (untransformed) field tuple.
-        (
-            &self.lock_merkle_proof,
-            &self.pkh_signature,
-            &self.hax_map,
-            &self.tim,
-        )
-            .leaf_count()
-    }
-
-    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
-        // Mirrors hashable:witness (tx-engine-1.hoon): each hax preimage value is
-        // hashed with the structural hash-noun (hashable-noun), not the whole-noun
-        // varlen hash a ZMap<Digest, Noun> would use. Digests hash to themselves,
-        // so pre-hashing the values reproduces hoon's `hash+` entries while keeping
-        // the map tree shape (it is determined by the unchanged keys). The pair
-        // nesting matches what the Hashable derive produces for the field tuple.
-        let hax_map: ZMap<Digest, Digest> = self
-            .hax_map
-            .iter()
-            .map(|(digest, preimage)| (*digest, preimage.hash_structural()))
-            .collect();
-        Some((
-            &self.lock_merkle_proof,
-            (&self.pkh_signature, (hax_map, &self.tim)),
-        ))
-    }
 }
 
 impl Witness {
@@ -1904,22 +1869,28 @@ mod tests {
     #[test]
     fn witness_hash_uses_structural_preimage_hash() {
         let preimage = (12345u64, 67890u64).to_noun();
-        let digest = preimage.hash_structural();
+        let digest = StructuralNoun(preimage.clone()).hash();
+        assert_eq!(digest, preimage.hash_structural());
+
         let lock = Lock::from(SpendCondition(vec![LockPrimitive::Hax(Hax {
             preimages: vec![digest].into(),
         })]));
         let mut witness = Witness::new(lock, 0);
-        witness.hax_map.insert(digest, preimage);
+        witness
+            .hax_map
+            .insert(digest, StructuralNoun(preimage.clone()));
 
-        // The old derived impl hashed hax_map values with the varlen noun hash.
-        let derived_style_hash = (
+        // A map hashing values with the varlen noun hash (the original bug)
+        // must produce a different witness hash.
+        let naive_map: ZMap<Digest, Noun> = [(digest, preimage)].into();
+        let naive_hash = (
             &witness.lock_merkle_proof,
             &witness.pkh_signature,
-            &witness.hax_map,
+            &naive_map,
             &witness.tim,
         )
             .hash();
-        assert_ne!(witness.hash(), derived_style_hash);
+        assert_ne!(witness.hash(), naive_hash);
 
         // Substituting each preimage with its structural digest must be a no-op,
         // since hoon hashes the value subtree to exactly that digest in place.

@@ -823,6 +823,21 @@ impl Noun {
 }
 
 #[cfg(feature = "alloc")]
+impl Hashable for crate::StructuralNoun {
+    fn hash(&self) -> Digest {
+        self.0.hash_structural()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
+}
+
+#[cfg(feature = "alloc")]
 impl Hashable for Noun {
     fn hash(&self) -> Digest {
         fn visit(noun: &Noun, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {

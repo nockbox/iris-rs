@@ -3,7 +3,9 @@ use alloc::collections::btree_set::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
 use iris_crypto::{PrivateKey, PublicKey};
-use iris_ztd::{noun_deserialize, noun_serialize, Digest, Hashable as HashableTrait, Noun, ZMap};
+use iris_ztd::{
+    noun_deserialize, noun_serialize, Digest, Hashable as HashableTrait, Noun, StructuralNoun, ZMap,
+};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "wasm")]
@@ -337,7 +339,8 @@ impl SpendBuilder {
 
         // Hax locks commit to the structural hash-noun of the preimage
         // (hash-noun:hax, tx-engine-1.hoon), not the varlen noun hash.
-        let digest = preimage.hash_structural();
+        let preimage = StructuralNoun(preimage);
+        let digest = preimage.hash();
 
         for h in spend.witness.lock_merkle_proof.spend_condition().hax() {
             if h.preimages.contains(&digest) {

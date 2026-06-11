@@ -335,7 +335,9 @@ impl SpendBuilder {
             return None;
         };
 
-        let digest = preimage.hash();
+        // Hax locks commit to the structural hash-noun of the preimage
+        // (hash-noun:hax, tx-engine-1.hoon), not the varlen noun hash.
+        let digest = preimage.hash_structural();
 
         for h in spend.witness.lock_merkle_proof.spend_condition().hax() {
             if h.preimages.contains(&digest) {

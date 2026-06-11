@@ -137,6 +137,18 @@ pub fn hash_noun(noun: &[u8]) -> Result<String, JsValue> {
     Ok(digest.to_string())
 }
 
+/// Hash a hax lock preimage (jam as input).
+///
+/// Uses the structural noun hash the node verifies hax locks with
+/// (`hash-noun:hax` in tx-engine-1.hoon). For cell-structured preimages this
+/// differs from `hashNoun`, which hashes the whole noun as one leaf sequence.
+#[wasm_bindgen(js_name = hashPreimage)]
+pub fn hash_preimage(preimage_jam: &[u8]) -> Result<String, JsValue> {
+    use iris_ztd::cue;
+    let preimage = cue(preimage_jam).ok_or("Unable to cue preimage jam")?;
+    Ok(preimage.hash_structural().to_string())
+}
+
 /// Sign a message string with a private key
 #[wasm_bindgen(js_name = signMessage)]
 pub fn sign_message(private_key_bytes: &[u8], message: &str) -> Result<Signature, JsValue> {

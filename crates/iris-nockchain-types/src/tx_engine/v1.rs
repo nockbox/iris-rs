@@ -52,18 +52,11 @@ pub struct NoteData(pub ZMap<String, Noun>);
 
 impl Hashable for NoteData {
     fn hash(&self) -> Digest {
-        fn hash_noun(noun: &Noun) -> Digest {
-            match noun {
-                Noun::Atom(a) => {
-                    let u: u64 = a.try_into().unwrap();
-                    u.hash()
-                }
-                Noun::Cell(left, right) => (hash_noun(left), hash_noun(right)).hash(),
-            }
-        }
+        // Values are hashed with the structural hash-noun, mirroring
+        // hashable-noun in $note-data (tx-engine-1.hoon).
         self.0
             .iter()
-            .map(|(k, v)| (k, hash_noun(v)))
+            .map(|(k, v)| (k, v.hash_structural()))
             .collect::<ZMap<_, _>>()
             .hash()
     }
@@ -490,13 +483,15 @@ impl SpendV1 {
     }
 
     pub fn add_preimage(&mut self, preimage: Noun) -> Digest {
+        // The node checks hax locks against the structural hash-noun of the
+        // preimage (hash-noun:hax, tx-engine-1.hoon), not the varlen noun hash.
+        let digest = preimage.hash_structural();
         match self {
             SpendV1::S0(_) => {
                 // Legacy spends do not carry hax preimages
-                preimage.hash()
+                digest
             }
             SpendV1::S1(spend) => {
-                let digest = preimage.hash();
                 spend.witness.hax_map.insert(digest, preimage);
                 digest
             }
@@ -548,13 +543,43 @@ impl Hashable for SpendV1 {
 #[iris_ztd::wasm_noun_codec]
 pub struct PkhSignature(pub ZMap<Digest, (PublicKey, Signature)>);
 
-#[derive(Debug, Clone, Hashable, NounEncode, NounDecode, Serialize, Deserialize)]
+#[derive(Debug, Clone, NounEncode, NounDecode, Serialize, Deserialize)]
 #[iris_ztd::wasm_noun_codec]
 pub struct Witness {
     pub lock_merkle_proof: LockMerkleProof,
     pub pkh_signature: PkhSignature,
     pub hax_map: ZMap<Digest, Noun>,
     pub tim: (),
+}
+
+impl Hashable for Witness {
+    fn hash(&self) -> Digest {
+        // Mirrors hashable:witness (tx-engine-1.hoon): each hax preimage value is
+        // hashed with the structural hash-noun (hashable-noun), not the whole-noun
+        // varlen hash a ZMap<Digest, Noun> would use. Digests hash to themselves,
+        // so pre-hashing the values reproduces hoon's `hash+` entries while keeping
+        // the tree shape (it is determined by the unchanged keys).
+        let hax_map: ZMap<Digest, Digest> = self
+            .hax_map
+            .iter()
+            .map(|(digest, preimage)| (*digest, preimage.hash_structural()))
+            .collect();
+        (
+            &self.lock_merkle_proof,
+            &self.pkh_signature,
+            &hax_map,
+            &self.tim,
+        )
+            .hash()
+    }
+
+    fn leaf_count(&self) -> usize {
+        1
+    }
+
+    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
+        Option::<((), ())>::None
+    }
 }
 
 impl Witness {
@@ -1843,5 +1868,62 @@ mod tests {
             ],
             "{coinbase:?}",
         );
+    }
+
+    // A real HTLC hax preimage jam from a failing claim. The expected digest is
+    // the one the node computes via (hash-noun:hax (cue jam)) in tx-engine-1.hoon;
+    // the varlen whole-noun hash must NOT match it for a cell-structured preimage.
+    #[test]
+    fn hax_preimage_hash_matches_hoon_hash_noun() {
+        let jam: [u8; 79] = [
+            1, 4, 94, 58, 17, 242, 138, 59, 221, 17, 3, 236, 145, 212, 172, 51, 41, 91, 17, 50, 64,
+            143, 128, 4, 27, 38, 225, 48, 160, 7, 16, 192, 24, 8, 250, 63, 48, 130, 139, 12, 240,
+            187, 33, 147, 240, 145, 120, 104, 131, 3, 244, 36, 50, 199, 221, 55, 56, 152, 120, 0,
+            129, 72, 209, 194, 114, 52, 110, 8, 86, 192, 239, 178, 176, 65, 126, 22, 54, 38, 6,
+        ];
+        let preimage = iris_ztd::cue(&jam).expect("cue preimage");
+        assert_eq!(
+            preimage.hash_structural().to_string(),
+            "8XiEzPMGNQp29EwSdtGhHsyEmXsDR2AkZfuTWCfydWVA8XbKsLk7BGo"
+        );
+        assert_ne!(
+            preimage.hash().to_string(),
+            "8XiEzPMGNQp29EwSdtGhHsyEmXsDR2AkZfuTWCfydWVA8XbKsLk7BGo"
+        );
+    }
+
+    // The witness hash (and thus the tx id) must hash hax preimage values with
+    // the structural hash-noun, like hashable:witness in tx-engine-1.hoon does.
+    #[test]
+    fn witness_hash_uses_structural_preimage_hash() {
+        let preimage = (12345u64, 67890u64).to_noun();
+        let digest = preimage.hash_structural();
+        let lock = Lock::from(SpendCondition(vec![LockPrimitive::Hax(Hax {
+            preimages: vec![digest].into(),
+        })]));
+        let mut witness = Witness::new(lock, 0);
+        witness.hax_map.insert(digest, preimage);
+
+        // The old derived impl hashed hax_map values with the varlen noun hash.
+        let derived_style_hash = (
+            &witness.lock_merkle_proof,
+            &witness.pkh_signature,
+            &witness.hax_map,
+            &witness.tim,
+        )
+            .hash();
+        assert_ne!(witness.hash(), derived_style_hash);
+
+        // Substituting each preimage with its structural digest must be a no-op,
+        // since hoon hashes the value subtree to exactly that digest in place.
+        let transformed: ZMap<Digest, Digest> = [(digest, digest)].into();
+        let expected = (
+            &witness.lock_merkle_proof,
+            &witness.pkh_signature,
+            &transformed,
+            &witness.tim,
+        )
+            .hash();
+        assert_eq!(witness.hash(), expected);
     }
 }

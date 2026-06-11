@@ -788,6 +788,25 @@ impl Hashable for String {
 }
 
 #[cfg(feature = "alloc")]
+impl Noun {
+    /// Structural noun hash, mirroring the node's `hash-noun:hax` and
+    /// `hashable-noun:witness` (tx-engine-1.hoon): `hash-varlen` on every atom
+    /// leaf, `hash-ten-cell` on every cell.
+    ///
+    /// This is distinct from `<Noun as Hashable>::hash`, which mirrors
+    /// `hash-noun-varlen` (ztd/three.hoon) and hashes the *whole* noun as one
+    /// leaf-sequence plus dyck word. The two only coincide for a lone atom.
+    /// Anything the node hashes through `hashable:tip5` with nouns embedded
+    /// structurally (hax preimages, note-data values) must use this variant.
+    pub fn hash_structural(&self) -> Digest {
+        match self {
+            Noun::Atom(a) => Belt(a.try_into().expect("atom too large")).hash(),
+            Noun::Cell(left, right) => (left.hash_structural(), right.hash_structural()).hash(),
+        }
+    }
+}
+
+#[cfg(feature = "alloc")]
 impl Hashable for Noun {
     fn hash(&self) -> Digest {
         fn visit(noun: &Noun, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {

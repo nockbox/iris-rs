@@ -1,0 +1,34 @@
+[package]
+name = "iris-ffi"
+version.workspace = true
+edition.workspace = true
+keywords = ["nockchain", "iris", "wallet", "nock"]
+license = "MIT"
+repository = "https://github.com/nockbox/iris-rs"
+rust-version = "1.88.0"
+description = "Native (uniffi) bindings for Iris wallet — API-parallel to iris-wasm"
+homepage = "https://nockbox.org"
+authors = ["NockBox inc. <tech@nockbox.org>"]
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+name = "iris_ffi"
+
+[dependencies]
+iris-crypto = { workspace = true, features = ["default"] }
+iris-nockchain-types = { workspace = true }
+iris-ztd = { workspace = true, features = ["default"] }
+iris-grpc-proto = { workspace = true }
+ibig = { workspace = true }
+bip39 = { version = "2.0", default-features = false, features = ["alloc", "std"] }
+serde = { workspace = true }
+serde_json = "1"
+thiserror = "2.0"
+prost = "0.13"
+uniffi = { version = "0.29", features = ["tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+hex = "0.4"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

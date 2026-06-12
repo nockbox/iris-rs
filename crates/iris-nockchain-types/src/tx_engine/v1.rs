@@ -6,13 +6,13 @@ use alloc::{boxed::Box, format};
 use iris_crypto::{PublicKey, Signature};
 use iris_ztd::{
     tas, Bignum, Digest, Either, FixedU64, Hashable, MerkleProof, MerkleProvenAxis, Noun,
-    NounDecode, NounEncode, StructuralNoun, ZMap, ZSet,
+    NounDecode, NounEncode, ZMap, ZSet,
 };
 use serde::{Deserialize, Serialize};
 
 use super::note::{BlockHeight, ExpectedVersion, Name, Note, Source, TimelockRange, Version};
 use super::v0::LegacySignature;
-use super::{BlockchainConstants, TxEngineSettings, TxId};
+use super::{BasedNoun, BlockchainConstants, TxEngineSettings, TxId};
 use crate::Nicks;
 
 fn noun_words(n: &Noun) -> u64 {
@@ -46,29 +46,9 @@ impl Pkh {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, NounDecode, NounEncode)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, NounDecode, NounEncode, Hashable)]
 #[iris_ztd::wasm_noun_codec]
-pub struct NoteData(pub ZMap<String, Noun>);
-
-impl Hashable for NoteData {
-    fn hash(&self) -> Digest {
-        // Values are hashed with the structural hash-noun, mirroring
-        // hashable-noun in $note-data (tx-engine-1.hoon).
-        self.0
-            .iter()
-            .map(|(k, v)| (k, v.hash_structural()))
-            .collect::<ZMap<_, _>>()
-            .hash()
-    }
-
-    fn leaf_count(&self) -> usize {
-        1
-    }
-
-    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
-        Option::<((), ())>::None
-    }
-}
+pub struct NoteData(pub ZMap<String, BasedNoun>);
 
 #[iris_ztd::wasm_member_methods]
 impl NoteData {
@@ -86,7 +66,7 @@ impl NoteData {
         let mut w = 1;
 
         for (_, v) in &self.0 {
-            w += 1 + noun_words(v);
+            w += 1 + (v.leaf_count() as u64);
         }
 
         w
@@ -95,12 +75,14 @@ impl NoteData {
 
 impl NoteData {
     pub fn push_lock(&mut self, lock: Lock) {
-        self.0.insert("lock".to_string(), (0, lock).to_noun());
+        let value = BasedNoun::from_noun(&(0, lock).to_noun()).expect("lock nouns are based");
+        self.0.insert("lock".to_string(), value);
     }
 
     pub fn push_pkh(&mut self, pkh: Pkh) {
-        self.0
-            .insert("lock".to_string(), (0, ("pkh", &pkh), 0).to_noun());
+        let value =
+            BasedNoun::from_noun(&(0, ("pkh", &pkh), 0).to_noun()).expect("pkh nouns are based");
+        self.0.insert("lock".to_string(), value);
     }
 }
 
@@ -482,8 +464,7 @@ impl SpendV1 {
         }
     }
 
-    pub fn add_preimage(&mut self, preimage: Noun) -> Digest {
-        let preimage = StructuralNoun(preimage);
+    pub fn add_preimage(&mut self, preimage: BasedNoun) -> Digest {
         let digest = preimage.hash();
         match self {
             SpendV1::S0(_) => {
@@ -547,10 +528,7 @@ pub struct PkhSignature(pub ZMap<Digest, (PublicKey, Signature)>);
 pub struct Witness {
     pub lock_merkle_proof: LockMerkleProof,
     pub pkh_signature: PkhSignature,
-    // StructuralNoun hashes preimages the way hashable:witness
-    // (tx-engine-1.hoon) embeds them: with the structural hash-noun, not the
-    // whole-noun varlen hash.
-    pub hax_map: ZMap<Digest, StructuralNoun>,
+    pub hax_map: ZMap<Digest, BasedNoun>,
     pub tim: (),
 }
 
@@ -1844,7 +1822,7 @@ mod tests {
 
     // A real HTLC hax preimage jam from a failing claim. The expected digest is
     // the one the node computes via (hash-noun:hax (cue jam)) in tx-engine-1.hoon;
-    // the varlen whole-noun hash must NOT match it for a cell-structured preimage.
+    // the varlen whole-noun hash of the same jam must NOT match it.
     #[test]
     fn hax_preimage_hash_matches_hoon_hash_noun() {
         let jam: [u8; 79] = [
@@ -1853,36 +1831,51 @@ mod tests {
             187, 33, 147, 240, 145, 120, 104, 131, 3, 244, 36, 50, 199, 221, 55, 56, 152, 120, 0,
             129, 72, 209, 194, 114, 52, 110, 8, 86, 192, 239, 178, 176, 65, 126, 22, 54, 38, 6,
         ];
-        let preimage = iris_ztd::cue(&jam).expect("cue preimage");
+        let noun = iris_ztd::cue(&jam).expect("cue preimage");
+        let preimage = BasedNoun::from_noun(&noun).expect("preimage is based");
         assert_eq!(
-            preimage.hash_structural().to_string(),
-            "8XiEzPMGNQp29EwSdtGhHsyEmXsDR2AkZfuTWCfydWVA8XbKsLk7BGo"
-        );
-        assert_ne!(
             preimage.hash().to_string(),
             "8XiEzPMGNQp29EwSdtGhHsyEmXsDR2AkZfuTWCfydWVA8XbKsLk7BGo"
         );
+        assert_ne!(
+            noun.hash().to_string(),
+            "8XiEzPMGNQp29EwSdtGhHsyEmXsDR2AkZfuTWCfydWVA8XbKsLk7BGo"
+        );
+    }
+
+    // Decoding must enforce the based invariant the node checks in
+    // based:witness: atoms at or above the field prime are not representable.
+    #[test]
+    fn based_noun_rejects_non_field_atoms() {
+        const PRIME: u64 = 18446744069414584321;
+        assert!(BasedNoun::from_noun(&(PRIME - 1).to_noun()).is_some());
+        for bad in [PRIME, u64::MAX] {
+            let atom = bad.to_noun();
+            assert!(BasedNoun::from_noun(&atom).is_none());
+            let cell = (1u64, bad).to_noun();
+            assert!(BasedNoun::from_noun(&cell).is_none());
+        }
+        let huge = Noun::Atom(ibig::UBig::from(u64::MAX) + ibig::UBig::from(1u8));
+        assert!(BasedNoun::from_noun(&huge).is_none());
     }
 
     // The witness hash (and thus the tx id) must hash hax preimage values with
     // the structural hash-noun, like hashable:witness in tx-engine-1.hoon does.
     #[test]
     fn witness_hash_uses_structural_preimage_hash() {
-        let preimage = (12345u64, 67890u64).to_noun();
-        let digest = StructuralNoun(preimage.clone()).hash();
-        assert_eq!(digest, preimage.hash_structural());
+        let noun = (12345u64, 67890u64).to_noun();
+        let preimage = BasedNoun::from_noun(&noun).unwrap();
+        let digest = preimage.hash();
 
         let lock = Lock::from(SpendCondition(vec![LockPrimitive::Hax(Hax {
             preimages: vec![digest].into(),
         })]));
         let mut witness = Witness::new(lock, 0);
-        witness
-            .hax_map
-            .insert(digest, StructuralNoun(preimage.clone()));
+        witness.hax_map.insert(digest, preimage);
 
         // A map hashing values with the varlen noun hash (the original bug)
         // must produce a different witness hash.
-        let naive_map: ZMap<Digest, Noun> = [(digest, preimage)].into();
+        let naive_map: ZMap<Digest, Noun> = [(digest, noun)].into();
         let naive_hash = (
             &witness.lock_merkle_proof,
             &witness.pkh_signature,

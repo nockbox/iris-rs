@@ -224,12 +224,15 @@ impl AsRef<u64> for Belt {
 }
 
 impl TryFrom<&u64> for Belt {
-    type Error = ();
+    type Error = &'static str;
 
     #[inline(always)]
     fn try_from(f: &u64) -> Result<Self, Self::Error> {
-        based!(*f);
-        Ok(Belt(*f))
+        if based_check(*f) {
+            Ok(Belt(*f))
+        } else {
+            Err("element must be inside the field")
+        }
     }
 }
 

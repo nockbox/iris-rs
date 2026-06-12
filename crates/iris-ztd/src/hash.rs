@@ -788,56 +788,6 @@ impl Hashable for String {
 }
 
 #[cfg(feature = "alloc")]
-impl Noun {
-    /// Structural noun hash, mirroring the node's `hash-noun:hax` and
-    /// `hashable-noun:witness` (tx-engine-1.hoon): `hash-varlen` on every atom
-    /// leaf, `hash-ten-cell` on every cell.
-    ///
-    /// This is distinct from `<Noun as Hashable>::hash`, which mirrors
-    /// `hash-noun-varlen` (ztd/three.hoon) and hashes the *whole* noun as one
-    /// leaf-sequence plus dyck word. The two only coincide for a lone atom.
-    /// Anything the node hashes through `hashable:tip5` with nouns embedded
-    /// structurally (hax preimages, note-data values) must use this variant.
-    ///
-    /// Panics if an atom leaf exceeds `u64`. Atom leaves are hashed as single
-    /// field elements, never decomposed into belts: the node's `hash-varlen`
-    /// asserts on non-`based` leaves and `based:witness` rejects such
-    /// preimages outright, so there is no node-side digest to match. Validate
-    /// untrusted nouns with [`Noun::is_based`] first.
-    pub fn hash_structural(&self) -> Digest {
-        match self {
-            Noun::Atom(a) => Belt(a.try_into().expect("atom too large")).hash(),
-            Noun::Cell(left, right) => (left.hash_structural(), right.hash_structural()).hash(),
-        }
-    }
-
-    /// Whether every atom leaf is a valid field element, mirroring
-    /// `based-noun` in `based:witness` (tx-engine-1.hoon). The node rejects
-    /// hax preimages that fail this check, since hashing them would assert.
-    pub fn is_based(&self) -> bool {
-        match self {
-            Noun::Atom(a) => u64::try_from(a).is_ok_and(crate::belt::based_check),
-            Noun::Cell(left, right) => left.is_based() && right.is_based(),
-        }
-    }
-}
-
-#[cfg(feature = "alloc")]
-impl Hashable for crate::StructuralNoun {
-    fn hash(&self) -> Digest {
-        self.0.hash_structural()
-    }
-
-    fn leaf_count(&self) -> usize {
-        1
-    }
-
-    fn hashable_pair<'a>(&'a self) -> Option<(impl Hashable + 'a, impl Hashable + 'a)> {
-        Option::<((), ())>::None
-    }
-}
-
-#[cfg(feature = "alloc")]
 impl Hashable for Noun {
     fn hash(&self) -> Digest {
         fn visit(noun: &Noun, leaves: &mut Vec<Belt>, dyck: &mut Vec<Belt>) {

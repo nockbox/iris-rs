@@ -6,7 +6,9 @@ use iris_nockchain_types::v1::{
     Spend1V1 as Spend1, SpendCondition, SpendV1 as Spend, Witness,
 };
 use iris_nockchain_types::*;
-use iris_ztd::{jam, tas, Belt, Digest, MerkleProof, Noun, ZMap, ZSet, U256};
+use iris_ztd::{
+    jam, tas, Belt, Digest, MerkleProof, Noun, NounDecode, NounEncode, ZMap, ZSet, U256,
+};
 
 use crate::common::{ConversionError, Required};
 use crate::pb::common::v1::{
@@ -236,7 +238,7 @@ impl From<iris_nockchain_types::v1::NoteData> for PbNoteData {
                 .into_iter()
                 .map(|(k, v)| PbNoteDataEntry {
                     key: k,
-                    blob: jam(v),
+                    blob: jam(v.to_noun()),
                 })
                 .collect(),
         }
@@ -714,7 +716,7 @@ impl From<Witness> for PbWitness {
             hax: witness
                 .hax_map
                 .into_iter()
-                .map(|(hash, preimage)| (hash, preimage.0).into())
+                .map(|(hash, preimage)| (hash, preimage.to_noun()).into())
                 .collect(),
         }
     }
@@ -985,15 +987,19 @@ impl TryFrom<PbNoteData> for iris_nockchain_types::v1::NoteData {
     type Error = ConversionError;
 
     fn try_from(pb_data: PbNoteData) -> Result<Self, Self::Error> {
-        let entries: Result<Vec<(String, Noun)>, ConversionError> = pb_data
-            .entries
-            .into_iter()
-            .map(|e| {
-                let key = e.key;
-                let val = iris_ztd::cue(&e.blob).ok_or(ConversionError::Invalid("cue failed"))?;
-                Ok((key, val))
-            })
-            .collect();
+        let entries: Result<Vec<(String, iris_nockchain_types::BasedNoun)>, ConversionError> =
+            pb_data
+                .entries
+                .into_iter()
+                .map(|e| {
+                    let key = e.key;
+                    let noun =
+                        iris_ztd::cue(&e.blob).ok_or(ConversionError::Invalid("cue failed"))?;
+                    let val = NounDecode::from_noun(&noun)
+                        .ok_or(ConversionError::Invalid("NoteData value (not based)"))?;
+                    Ok((key, val))
+                })
+                .collect();
         Ok(iris_nockchain_types::v1::NoteData(entries?.into()))
     }
 }
@@ -1207,7 +1213,10 @@ impl TryFrom<PbRawTransaction> for iris_nockchain_types::RawTx {
                                     let noun = iris_ztd::cue(&hax.value).ok_or(
                                         ConversionError::Invalid("HaxPreimage value (invalid jam)"),
                                     )?;
-                                    map.insert(hash, iris_ztd::StructuralNoun(noun));
+                                    let preimage = NounDecode::from_noun(&noun).ok_or(
+                                        ConversionError::Invalid("HaxPreimage value (not based)"),
+                                    )?;
+                                    map.insert(hash, preimage);
                                 }
                                 map
                             },

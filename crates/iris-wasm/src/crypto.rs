@@ -147,12 +147,12 @@ pub fn hash_noun(noun: &[u8]) -> Result<String, JsValue> {
 /// node-side `based:witness` check that rejects such preimages.
 #[wasm_bindgen(js_name = hashPreimage)]
 pub fn hash_preimage(preimage_jam: &[u8]) -> Result<String, JsValue> {
-    use iris_ztd::cue;
-    let preimage = cue(preimage_jam).ok_or("Unable to cue preimage jam")?;
-    if !preimage.is_based() {
-        return Err("Preimage contains atom leaves that are not valid field elements".into());
-    }
-    Ok(preimage.hash_structural().to_string())
+    use iris_nockchain_types::BasedNoun;
+    use iris_ztd::{cue, Hashable, NounDecode};
+    let noun = cue(preimage_jam).ok_or("Unable to cue preimage jam")?;
+    let preimage = BasedNoun::from_noun(&noun)
+        .ok_or("Preimage contains atom leaves that are not valid field elements")?;
+    Ok(preimage.hash().to_string())
 }
 
 /// Sign a message string with a private key

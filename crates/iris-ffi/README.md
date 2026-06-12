@@ -23,17 +23,11 @@ fulfill the `@nockbox/iris-sdk/wasm` module surface 1:1. Consumed by
 
 ## gRPC transport
 
-`FfiGrpcClient` speaks **gRPC-web unary over HTTPS** (reqwest + rustls) — the
-same protocol the browser extension uses against `https://rpc.nockbox.org`,
-which does not accept plain gRPC. All four public RPCs are unary, so the
-framing is trivial. If infra later exposes a plain-gRPC endpoint, the
-tonic-based `PublicNockchainGrpcClient` in `iris-grpc-proto` (plus a TLS
-feature) can replace the transport without changing this crate's surface.
-
-> Verification note: a live call against `rpc.nockbox.org` could not be run
-> from the development container (egress 403 at the edge). Run
-> `get_balance_by_address` against the public endpoint from a dev machine
-> before relying on the transport.
+`FfiGrpcClient` speaks **plain gRPC over HTTP/2 + TLS** via tonic. Verified
+live (2026-06-12) against both `https://rpc.nockbox.org` (the extension's
+default endpoint — its proxy passes plain gRPC through) and
+`https://nockchain-api.zorp.io` (the upstream). Response JSON shapes are
+identical to the wasm client's (same pb types, serde-serialized).
 
 ## Scope (v0)
 

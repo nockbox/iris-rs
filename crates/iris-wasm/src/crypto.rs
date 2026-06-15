@@ -137,24 +137,6 @@ pub fn hash_noun(noun: &[u8]) -> Result<String, JsValue> {
     Ok(digest.to_string())
 }
 
-/// Hash a hax lock preimage (jam as input).
-///
-/// Uses the structural noun hash the node verifies hax locks with
-/// (`hash-noun:hax` in tx-engine-1.hoon). For cell-structured preimages this
-/// differs from `hashNoun`, which hashes the whole noun as one leaf sequence.
-///
-/// Errors if any atom leaf is not a valid field element, mirroring the
-/// node-side `based:witness` check that rejects such preimages.
-#[wasm_bindgen(js_name = hashPreimage)]
-pub fn hash_preimage(preimage_jam: &[u8]) -> Result<String, JsValue> {
-    use iris_nockchain_types::BasedNoun;
-    use iris_ztd::{cue, Hashable, NounDecode};
-    let noun = cue(preimage_jam).ok_or("Unable to cue preimage jam")?;
-    let preimage = BasedNoun::from_noun(&noun)
-        .ok_or("Preimage contains atom leaves that are not valid field elements")?;
-    Ok(preimage.hash().to_string())
-}
-
 /// Sign a message string with a private key
 #[wasm_bindgen(js_name = signMessage)]
 pub fn sign_message(private_key_bytes: &[u8], message: &str) -> Result<Signature, JsValue> {

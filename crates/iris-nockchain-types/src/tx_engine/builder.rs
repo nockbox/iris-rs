@@ -3,7 +3,7 @@ use alloc::collections::btree_set::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
 use iris_crypto::{PrivateKey, PublicKey};
-use iris_ztd::{noun_deserialize, noun_serialize, Digest, Hashable as HashableTrait, Noun, ZMap};
+use iris_ztd::{noun_deserialize, noun_serialize, Digest, Hashable as HashableTrait, ZMap};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "wasm")]
@@ -16,7 +16,7 @@ use super::v1::{
     Pkh, SeedV1 as Seed, SeedsV1 as Seeds, SpendCondition, SpendV1 as Spend, SpendsV1 as Spends,
     TransactionDisplay, Witness,
 };
-use super::{Name, TxEngineSettings, Version};
+use super::{BasedNoun, Name, TxEngineSettings, Version};
 use crate::{Nicks, RawTx};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -330,7 +330,7 @@ impl SpendBuilder {
         missing_unlocks
     }
 
-    pub fn add_preimage(&mut self, preimage: Noun) -> Option<Digest> {
+    pub fn add_preimage(&mut self, preimage: BasedNoun) -> Option<Digest> {
         let Spend::S1(spend) = &mut self.spend else {
             return None;
         };
@@ -537,7 +537,7 @@ impl TxBuilder {
         Ok(self)
     }
 
-    pub fn add_preimage(&mut self, preimage: Noun) -> Option<Digest> {
+    pub fn add_preimage(&mut self, preimage: BasedNoun) -> Option<Digest> {
         let mut ret = None;
         for (_, s) in self.spends.iter_mut() {
             let r = s.add_preimage(preimage.clone());
@@ -1507,7 +1507,7 @@ mod tests {
             .set_fee_and_balance_refund(fee, false, true)
             .unwrap();
 
-        builder.add_preimage(0.to_noun());
+        builder.add_preimage(BasedNoun::Atom(Belt(0)));
 
         let unlocks = builder
             .all_spends()

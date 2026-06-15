@@ -12,7 +12,7 @@ use iris_nockchain_types::{
     v1::{Lock, LockRoot, NockchainTx, RawTxV1, SeedV1 as Seed, SpendCondition},
     Nicks, SpendBuilder, TxEngineSettings,
 };
-use iris_ztd::{cue, Digest, U256};
+use iris_ztd::{cue, Digest, NounDecode, U256};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -322,7 +322,9 @@ impl WasmTxBuilder {
 
     #[wasm_bindgen(js_name = addPreimage)]
     pub fn add_preimage(&mut self, preimage_jam: &[u8]) -> Result<Option<Digest>, JsValue> {
-        let preimage = cue(preimage_jam).ok_or("Unable to cue preimage jam")?;
+        let noun = cue(preimage_jam).ok_or("Unable to cue preimage jam")?;
+        let preimage = iris_nockchain_types::BasedNoun::from_noun(&noun)
+            .ok_or("Preimage contains atom leaves that are not valid field elements")?;
         Ok(self.builder.add_preimage(preimage))
     }
 
@@ -429,7 +431,9 @@ impl WasmSpendBuilder {
 
     #[wasm_bindgen(js_name = addPreimage)]
     pub fn add_preimage(&mut self, preimage_jam: &[u8]) -> Result<Option<Digest>, JsValue> {
-        let preimage = cue(preimage_jam).ok_or("Unable to cue preimage jam")?;
+        let noun = cue(preimage_jam).ok_or("Unable to cue preimage jam")?;
+        let preimage = iris_nockchain_types::BasedNoun::from_noun(&noun)
+            .ok_or("Preimage contains atom leaves that are not valid field elements")?;
         Ok(self.builder.add_preimage(preimage))
     }
 

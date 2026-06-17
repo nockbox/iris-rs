@@ -1,0 +1,32 @@
+name: no_std Build
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@1.91.0
+      with:
+        targets: wasm32-unknown-unknown
+
+    - name: Check iris-ztd no-alloc
+      run: cargo check -p iris-ztd --no-default-features --target wasm32-unknown-unknown
+
+    - name: Check iris-ztd alloc
+      run: cargo check -p iris-ztd --no-default-features --features alloc --target wasm32-unknown-unknown
+
+    - name: Check iris-crypto alloc
+      run: cargo check -p iris-crypto --no-default-features --features alloc --target wasm32-unknown-unknown

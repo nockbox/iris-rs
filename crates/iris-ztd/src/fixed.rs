@@ -1,4 +1,6 @@
-use crate::{Digest, Hashable, Noun, NounDecode, NounEncode};
+use crate::{Digest, Hashable};
+#[cfg(feature = "alloc")]
+use crate::{Noun, NounDecode, NounEncode};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 macro_rules! fixed_noun {
@@ -44,12 +46,14 @@ macro_rules! fixed_noun {
             }
         }
 
+        #[cfg(feature = "alloc")]
         impl<const V: $t> NounEncode for $n<V> {
             fn to_noun(&self) -> Noun {
                 V.to_noun()
             }
         }
 
+        #[cfg(feature = "alloc")]
         impl<const V: $t> NounDecode for $n<V> {
             fn from_noun(noun: &Noun) -> Option<Self> {
                 let v: $d = NounDecode::from_noun(noun)?;
@@ -164,12 +168,14 @@ impl<'de, const V: u64> Deserialize<'de> for FixedTas<V> {
     }
 }
 
+#[cfg(feature = "alloc")]
 impl<const V: u64> NounEncode for FixedTas<V> {
     fn to_noun(&self) -> Noun {
         V.to_noun()
     }
 }
 
+#[cfg(feature = "alloc")]
 impl<const V: u64> NounDecode for FixedTas<V> {
     fn from_noun(noun: &Noun) -> Option<Self> {
         let v: u64 = NounDecode::from_noun(noun)?;

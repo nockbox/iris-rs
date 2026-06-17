@@ -57,3 +57,5 @@ ibig = { version = "0.3", default-features = false, features = ["num-traits"] }
 crypto-bigint = { version = "0.6", default-features = false, features = ["serde"] }
 serdect = { version = "0.3", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive"] }
+arrayvec = { version = "0.7", default-features = false }
+

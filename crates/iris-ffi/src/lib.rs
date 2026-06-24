@@ -144,7 +144,14 @@ pub fn derive_master_key_from_mnemonic(
 #[uniffi::export]
 pub fn derive_child(key: FfiExtendedKey, index: u32) -> Result<FfiExtendedKey> {
     let internal = key.to_internal()?;
-    Ok(FfiExtendedKey::from_internal(&internal.derive_child(index)))
+    let child = std::thread::Builder::new()
+        .name("iris-derive-child".to_string())
+        .stack_size(4 * 1024 * 1024)
+        .spawn(move || internal.derive_child(index))
+        .map_err(|e| FfiError::msg(format!("Failed to spawn derivation thread: {e}")))?
+        .join()
+        .map_err(|_| FfiError::msg("Child key derivation panicked"))?;
+    Ok(FfiExtendedKey::from_internal(&child))
 }
 
 /// wasm: `hashPublicKey(bytes)` -> Digest (base58 string)

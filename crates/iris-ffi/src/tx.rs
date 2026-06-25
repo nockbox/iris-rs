@@ -17,7 +17,7 @@ use iris_nockchain_types::{
 use iris_ztd::U256;
 use serde::Deserialize;
 
-use crate::{digest_from_str, from_json, to_json, FfiError, Result};
+use crate::{crypto_stack::run_on_crypto_stack, digest_from_str, from_json, to_json, FfiError, Result};
 
 fn nicks_from_str(s: &str) -> Result<Nicks> {
     serde_json::from_value(serde_json::Value::String(s.to_string()))
@@ -71,11 +71,13 @@ impl FfiPrivateKey {
         if signing_key_bytes.len() != 32 {
             return Err(FfiError::msg("Private key must be 32 bytes"));
         }
-        let signing_key = CryptoPrivateKey(U256::from_be_slice(&signing_key_bytes));
-        let public_key_bytes = signing_key.public_key().to_be_bytes().to_vec();
-        Ok(Self {
-            signing_key,
-            public_key_bytes,
+        run_on_crypto_stack("iris-private-key-from-bytes", move || {
+            let signing_key = CryptoPrivateKey(U256::from_be_slice(&signing_key_bytes));
+            let public_key_bytes = signing_key.public_key().to_be_bytes().to_vec();
+            Self {
+                signing_key,
+                public_key_bytes,
+            }
         })
     }
 
@@ -162,25 +164,27 @@ impl FfiTxBuilder {
             .map(|(n, lck)| (n, lck.into_tuple()))
             .collect();
 
-        let mut builder = self.builder.lock().unwrap();
-        builder
-            .simple_spend_base(
-                internal_notes,
-                recipient,
-                gift,
-                refund_pkh,
-                include_lock_data,
-            )
+        run_on_crypto_stack("iris-tx-simple-spend", || {
+            let mut builder = self.builder.lock().unwrap();
+            builder
+                .simple_spend_base(
+                    internal_notes,
+                    recipient,
+                    gift,
+                    refund_pkh,
+                    include_lock_data,
+                )
+                .map_err(|e| FfiError::msg(format!("{e}")))?;
+
+            if let Some(fee) = fee_override {
+                builder.set_fee_and_balance_refund(fee, false, include_lock_data)
+            } else {
+                builder.recalc_and_set_fee(include_lock_data)
+            }
             .map_err(|e| FfiError::msg(format!("{e}")))?;
 
-        if let Some(fee) = fee_override {
-            builder.set_fee_and_balance_refund(fee, false, include_lock_data)
-        } else {
-            builder.recalc_and_set_fee(include_lock_data)
-        }
-        .map_err(|e| FfiError::msg(format!("{e}")))?;
-
-        Ok(())
+            Ok::<(), FfiError>(())
+        })?
     }
 
     /// wasm: `txBuilder.setFeeAndBalanceRefund(fee, adjustFee, includeLockData)`
@@ -201,12 +205,14 @@ impl FfiTxBuilder {
 
     /// wasm: `txBuilder.recalcAndSetFee(includeLockData)`
     pub fn recalc_and_set_fee(&self, include_lock_data: bool) -> Result<()> {
-        self.builder
-            .lock()
-            .unwrap()
-            .recalc_and_set_fee(include_lock_data)
-            .map_err(|e| FfiError::msg(e.to_string()))?;
-        Ok(())
+        run_on_crypto_stack("iris-tx-recalc-fee", || {
+            self.builder
+                .lock()
+                .unwrap()
+                .recalc_and_set_fee(include_lock_data)
+                .map_err(|e| FfiError::msg(e.to_string()))?;
+            Ok::<(), FfiError>(())
+        })?
     }
 
     /// wasm: `txBuilder.addPreimage(preimageJam)` -> Digest | undefined
@@ -223,18 +229,21 @@ impl FfiTxBuilder {
 
     /// wasm: `txBuilder.sign(privateKey)`
     pub fn sign(&self, signing_key: &FfiPrivateKey) -> Result<()> {
-        self.builder.lock().unwrap().sign(&signing_key.signing_key);
-        Ok(())
+        run_on_crypto_stack("iris-tx-sign", || {
+            self.builder.lock().unwrap().sign(&signing_key.signing_key);
+        })
     }
 
     /// wasm: `txBuilder.validate()`
     pub fn validate(&self) -> Result<()> {
-        self.builder
-            .lock()
-            .unwrap()
-            .validate()
-            .map_err(|e| FfiError::msg(e.to_string()))?;
-        Ok(())
+        run_on_crypto_stack("iris-tx-validate", || {
+            self.builder
+                .lock()
+                .unwrap()
+                .validate()
+                .map_err(|e| FfiError::msg(e.to_string()))?;
+            Ok::<(), FfiError>(())
+        })?
     }
 
     /// wasm: `txBuilder.curFee()` -> Nicks (decimal string)
@@ -249,7 +258,9 @@ impl FfiTxBuilder {
 
     /// wasm: `txBuilder.build()` -> NockchainTx JSON
     pub fn build(&self) -> Result<String> {
-        to_json(&self.builder.lock().unwrap().build())
+        run_on_crypto_stack("iris-tx-build", || {
+            to_json(&self.builder.lock().unwrap().build())
+        })?
     }
 }
 
@@ -344,7 +355,10 @@ impl FfiSpendBuilder {
 
     /// wasm: `spendBuilder.sign(privateKey)` -> bool
     pub fn sign(&self, signing_key: &FfiPrivateKey) -> bool {
-        self.builder.lock().unwrap().sign(&signing_key.signing_key)
+        run_on_crypto_stack("iris-spend-sign", || {
+            self.builder.lock().unwrap().sign(&signing_key.signing_key)
+        })
+        .unwrap_or(false)
     }
 }
 

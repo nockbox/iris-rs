@@ -10,11 +10,15 @@
 //! serde_json), producing byte-identical object shapes on the JS side after
 //! `JSON.parse`. Scalars and byte buffers cross natively.
 
+mod crypto_stack;
 mod grpc;
 mod tx;
 
+pub use crypto_stack::CRYPTO_STACK_SIZE;
 pub use grpc::*;
 pub use tx::*;
+
+use crypto_stack::run_on_crypto_stack;
 
 use iris_crypto::cheetah::{PrivateKey as CryptoPrivateKey, PublicKey, Signature};
 use iris_crypto::slip10::{derive_master_key as derive_master_key_internal, ExtendedKey};
@@ -125,7 +129,10 @@ impl FfiExtendedKey {
 /// wasm: `deriveMasterKey(seed)`
 #[uniffi::export]
 pub fn derive_master_key(seed: Vec<u8>) -> FfiExtendedKey {
-    FfiExtendedKey::from_internal(&derive_master_key_internal(&seed))
+    run_on_crypto_stack("iris-derive-master", || {
+        FfiExtendedKey::from_internal(&derive_master_key_internal(&seed))
+    })
+    .expect("master key derivation failed")
 }
 
 /// wasm: `deriveMasterKeyFromMnemonic(mnemonic, passphrase?)`
@@ -144,13 +151,7 @@ pub fn derive_master_key_from_mnemonic(
 #[uniffi::export]
 pub fn derive_child(key: FfiExtendedKey, index: u32) -> Result<FfiExtendedKey> {
     let internal = key.to_internal()?;
-    let child = std::thread::Builder::new()
-        .name("iris-derive-child".to_string())
-        .stack_size(4 * 1024 * 1024)
-        .spawn(move || internal.derive_child(index))
-        .map_err(|e| FfiError::msg(format!("Failed to spawn derivation thread: {e}")))?
-        .join()
-        .map_err(|_| FfiError::msg("Child key derivation panicked"))?;
+    let child = run_on_crypto_stack("iris-derive-child", move || internal.derive_child(index))?;
     Ok(FfiExtendedKey::from_internal(&child))
 }
 
@@ -160,8 +161,10 @@ pub fn hash_public_key(public_key_bytes: Vec<u8>) -> Result<String> {
     if public_key_bytes.len() != 97 {
         return Err(FfiError::msg("Public key must be 97 bytes"));
     }
-    let public_key = PublicKey::from_be_bytes(&public_key_bytes);
-    Ok(digest_to_string(&public_key.hash()))
+    run_on_crypto_stack("iris-hash-pubkey", move || {
+        let public_key = PublicKey::from_be_bytes(&public_key_bytes);
+        digest_to_string(&public_key.hash())
+    })
 }
 
 /// wasm: `publicKeyFromHex(hex)` -> PublicKey JSON (or None)
@@ -187,9 +190,11 @@ pub fn sign_message(private_key_bytes: Vec<u8>, message: String) -> Result<Strin
     if private_key_bytes.len() != 32 {
         return Err(FfiError::msg("Private key must be 32 bytes"));
     }
-    let private_key = CryptoPrivateKey(U256::from_be_slice(&private_key_bytes));
-    let digest = Belt::from_bytes(message.as_bytes()).to_noun().hash();
-    to_json(&private_key.sign(&digest))
+    run_on_crypto_stack("iris-sign-message", move || {
+        let private_key = CryptoPrivateKey(U256::from_be_slice(&private_key_bytes));
+        let digest = Belt::from_bytes(message.as_bytes()).to_noun().hash();
+        to_json(&private_key.sign(&digest))
+    })?
 }
 
 /// wasm: `verifySignature(publicKeyBytes, signature, message)`
@@ -203,10 +208,12 @@ pub fn verify_signature(
     if public_key_bytes.len() != 97 {
         return Err(FfiError::msg("Public key must be 97 bytes"));
     }
-    let public_key = PublicKey::from_be_bytes(&public_key_bytes);
     let signature: Signature = from_json(&signature_json)?;
-    let digest = Belt::from_bytes(message.as_bytes()).to_noun().hash();
-    Ok(public_key.verify(&digest, &signature))
+    run_on_crypto_stack("iris-verify-signature", move || {
+        let public_key = PublicKey::from_be_bytes(&public_key_bytes);
+        let digest = Belt::from_bytes(message.as_bytes()).to_noun().hash();
+        public_key.verify(&digest, &signature)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -250,21 +257,23 @@ pub fn untas(noun_json: String) -> Result<String> {
 #[uniffi::export]
 pub fn atom_to_belts(noun_json: String) -> Result<String> {
     let noun: iris_ztd::Noun = from_json(&noun_json)?;
-    match noun {
+    run_on_crypto_stack("iris-atom-to-belts", move || match noun {
         iris_ztd::Noun::Atom(atom) => {
             to_json(&iris_ztd::BeltSeq(iris_ztd::belts_from_ubig(atom)).to_noun())
         }
         _ => Err(FfiError::msg("not an atom")),
-    }
+    })?
 }
 
 /// wasm: `beltsToAtom(noun)` -> Noun JSON
 #[uniffi::export]
 pub fn belts_to_atom(noun_json: String) -> Result<String> {
     let noun: iris_ztd::Noun = from_json(&noun_json)?;
-    let iris_ztd::BeltSeq(belts) =
-        NounDecode::from_noun(&noun).ok_or_else(|| FfiError::msg("unable to parse belts"))?;
-    to_json(&iris_ztd::Noun::Atom(iris_ztd::belts_to_ubig(&belts)))
+    run_on_crypto_stack("iris-belts-to-atom", move || {
+        let iris_ztd::BeltSeq(belts) =
+            NounDecode::from_noun(&noun).ok_or_else(|| FfiError::msg("unable to parse belts"))?;
+        to_json(&iris_ztd::Noun::Atom(iris_ztd::belts_to_ubig(&belts)))
+    })?
 }
 
 // ---------------------------------------------------------------------------
@@ -276,21 +285,21 @@ pub fn belts_to_atom(noun_json: String) -> Result<String> {
 #[uniffi::export]
 pub fn lock_hash(lock_json: String) -> Result<String> {
     let lock: Lock = from_json(&lock_json)?;
-    Ok(digest_to_string(&lock.hash()))
+    run_on_crypto_stack("iris-lock-hash", move || digest_to_string(&lock.hash()))
 }
 
 /// wasm: `lockRootHash(lockRoot)` -> Digest
 #[uniffi::export]
 pub fn lock_root_hash(lock_root_json: String) -> Result<String> {
     let lock_root: LockRoot = from_json(&lock_root_json)?;
-    Ok(digest_to_string(&lock_root.hash()))
+    run_on_crypto_stack("iris-lock-root-hash", move || digest_to_string(&lock_root.hash()))
 }
 
 /// wasm: `noteHash(note)` -> Digest
 #[uniffi::export]
 pub fn note_hash(note_json: String) -> Result<String> {
     let note: Note = from_json(&note_json)?;
-    Ok(digest_to_string(&note.hash()))
+    run_on_crypto_stack("iris-note-hash", move || digest_to_string(&note.hash()))
 }
 
 /// wasm: `pkhNew(m, hashes)` -> Pkh JSON
@@ -320,14 +329,16 @@ pub fn spend_condition_new_pkh(pkh_json: String) -> Result<String> {
 #[uniffi::export]
 pub fn spend_condition_hash(spend_condition_json: String) -> Result<String> {
     let sc: SpendCondition = from_json(&spend_condition_json)?;
-    Ok(digest_to_string(&sc.hash()))
+    run_on_crypto_stack("iris-spend-condition-hash", move || digest_to_string(&sc.hash()))
 }
 
 /// wasm: `spendConditionFirstName(sc)` -> Digest
 #[uniffi::export]
 pub fn spend_condition_first_name(spend_condition_json: String) -> Result<String> {
     let sc: SpendCondition = from_json(&spend_condition_json)?;
-    Ok(digest_to_string(&sc.first_name()))
+    run_on_crypto_stack("iris-spend-condition-first-name", move || {
+        digest_to_string(&sc.first_name())
+    })
 }
 
 /// wasm: `noteToProtobuf(note)` -> PbCom2Note JSON
@@ -366,8 +377,10 @@ pub fn spend_condition_from_protobuf(pb_json: String) -> Result<String> {
 #[uniffi::export]
 pub fn raw_tx_to_protobuf(raw_tx_v1_json: String) -> Result<String> {
     let tx: RawTxV1 = from_json(&raw_tx_v1_json)?;
-    let pb: iris_grpc_proto::pb::common::v2::RawTransaction = tx.into();
-    to_json(&pb)
+    run_on_crypto_stack("iris-raw-tx-to-protobuf", move || {
+        let pb: iris_grpc_proto::pb::common::v2::RawTransaction = tx.into();
+        to_json(&pb)
+    })?
 }
 
 /// wasm: `rawTxFromProtobuf(pb)` -> RawTx JSON
@@ -382,7 +395,7 @@ pub fn raw_tx_from_protobuf(pb_json: String) -> Result<String> {
 #[uniffi::export]
 pub fn nockchain_tx_to_raw_tx(nockchain_tx_json: String) -> Result<String> {
     let tx: NockchainTx = from_json(&nockchain_tx_json)?;
-    to_json(&tx.to_raw_tx())
+    run_on_crypto_stack("iris-nockchain-tx-to-raw", move || to_json(&tx.to_raw_tx()))?
 }
 
 /// wasm: `rawTxV1ToNockchainTx(tx)` -> NockchainTx JSON
@@ -401,7 +414,9 @@ pub fn raw_tx_outputs(
 ) -> Result<String> {
     let tx: RawTx = from_json(&raw_tx_json)?;
     let settings: TxEngineSettings = from_json(&tx_engine_settings_json)?;
-    to_json(&tx.outputs(block_height, settings))
+    run_on_crypto_stack("iris-raw-tx-outputs", move || {
+        to_json(&tx.outputs(block_height, settings))
+    })?
 }
 
 /// wasm: `rawTxV1Outputs(tx, originPage, settings)` -> NoteV1[] JSON
@@ -413,7 +428,9 @@ pub fn raw_tx_v1_outputs(
 ) -> Result<String> {
     let tx: RawTxV1 = from_json(&raw_tx_v1_json)?;
     let settings: TxEngineSettings = from_json(&tx_engine_settings_json)?;
-    to_json(&tx.outputs(origin_page, settings))
+    run_on_crypto_stack("iris-raw-tx-v1-outputs", move || {
+        to_json(&tx.outputs(origin_page, settings))
+    })?
 }
 
 /// wasm: `txEngineSettingsV1Default()` -> TxEngineSettings JSON

@@ -51,3 +51,36 @@ parity gate (MOBILE_STRATEGY.md §6 R1/R3).
 
 Keep this crate's surface in lockstep with `iris-wasm`: any PR changing
 `crates/iris-wasm`'s exports should change `iris-ffi` in the same PR.
+
+## React Native stack safety
+
+Hermes invokes UBRN exports **synchronously on a small (~512 KiB) pthread
+stack**. Cheetah curve ops, SLIP-10 derivation, Noun hashing, and tx
+building can overflow that guard region in release/TestFlight builds (SIGBUS
+at stack guard).
+
+All stack-sensitive exports delegate through `crypto_stack::run_on_crypto_stack`
+(4 MiB scoped thread). When adding new FFI exports that touch crypto or tx
+engine code, wrap them through that helper — do not run heavy work inline on
+the JS thread.
+
+High-risk patterns to always wrap:
+
+- `PrivateKey::public_key`, `PrivateKey::sign`, `ExtendedKey::derive_child`
+- `Hashable::hash`, `NounEncode` / `NounDecode`, `Belt` → Noun → hash
+- `TxBuilder::{simple_spend, recalc_and_set_fee, sign, validate, build}`
+- Raw tx projection / protobuf conversion
+
+## TestFlight release (iris-mobile)
+
+After changing `iris-ffi`:
+
+1. Commit/push the Rust fix in `iris-rs` (the generated `.xcframework` is
+   gitignored in iris-mobile).
+2. From `IrisWallet/`, point `modules/iris-core/ubrn.config.yaml` at the
+   patched `iris-rs` worktree and run `npm run ubrn:ios`.
+3. Restore `ubrn.config.yaml` to the canonical `iris-rs` path.
+4. Increment `CURRENT_PROJECT_VERSION` in the Xcode project.
+5. Archive with **Release** configuration and upload to TestFlight.
+6. If a crash occurs, symbolicate against the archive's dSYM:
+   `atos -arch arm64 -o IrisWallet.app.dSYM/Contents/Resources/DWARF/IrisWallet -l <load_addr> <pc>`

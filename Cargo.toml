@@ -6,6 +6,7 @@ members = [
   "crates/iris-grpc-proto",
   "crates/iris-wasm",
   "crates/iris-ztd-derive",
+  "crates/iris-ffi",
 ]
 
 resolver = "2"

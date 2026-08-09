@@ -84,6 +84,26 @@ impl NoteData {
             BasedNoun::from_noun(&(0, ("pkh", &pkh), 0).to_noun()).expect("pkh nouns are based");
         self.0.insert("lock".to_string(), value);
     }
+
+    /// Insert a memo noun under the canonical "memo" key.
+    /// The noun should be the compact belts encoding of the UTF-8 text
+    /// (see `encode_memo_utf8` or the wasm `memo_from_js`).
+    pub fn push_memo(&mut self, memo: Noun) {
+        self.0.insert("memo".to_string(), memo);
+    }
+
+    /// Encode UTF-8 string as compact belts noun and insert under "memo".
+    pub fn push_memo_utf8(&mut self, s: &str) {
+        let bytes = s.as_bytes();
+        let ubig = ibig::UBig::from_le_bytes(bytes);
+        let noun = iris_ztd::BeltSeq(iris_ztd::belts_from_ubig(ubig)).to_noun();
+        self.push_memo(noun);
+    }
+
+    /// Insert a blob noun under the canonical "blob" key (for nockapps etc).
+    pub fn push_blob(&mut self, blob: Noun) {
+        self.0.insert("blob".to_string(), blob);
+    }
 }
 
 #[derive(Debug, Clone, Hashable, Serialize, Deserialize, NounEncode, NounDecode, PartialEq, Eq)]

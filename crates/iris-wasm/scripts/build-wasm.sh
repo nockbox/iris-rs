@@ -7,6 +7,10 @@ if [ -z "${NO_PACK:-}" ]; then
     rm -rf pkg
     wasm-pack build --target web --out-dir pkg --scope nockbox
 
+    # wasm-pack only discovers license files next to the crate. Include the
+    # workspace license explicitly so the published npm artifact carries it.
+    cp ../../LICENSE pkg/LICENSE
+
     # Rename original d.ts
     if [ -f pkg/iris_wasm.d.ts ] && [ ! -f pkg/iris_wasm.d.ts.orig ]; then
         mv pkg/iris_wasm.d.ts pkg/iris_wasm.d.ts.orig
